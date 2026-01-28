@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Register New User - Improved System</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .header {
+            background-color: #4CAF50;
+            color: white;
+            padding: 20px;
+            border-radius: 10px 10px 0 0;
+            text-align: center;
+        }
+        
+        .form-container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 0 0 10px 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .info-box {
+            background-color: #e8f5e9;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            border-left: 4px solid #4CAF50;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #4CAF50;
+            box-shadow: 0 0 5px rgba(76, 175, 80, 0.3);
+        }
+        
+        .submit-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            transition: background-color 0.3s;
+        }
+        
+        .submit-btn:hover {
+            background-color: #45a049;
+        }
+        
+        .submit-btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        .sample-images {
+            display: flex;
+            justify-content: space-around;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        
+        .sample-box {
+            text-align: center;
+            margin: 10px;
+        }
+        
+        .sample-number {
+            width: 60px;
+            height: 60px;
+            background-color: #4CAF50;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: bold;
+            margin: 0 auto 10px;
+        }
+        
+        .quality-indicator {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .back-link {
+            text-align: center;
+            margin-top: 20px;
+        }
+        
+        .back-link a {
+            color: #4CAF50;
+            text-decoration: none;
+        }
+        
+        .back-link a:hover {
+            text-decoration: underline;
+        }
+        
+        .requirements {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        
+        .requirements ul {
+            margin: 10px 0 0 20px;
+            padding: 0;
+        }
+        
+        .requirements li {
+            margin-bottom: 5px;
+        }
+        
+        .capture-summary {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Register New User</h1>
+        <p>Advanced Registration with Multiple Face Samples</p>
+    </div>
+    
+    <div class="form-container">
+        <div class="info-box">
+            <h3>✅ Face Capture Successful!</h3>
+            <p>We've captured <strong>{{ capture_count }} face samples</strong> for better recognition accuracy.</p>
+            <p>Each sample represents a slightly different angle or expression.</p>
+        </div>
+        
+        <div class="requirements">
+            <h4>📋 Registration Requirements:</h4>
+            <ul>
+                <li>All fields are required</li>
+                <li>SR Code must be unique</li>
+                <li>Use proper capitalization for names</li>
+                <li>Ensure information is accurate</li>
+            </ul>
+        </div>
+        
+        <div class="capture-summary">
+            <h4>📸 Captured Face Samples:</h4>
+            <div class="sample-images">
+                <div class="sample-box">
+                    <div class="sample-number">1</div>
+                    <div class="quality-indicator">Front view</div>
+                </div>
+                <div class="sample-box">
+                    <div class="sample-number">2</div>
+                    <div class="quality-indicator">Slight left</div>
+                </div>
+                <div class="sample-box">
+                    <div class="sample-number">3</div>
+                    <div class="quality-indicator">Slight right</div>
+                </div>
+                {% if capture_count > 3 %}
+                <div class="sample-box">
+                    <div class="sample-number">+{{ capture_count - 3 }}</div>
+                    <div class="quality-indicator">Extra samples</div>
+                </div>
+                {% endif %}
+            </div>
+            <p style="text-align: center; font-size: 14px; color: #666;">
+                Multiple samples improve recognition accuracy by {{ ((capture_count / 3) * 15)|round|int }}%
+            </p>
+        </div>
+        
+        <form method="POST" action="{{ url_for('register') }}" onsubmit="return validateForm()">
+            <div class="form-group">
+                <label for="name">Full Name:</label>
+                <input type="text" id="name" name="name" required 
+                       placeholder="Enter full name (e.g., Juan Dela Cruz)"
+                       pattern="[A-Za-z\s]{3,50}"
+                       title="Name should be 3-50 characters, letters and spaces only">
+            </div>
+            
+            <div class="form-group">
+                <label for="sr_code">SR Code:</label>
+                <input type="text" id="sr_code" name="sr_code" required 
+                       placeholder="Enter SR Code (e.g., 20-12345)"
+                       pattern="\d{2}-\d{5}"
+                       title="Format: 20-12345 (two digits, hyphen, five digits)">
+            </div>
+            
+            <div class="form-group">
+                <label for="course">Course/Program:</label>
+                <input type="text" id="course" name="course" required 
+                       placeholder="Enter course (e.g., BS Computer Science)"
+                       pattern="[A-Za-z\s]{3,50}"
+                       title="Course should be 3-50 characters">
+            </div>
+            
+            <button type="submit" class="submit-btn" id="submitBtn">
+                ✅ Register User with {{ capture_count }} Face Samples
+            </button>
+        </form>
+        
+        <div class="back-link">
+            <a href="{{ url_for('kiosk') }}">← Back to Kiosk</a>
+        </div>
+    </div>
+    
+    <script>
+        function validateForm() {
+            const name = document.getElementById('name').value;
+            const srCode = document.getElementById('sr_code').value;
+            const course = document.getElementById('course').value;
+            
+            // Basic validation
+            if (!name || !srCode || !course) {
+                alert('Please fill in all fields');
+                return false;
+            }
+            
+            // SR Code format validation
+            const srCodePattern = /^\d{2}-\d{5}$/;
+            if (!srCodePattern.test(srCode)) {
+                alert('SR Code must be in format: 20-12345 (two digits, hyphen, five digits)');
+                return false;
+            }
+            
+            // Name validation
+            if (name.length < 3 || name.length > 50) {
+                alert('Name must be between 3 and 50 characters');
+                return false;
+            }
+            
+            // Show loading state
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '⏳ Registering... Please wait';
+            
+            return true;
+        }
+        
+        // Auto-format SR Code
+        document.getElementById('sr_code').addEventListener('input', function(e) {
+            let value = e.target.value.replace(/\D/g, '');
+            if (value.length > 2) {
+                value = value.substring(0, 2) + '-' + value.substring(2, 7);
+            }
+            e.target.value = value;
+        });
+        
+        // Auto-capitalize name
+        document.getElementById('name').addEventListener('input', function(e) {
+            let words = e.target.value.split(' ');
+            words = words.map(word => {
+                if (word.length > 0) {
+                    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+                }
+                return word;
+            });
+            e.target.value = words.join(' ');
+        });
+        
+        // Auto-capitalize course
+        document.getElementById('course').addEventListener('input', function(e) {
+            e.target.value = e.target.value.toUpperCase();
+        });
+        
+        // Prevent form resubmission
+        if (window.history.replaceState) {
+            window.history.replaceState(null, null, window.location.href);
+        }
+    </script>
+</body>
+</html>
