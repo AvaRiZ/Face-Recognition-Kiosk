@@ -18,7 +18,7 @@ app = Flask(__name__)
 # -------------------------------
 # YOLOv8M model
 # -------------------------------
-MODEL_PATH = "face_yolov8m.pt"
+MODEL_PATH = "models/face_yolov8m.pt"
 model = YOLO(MODEL_PATH)
 print("YOLOv8 face detection model loaded!")
 
@@ -32,7 +32,7 @@ print(f"Using DeepFace with {CURRENT_MODEL} model")
 # -------------------------------
 # Database setup (SQLite) with improved schema
 # -------------------------------
-DB_PATH = "faces_improved.db"
+DB_PATH = "databse/faces_improved.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
