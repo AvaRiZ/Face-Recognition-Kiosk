@@ -1,0 +1,74 @@
+/* Container around video feed */
+.video-container {
+    display: inline-block;
+    border: 4px solid #4CAF50; /* Green border */
+    border-radius: 8px;         /* Rounded corners */
+    padding: 5px;
+    background-color: #000;     /* Optional: black background behind video */
+}
+
+/* Make the video responsive */
+.video-container img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px; /* Slight rounding inside the container */
+}
+
+/* Status text */
+.status {
+    font-size: 18px;
+    font-weight: bold;
+    color: #333;
+    margin-top: 10px;
+}
+
+/* Footer */
+footer {
+    margin-top: 20px;
+    text-align: center;
+    color: #555;
+    font-size: 14px;
+}
+
+/* Registration modal */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 100;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0,0,0,0.6);
+}
+
+.modal-content {
+    background-color: #fefefe;
+    margin: 10% auto;
+    padding: 20px;
+    border: 2px solid #4CAF50;
+    width: 400px;
+    border-radius: 8px;
+    text-align: left;
+}
+
+.modal h2 {
+    margin-top: 0;
+}
+
+.modal input {
+    width: 100%;
+    padding: 8px;
+    margin: 6px 0;
+}
+
+.modal button {
+    padding: 10px 15px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    cursor: pointer;
+    border-radius: 4px;
+}
