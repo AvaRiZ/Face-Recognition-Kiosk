@@ -1,0 +1,8 @@
+flask
+opencv-python
+ultralytics
+numpy
+tensorflow keras
+mtcnn
+lz4
+keras-facenet
