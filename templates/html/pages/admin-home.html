@@ -1,0 +1,25 @@
+﻿{% extends "html/layouts/app.html" %}
+{% block title %}Admin Pages{% endblock %}
+{% block content %}
+<div class="pagetitle">
+    <h1>Admin Portal</h1>
+</div>
+
+<section class="section">
+    <div class="card">
+        <div class="card-body py-4">
+            <h5 class="card-title">Quick Links</h5>
+            <ul class="mb-0">
+                <li><a href="{{ url_for('admin_routes.dashboard_page') }}">Dashboard</a></li>
+                <li><a href="{{ url_for('admin_routes.route_list_page') }}">Route List</a></li>
+                <li><a href="{{ url_for('admin_routes.policy_page') }}">Policy</a></li>
+                <li><a href="{{ url_for('admin_routes.settings') }}">Settings</a></li>
+                {% if current_role == 'super_admin' %}
+                <li><a href="/admin/manage-users">Manage User</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</section>
+{% endblock %}
+

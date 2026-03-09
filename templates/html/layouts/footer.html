@@ -1,0 +1,32 @@
+<footer id="footer" class="footer animate__animated animate__fadeInUp">
+    <div class="copyright"><strong><a href="https://batstate-u.edu.ph/"><span>Batangas State University The National
+                    Engineering University</span></a></strong></div>
+    <div class="copyright fw-bold">
+        <span>
+            {{ env('APP_COPYRIGHT') }} {{ sprintf('%s ', env('APP_VERSION')) }}
+        </span>
+    </div>
+</footer>
+
+<a href="#" class="back-to-top d-flex align-items-center justify-content-center"><i
+        class="bi bi-arrow-up-short"></i></a>
+
+@php
+    $appEnv = env('APP_ENV', 'local');
+    $appDebug = env('APP_DEBUG', false);
+    $isProduction = in_array($appEnv, ['prod', 'production'], true);
+@endphp
+
+{% if !isProduction %}
+    <div class="position-fixed bottom-0 start-0 w-100 text-center" style="z-index: 9999; pointer-events: none;">
+        <div class="bg-warning text-dark py-0 px-3 fw-bold" style="background-color: rgba(255, 193, 7, 0.9) !important; padding-top: 2px; padding-bottom: 2px;">
+            DEVELOPMENT MODE (ENV: {{ appEnv }}, DEBUG: {{ appDebug ? 'true' : 'false' }})
+        </div>
+    </div>
+{% elif isProduction && appDebug === true %}
+    <div class="position-fixed bottom-0 start-0 w-100 text-center" style="z-index: 9999; pointer-events: none;">
+        <div class="bg-danger text-white py-0 px-3 fw-bold" style="background-color: rgba(220, 53, 69, 0.9) !important; padding-top: 2px; padding-bottom: 2px;">
+            DEBUG MODE (ENV: {{ appEnv }}, DEBUG: {{ appDebug ? 'true' : 'false' }})
+        </div>
+    </div>
+{% endif %}

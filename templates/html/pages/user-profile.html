@@ -1,0 +1,171 @@
+﻿@unless(request()->header('X-Livewire'))
+    {% extends 'html/layouts/app.html' %}
+{% block content %}
+@endunless
+    {% include 'html/components/toasts.html' %}
+
+    <div class="animate__animated animate__fadeIn animate__fast">
+        <div class="pagetitle">
+            <h1>Profile</h1>
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+            </nav>
+        </div>
+        <section class="section profile">
+            <div class="row">
+                <div class="col-xl-8 mx-auto">
+                    <div class="card">
+                        <div class="card-body pt-3">
+                            <div class="card-body profile-card pt-4 d-flex flex-column align-items-center">
+                                {% if Auth::user( %}->profile_picture)
+                                    <img src="{{ Auth::user().profile_picture }}" alt="Profile"
+                                        class="rounded-circle">
+                                {% else %}
+                                    <img src="{{ Avatar::create(Auth::user().name).toBase64() }}" alt="Default Avatar"
+                                        class="rounded-circle">
+                                {% endif %}
+                                <h2>{{ Auth::user().name }}</h2>
+                                <x-restriction-name :restriction="auth()->user()->restriction" />
+
+                                <!-- User Roles Display -->
+                                {% if Auth::user( %}->roles->count() > 0)
+                                    <div class="mt-2">
+                                        <span class="badge bg-primary me-1">Roles:</span>
+                                        {% for Auth::user( %}->roles as $role)
+                                            <span class="badge bg-secondary me-1">{{ ucfirst(role.name) }}</span>
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
+
+                                <!-- Campus Display -->
+                                {% if Auth::user( %}->campuses->count() > 0)
+                                    <div class="mt-2">
+                                        <span class="badge bg-info me-1">Campus:</span>
+                                        {% for Auth::user( %}->campuses as $campus)
+                                            <span class="badge bg-light text-dark me-1">{{ campus.name }}</span>
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
+                            </div>
+                            <ul class="nav nav-tabs nav-tabs-bordered justify-content-center">
+                                <li class="nav-item">
+                                    <button class="nav-link active" data-bs-toggle="tab"
+                                        data-bs-target="#profile-overview">Overview</button>
+                                </li>
+                                <li class="nav-item">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#profile-edit">Edit
+                                        Profile</button>
+                                </li>
+                                <li class="nav-item">
+                                    <button class="nav-link" data-bs-toggle="tab"
+                                        data-bs-target="#profile-change-password">Change Password</button>
+                                </li>
+                            </ul>
+                            <div class="tab-content pt-2">
+                                <div class="tab-pane fade show active profile-overview" id="profile-overview">
+                                    <h5 class="card-title">Profile Details</h5>
+
+                                    <!-- User Information -->
+                                    <h6 class="text-primary mb-3">User Information</h6>
+                                    <div class="row">
+                                        <div class="col-lg-3 col-md-4 label">Full Name</div>
+                                        <div class="col-lg-9 col-md-8">{{ Auth::user().name }}</div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-lg-3 col-md-4 label">Email</div>
+                                        <div class="col-lg-9 col-md-8">{{ Auth::user().email }}</div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-lg-3 col-md-4 label">Username</div>
+                                        <div class="col-lg-9 col-md-8">{{ Auth::user().username ?? 'Not set' }}</div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-lg-3 col-md-4 label">Status</div>
+                                        <div class="col-lg-9 col-md-8">
+                                            <span class="badge {{ Auth::user().is_active ? 'bg-success' : 'bg-danger' }}">
+                                                {{ Auth::user().is_active ? 'Active' : 'Inactive' }}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Dione User Information (if exists) -->
+                                    {% if Auth::user( %}->dioneUser)
+                                        <h6 class="text-primary mb-3 mt-4">Dione User Information</h6>
+                                        <div class="row">
+                                            <div class="col-lg-3 col-md-4 label">Employee Code</div>
+                                            <div class="col-lg-9 col-md-8">{{ Auth::user().dioneUser.emp_code ?? 'Not set' }}</div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-lg-3 col-md-4 label">Full Name</div>
+                                            <div class="col-lg-9 col-md-8">{{ Auth::user().dioneUser.fullname ?? 'Not set' }}</div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-lg-3 col-md-4 label">Office</div>
+                                            <div class="col-lg-9 col-md-8">{{ Auth::user().dioneUser.office ?? 'Not set' }}</div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-lg-3 col-md-4 label">Campus</div>
+                                            <div class="col-lg-9 col-md-8">{{ Auth::user().dioneUser.campus ?? 'Not set' }}</div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-lg-3 col-md-4 label">Faculty Portal ID</div>
+                                            <div class="col-lg-9 col-md-8">{{ Auth::user().dioneUser.faculty_portal_id ?? 'Not set' }}</div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-lg-3 col-md-4 label">Last Login</div>
+                                            <div class="col-lg-9 col-md-8">{{ Auth::user().dioneUser.lastlogin ? \Carbon\Carbon::parse(Auth::user().dioneUser.lastlogin).format('M d, Y H:i:s') : 'Never' }}</div>
+                                        </div>
+                                    {% endif %}
+
+                                    <!-- Campus Information -->
+                                    {% if Auth::user( %}->campuses->count() > 0)
+                                        <h6 class="text-primary mb-3 mt-4">Assigned Campuses</h6>
+                                        {% for Auth::user( %}->campuses as $campus)
+                                            <div class="row">
+                                                <div class="col-lg-3 col-md-4 label">{{ loop.iteration == 1 ? 'Campus' : '' }}</div>
+                                                <div class="col-lg-9 col-md-8">
+                                                    {{ campus.name }}
+                                                    {% if campus.parent %}
+                                                        <small class="text-muted"> (Parent: {{ campus.parent.name }})</small>
+                                                    {% endif %}
+                                                </div>
+                                            </div>
+                                        {% endfor %}
+                                    {% endif %}
+
+                                    <!-- Roles Information -->
+                                    {% if Auth::user( %}->roles->count() > 0)
+                                        <h6 class="text-primary mb-3 mt-4">Roles & Permissions</h6>
+                                        {% for Auth::user( %}->roles as $role)
+                                            <div class="row">
+                                                <div class="col-lg-3 col-md-4 label">{{ loop.iteration == 1 ? 'Role' : '' }}</div>
+                                                <div class="col-lg-9 col-md-8">
+                                                    <strong>{{ ucfirst(role.name) }}</strong>
+                                                    {% if role.permissions.count( %} > 0)
+                                                        <br><small class="text-muted">
+                                                            Permissions: {{ role.permissions.pluck('name').implode(', ') }}
+                                                        </small>
+                                                    {% endif %}
+                                                </div>
+                                            </div>
+                                        {% endfor %}
+                                    {% endif %}
+                                </div>
+                                <div class="tab-pane fade profile-edit pt-3" id="profile-edit">
+                                    <x-profile-edit-form :user="Auth::user()" />
+                                </div>
+                                <div class="tab-pane fade profile-change-password pt-3" id="profile-change-password">
+                                    {% include 'html/components/change-password-form.html' %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+{% endblock %}
+
+
+

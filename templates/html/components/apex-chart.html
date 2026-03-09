@@ -1,0 +1,107 @@
+@props([
+    'id',
+    'type' => 'line',
+    'height' => 350,
+    'series' => [],
+    'categories' => [],
+    'options' => [],
+])
+
+@php
+    $apexConfig = [
+        'type' => $type,
+        'height' => $height,
+        'series' => $series,
+        'categories' => $categories,
+        'options' => $options,
+    ];
+@endphp
+
+<div {{ attributes }}>
+    <div id="{{ id }}"></div>
+</div>
+
+<script type="application/json" id="{{ id }}-apex-config" data-apex-chart-config data-chart-id="{{ id }}">
+    @json($apexConfig)
+</script>
+
+@once
+    <script>
+        (function() {
+            window.__bladeCharts = window.__bladeCharts || {
+                apex: {},
+                chartjs: {},
+                echarts: {}
+            };
+
+            window.renderApexBladeChart = function(chartId) {
+                var target = document.getElementById(chartId);
+                var configNode = document.getElementById(chartId + '-apex-config');
+
+                if (!target || !configNode || !window.ApexCharts) {
+                    return;
+                }
+
+                var payload = {};
+                try {
+                    payload = JSON.parse(configNode.textContent || '{}');
+                } catch (error) {
+                    return;
+                }
+
+                if (window.__bladeCharts.apex[chartId]) {
+                    window.__bladeCharts.apex[chartId].destroy();
+                }
+
+                var chartOptions = {
+                    series: payload.series || [],
+                    chart: {
+                        type: payload.type || 'line',
+                        height: payload.height || 350,
+                        zoom: {
+                            enabled: false
+                        }
+                    },
+                    xaxis: {
+                        categories: payload.categories || []
+                    },
+                    ...(payload.options || {})
+                };
+
+                window.__bladeCharts.apex[chartId] = new window.ApexCharts(target, chartOptions);
+                window.__bladeCharts.apex[chartId].render();
+            };
+
+            window.initApexBladeCharts = function() {
+                document.querySelectorAll('[data-apex-chart-config]').forEach(function(config) {
+                    window.renderApexBladeChart(config.dataset.chartId);
+                });
+            };
+
+            if (!window.__apexBladeChartsHooksBound) {
+                window.__apexBladeChartsHooksBound = true;
+
+                document.addEventListener('DOMContentLoaded', window.initApexBladeCharts);
+                document.addEventListener('livewire:navigated', window.initApexBladeCharts);
+                document.addEventListener('livewire:load', window.initApexBladeCharts);
+
+                var bindApexLivewireHooks = function() {
+                    if (window.Livewire && typeof window.Livewire.hook === 'function') {
+                        window.Livewire.hook('message.processed', function() {
+                            window.initApexBladeCharts();
+                        });
+                    }
+                };
+
+                bindApexLivewireHooks();
+                document.addEventListener('livewire:init', bindApexLivewireHooks);
+            }
+        })();
+    </script>
+@endonce
+
+<script>
+    if (typeof window.renderApexBladeChart === 'function') {
+        window.renderApexBladeChart(@json($id));
+    }
+</script>

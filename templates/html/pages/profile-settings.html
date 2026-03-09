@@ -1,0 +1,83 @@
+{% extends "html/layouts/app.html" %}
+{% block title %}Profile Settings{% endblock %}
+{% block content %}
+
+{% include "html/components/toasts.html" %}
+
+<div class="pagetitle">
+    <h1>Profile Settings</h1>
+</div>
+
+<section class="section">
+    <div class="row g-3">
+        <div class="col-lg-5">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Profile Information</h5>
+
+                    <div class="mb-3">
+                        {% if staff.profile_image %}
+                        <img src="{{ staff.profile_image }}" alt="Profile" class="rounded-circle" width="84" height="84" style="object-fit: cover;">
+                        {% else %}
+                        <div class="rounded-circle d-inline-flex align-items-center justify-content-center text-white fw-bold" style="width: 84px; height: 84px; background: linear-gradient(135deg, #6f2bff, #b100e8);">
+                            {{ (staff.full_name[:1] if staff.full_name else 'a')|lower }}
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <form method="post" action="{{ url_for('profile_routes.profile_settings_update') }}" enctype="multipart/form-data" class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label" for="full_name">Full Name</label>
+                            <input id="full_name" name="full_name" class="form-control" value="{{ staff.full_name }}" required>
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label" for="username">Username</label>
+                            <input id="username" name="username" class="form-control" value="{{ staff.username }}" required>
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label" for="profile_image">Profile Picture</label>
+                            <input id="profile_image" name="profile_image" type="file" class="form-control" accept=".jpg,.jpeg,.png,.webp">
+                            <div class="form-text">JPG, JPEG, PNG, WEBP.</div>
+                        </div>
+
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary">Save Profile</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-7">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Change Password</h5>
+
+                    <form method="post" action="{{ url_for('profile_routes.profile_change_password') }}" class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label" for="current_password">Current Password</label>
+                            <input id="current_password" name="current_password" type="password" class="form-control" required>
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label" for="new_password">New Password</label>
+                            <input id="new_password" name="new_password" type="password" class="form-control" minlength="8" required>
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label" for="confirm_password">Confirm New Password</label>
+                            <input id="confirm_password" name="confirm_password" type="password" class="form-control" minlength="8" required>
+                        </div>
+
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-outline-primary">Update Password</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

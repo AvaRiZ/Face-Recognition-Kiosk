@@ -1,0 +1,48 @@
+﻿{% extends 'html/layouts/app.html' %}
+{% block content %}
+        <div class="pagetitle">
+            <h1>Application Route List</h1>
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+            </nav>
+        </div>
+        <section class="section">
+            <div class="row">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">All Registered Routes</h5>
+                            <div class="table-responsive">
+                                <table class="table table-bordered table-striped table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>URI</th>
+                                            <th>Name</th>
+                                            <th>Action</th>
+                                            <th>Methods</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for route in routes %}{% set i = loop.index0 %}
+                                            <tr>
+                                                <td>{{ i + 1 }}</td>
+                                                <td><code>{{ route['uri'] }}</code></td>
+                                                <td>{{ route['name'] }}</td>
+                                                <td style="font-size: 12px;">{{ route['action'] }}</td>
+                                                <td>{{ ', '.join(route['methods']) }}</td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+{% endblock %}
+
+
+

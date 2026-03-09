@@ -1,0 +1,54 @@
+@php
+    $title = $title ?? '';
+    $text = $text ?? '';
+    $type = $type ?? 'info';
+    $button1Text = $button1Text ?? 'OK';
+    $button1Color = $button1Color ?? '#28a745';
+    $button2Text = $button2Text ?? '';
+    $button2Color = $button2Color ?? '#dc3545';
+    $draggable = $draggable ?? false;
+    $position = $position ?? 'center';
+    $timer = $timer ?? 0;
+    $timerProgressBar = $timerProgressBar ?? false;
+    $formId = $attributes->get('data-submit-form') ?? null;
+@endphp
+
+<script src="{{ url_for('static', filename='assets/js/sweetalert2@11.js') }}"></script>
+
+<script>
+    function triggerSwal2() {
+        const swalWithBootstrapButtons = Swal.mixin({
+            customClass: {
+                confirmButton: "btn btn-success m-2",
+                cancelButton: "btn btn-danger m-2"
+            },
+            buttonsStyling: false
+        });
+
+        swalWithBootstrapButtons.fire({
+            title: '{{ title }}',
+            text: '{{ text }}',
+            icon: '{{ type }}',
+            draggable: {{ draggable ? 'true' : 'false' }},
+            timer: {{ timer }},
+            timerProgressBar: {{ timerProgressBar ? 'true' : 'false' }},
+            position: '{{ position }}',
+            showCancelButton: {{ empty(button2Text) ? 'false' : 'true' }},
+            confirmButtonText: '{{ button1Text }}',
+            confirmButtonColor: '{{ button1Color }}',
+            cancelButtonText: '{{ button2Text }}',
+            cancelButtonColor: '{{ button2Color }}'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                let formId = '{{ formId }}';
+                if (formId) {
+                    document.getElementById(formId).submit();
+                }
+            }
+        });
+    }
+</script>
+
+
+
+

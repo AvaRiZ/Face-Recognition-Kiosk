@@ -1,0 +1,77 @@
+{% extends 'html/layouts/guest.html' %}
+{% block content %}
+    <main class="animate__animated animate__fadeIn animate__fast">
+        <div class="container">
+            {% include 'html/components/toasts.html' %}
+
+            <section
+                class="section register min-vh-100 d-flex flex-column align-items-center justify-content-center py-4">
+                <div class="container animate__animated animate__fadeInUp animate__fast">
+                    <div class="row justify-content-center">
+                        <div class="col-lg-4 col-md-6 d-flex flex-column align-items-center justify-content-center">
+                            <div class="card mb-3">
+                                <div class="card-body">
+                                    <div class="pt-4 pb-2 animate__animated animate__fadeInUp animate__fast">
+                                        <div class="d-flex justify-content-center py-2">
+                                            <a href="{{ url_for('login') }}"
+                                                class="logo d-flex align-items-center w-auto">
+                                                <img src="{{ url_for('static', filename='assets/img/bsu-neu-logo.png') }}"
+                                                    alt="BatStateU Logo" class="img-responsive" />
+                                            </a>
+                                        </div>
+                                        <h5 class="card-title text-center pb-0 fs-4">Verify Email Address</h5>
+                                        <p class="text-center small">
+                                            Verify your email by clicking the link we sent
+                                        </p>
+                                    </div>
+
+                                    {% if session('status' %} == 'verification-link-sent')
+                                        <div class="alert alert-success mb-4">
+                                            {{ __('A new verification link has been sent to your email.') }}
+                                        </div>
+                                    {% endif %}
+
+                                    <div class="row g-3">
+                                        <div class="col-12">
+                                            <p class="text-muted text-center">
+                                                {{ __('Before continuing, verify your email address by clicking the link we just emailed to you. If you didn\'t receive the email, we will gladly send another.') }}
+                                            </p>
+                                        </div>
+
+                                        <div class="col-12">
+                                            <form method="POST" action="{{ url_for('verification.send') }}"
+                                                class="mb-3">
+                                                {# csrf token handled by Flask-WTF if enabled #}
+                                                <button type="submit" class="btn btn-primary w-100">
+                                                    Resend Verification Email
+                                                </button>
+                                            </form>
+                                        </div>
+
+                                        <div class="col-12 text-center">
+                                            <a href="{{ url_for('profile.show') }}" class="btn btn-link">
+                                                Edit Profile
+                                            </a>
+
+                                            <form method="POST" action="{{ url_for('logout') }}" class="d-inline">
+                                                {# csrf token handled by Flask-WTF if enabled #}
+                                                <button type="submit" class="btn btn-link text-danger">
+                                                    Log Out
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                </div>
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+            </section>
+        </div>
+    </main>
+{% endblock %}
+
+
+
+
+

@@ -1,0 +1,16 @@
+﻿{% extends "html/layouts/app.html" %}
+
+{% block title %}Pages{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">Application Pages</h1>
+<p class="text-muted">Python-native pages integrated from migrated templates/assets.</p>
+<ul>
+    <li><a href="{{ url_for('admin_routes.policy_page') }}">Policy page</a></li>
+    <li><a href="{{ url_for('admin_routes.dashboard_page') }}">Dashboard page</a></li>
+    <li><a href="{{ url_for('admin_routes.route_list_page') }}">Application route list</a></li>
+</ul>
+{% endblock %}
+
+
+

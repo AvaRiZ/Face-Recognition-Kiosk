@@ -1,0 +1,190 @@
+{% extends "html/layouts/app.html" %}
+{% block title %}System Settings{% endblock %}
+{% block content %}
+
+{% include "html/components/toasts.html" %}
+
+<div class="pagetitle">
+    <h1>System Settings</h1>
+    <p class="text-muted mb-0">Configure face recognition parameters</p>
+</div>
+
+<section class="section">
+    <div class="row g-3">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">System Statistics</h5>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <div class="border rounded p-3 text-center h-100">
+                                <div class="h3 mb-1">{{ user_count }}</div>
+                                <small class="text-muted">Registered Users</small>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="border rounded p-3 text-center h-100">
+                                <div class="h3 mb-1">{{ "%.3f"|format(threshold) }}</div>
+                                <small class="text-muted">Current Threshold</small>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="border rounded p-3 text-center h-100">
+                                <div class="h3 mb-1">{{ "Enabled" if adaptive_threshold else "Disabled" }}</div>
+                                <small class="text-muted">Adaptive Threshold</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Recognition Settings</h5>
+                    <form method="POST" action="{{ url_for('admin_routes.settings') }}" class="row g-4">
+                        <div class="col-12">
+                            <label for="threshold" class="form-label">Recognition Threshold:
+                                <span class="badge bg-light text-dark" id="thresholdValue">{{ "%.3f"|format(threshold) }}</span>
+                            </label>
+                            <input type="range" id="threshold" name="threshold"
+                                   class="form-range" min="0.1" max="0.8" step="0.01" value="{{ threshold }}"
+                                   oninput="document.getElementById('thresholdValue').textContent = this.value">
+                            <div class="form-text">
+                                Lower values = stricter. Higher values = more lenient.
+                            </div>
+                        </div>
+
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="adaptive_threshold" name="adaptive_threshold"
+                                       {{ 'checked' if adaptive_threshold else '' }}>
+                                <label class="form-check-label" for="adaptive_threshold">
+                                    Enable Adaptive Threshold
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="col-12">
+                            <label for="quality_threshold" class="form-label">Minimum Face Quality:
+                                <span class="badge bg-light text-dark" id="qualityValue">{{ "%.2f"|format(quality_threshold) }}</span>
+                            </label>
+                            <input type="range" id="quality_threshold" name="quality_threshold"
+                                   class="form-range" min="0.1" max="1.0" step="0.05" value="{{ quality_threshold }}"
+                                   oninput="document.getElementById('qualityValue').textContent = this.value">
+                        </div>
+
+                        <div class="col-12 d-flex gap-2 flex-wrap">
+                            <button type="submit" class="btn btn-primary">Save Settings</button>
+                            <a href="{{ url_for('kiosk') }}" class="btn btn-outline-secondary">Back to Kiosk</a>
+                            <a href="{{ url_for('admin_routes.get_stats') }}" class="btn btn-outline-secondary" target="_blank">View Detailed Stats</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12">
+            <div class="card border-danger">
+                <div class="card-body">
+                    <h5 class="card-title text-danger">Advanced Operations</h5>
+                    <p class="text-muted"><strong>Warning:</strong> These operations cannot be undone.</p>
+                    <div class="d-flex gap-2 flex-wrap">
+                        <button onclick="resetDatabase()" class="btn btn-danger">Reset Database</button>
+                        <button onclick="clearRecognitionLog()" class="btn btn-warning">Clear Recognition Log</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<script src="{{ url_for('static', filename='assets/js/sweetalert2@11.js') }}"></script>
+<script>
+    async function confirmDialog(title, text, confirmText = 'Confirm', confirmButtonColor = '#0d6efd') {
+        if (window.Swal) {
+            const result = await Swal.fire({
+                icon: 'warning',
+                title: title,
+                text: text,
+                showCancelButton: true,
+                confirmButtonText: confirmText,
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: confirmButtonColor,
+                cancelButtonColor: '#6c757d',
+                reverseButtons: true
+            });
+            return result.isConfirmed;
+        }
+        return confirm(text);
+    }
+
+    async function showDialog(icon, title, text) {
+        if (window.Swal) {
+            await Swal.fire({
+                icon: icon,
+                title: title,
+                text: text
+            });
+            return;
+        }
+        alert(`${title}: ${text}`);
+    }
+
+    async function resetDatabase() {
+        const confirmed = await confirmDialog(
+            'Reset Database?',
+            'This will delete all registered users and face data. This action cannot be undone.',
+            'Yes, reset',
+            '#dc3545'
+        );
+        if (!confirmed) return;
+
+        fetch('/admin/api/reset_database', { method: 'POST' })
+            .then(response => response.json())
+            .then(async data => {
+                if (data.success) {
+                    await showDialog('success', 'Completed', 'Database reset successfully. The system will restart.');
+                    location.reload();
+                } else {
+                    await showDialog('error', 'Request Failed', data.message || 'Unable to reset database.');
+                }
+            })
+            .catch(async error => {
+                await showDialog('error', 'Request Failed', error.message || 'Unexpected error occurred.');
+            });
+    }
+
+    async function clearRecognitionLog() {
+        const confirmed = await confirmDialog(
+            'Clear Recognition Log?',
+            'This will clear all recognition history. This action cannot be undone.',
+            'Yes, clear',
+            '#fd7e14'
+        );
+        if (!confirmed) return;
+
+        fetch('/admin/api/clear_log', { method: 'POST' })
+            .then(response => response.json())
+            .then(async data => {
+                if (data.success) {
+                    await showDialog('success', 'Completed', 'Recognition log cleared successfully.');
+                    location.reload();
+                } else {
+                    await showDialog('error', 'Request Failed', data.message || 'Unable to clear recognition log.');
+                }
+            })
+            .catch(async error => {
+                await showDialog('error', 'Request Failed', error.message || 'Unexpected error occurred.');
+            });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const threshold = document.getElementById('threshold');
+        const quality = document.getElementById('quality_threshold');
+        if (threshold) document.getElementById('thresholdValue').textContent = threshold.value;
+        if (quality) document.getElementById('qualityValue').textContent = quality.value;
+    });
+</script>
+{% endblock %}

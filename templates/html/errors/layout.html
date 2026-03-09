@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+
+        <title>{% block title %}{% endblock %}</title>
+
+        {# vite assets removed: wire CSS/JS via Flask static #}
+
+        <style>
+            html, body {
+                background-color: #fff;
+                color: #636b6f;
+                font-family: var(--font-body, ui-sans-serif);
+                font-size: var(--font-size-base, 12px);
+                font-weight: 400;
+                height: 100vh;
+                margin: 0;
+            }
+
+            .full-height {
+                height: 100vh;
+            }
+
+            .flex-center {
+                align-items: center;
+                display: flex;
+                justify-content: center;
+            }
+
+            .position-ref {
+                position: relative;
+            }
+
+            .content {
+                text-align: center;
+            }
+
+            .title {
+                font-size: var(--font-size-5xl, 18px);
+                padding: 16px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="flex-center position-ref full-height">
+            <div class="content">
+                <div class="title">
+                    {% block message %}{% endblock %}
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

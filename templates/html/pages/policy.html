@@ -1,0 +1,17 @@
+﻿{% extends "html/layouts/app.html" %}
+
+{% block title %}Policy{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-body py-4">
+        <h1 class="h4 mb-2">Privacy Policy</h1>
+        <p class="text-muted mb-0">Please read the policy carefully.</p>
+        <hr>
+        <div class="policy-content">{{ policy | safe }}</div>
+    </div>
+</div>
+{% endblock %}
+
+
+

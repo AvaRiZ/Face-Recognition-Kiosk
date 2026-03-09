@@ -1,0 +1,122 @@
+﻿<!-- resources/views/authorization/roles-permissions/index.blade.php -->
+
+{% extends 'html/layouts/app.html' %}
+{% block content %}
+
+    <!-- Flash Message -->
+    {% include 'html/components/toasts.html' %}
+
+    <main id="main" class="main animate__animated animate__fadeIn">
+        <div class="pagetitle">
+            <h1>Roles & Permissions Management</h1>
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+            </nav>
+        </div>
+
+        <section class="section">
+            <form method="GET" action="{{ url_for('roles-permissions.index') }}" class="mb-4">
+                <div class="input-group">
+                    <input type="text" name="search" class="form-control" placeholder="Search roles or permissions..." value="{{ search ?? '' }}">
+                    <button class="btn btn-outline-danger" type="submit"><i class="bi bi-search"></i> Search</button>
+                </div>
+            </form>
+            <!-- Display Active Search as Pill (left-aligned) -->
+            {% if !empty(search %})
+                <div class="mb-2 d-flex justify-content-start">
+                    <span class="badge bg-danger d-flex align-items-center">
+                        {{ search }}
+                        <a href="{{ route('roles-permissions.index', request().except('search')) }}" class="ms-2 text-white text-decoration-none">&times;</a>
+                    </span>
+                </div>
+            {% endif %}
+            <div class="row">
+                <!-- Permissions Section -->
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h5 class="card-title mb-0">Permissions</h5>
+                                <a href="{{ url_for('roles-permissions.create-permission') }}" class="btn btn-outline-danger btn-sm">
+                                    <i class="bi bi-plus-circle"></i> Create Permission
+                                </a>
+                            </div>
+
+                            <div class="table-responsive">
+                                <table class="table table-hover table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Permission Name</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for permission in permissions %}
+                                            <tr style="cursor: pointer;" onclick="window.location.href='{{ route('roles-permissions.edit-permission', permission.id) }}'">
+                                                <td>{{ permission.name }}</td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- No pagination, display all permissions -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Roles Section -->
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h5 class="card-title mb-0">Roles</h5>
+                                <a href="{{ url_for('roles-permissions.create-role') }}" class="btn btn-outline-danger btn-sm">
+                                    <i class="bi bi-plus-circle"></i> Create Role
+                                </a>
+                            </div>
+
+                            <div class="table-responsive">
+                                <table class="table table-hover table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Role Name</th>
+                                            <th>Permissions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for role in roles %}
+                                            <tr style="cursor: pointer;" onclick="window.location.href='{{ route('roles-permissions.edit-role', role.id) }}'">
+                                                <td>{{ role.name }}</td>
+                                                <td>
+                                                    {% if role.permissions.count( %} > 0)
+                                                        <div class="d-flex flex-wrap gap-1">
+                                                            {% for role.permissions.take(3 %} as $permission)
+                                                                <span class="badge bg-primary">{{ permission.name }}</span>
+                                                            {% endfor %}
+                                                            {% if role.permissions.count( %} > 3)
+                                                                <span class="badge bg-secondary">+{{ role.permissions.count() - 3 }} more</span>
+                                                            {% endif %}
+                                                        </div>
+                                                    {% else %}
+                                                        <span class="text-muted">No permissions assigned</span>
+                                                    {% endif %}
+                                                </td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- No pagination, display all roles -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+{% endblock %}
+
+
+

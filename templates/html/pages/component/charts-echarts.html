@@ -1,0 +1,361 @@
+﻿{% extends 'html/layouts/app.html' %}
+{% block content %}
+    <main id="main" class="main animate__animated animate__fadeIn animate__fast">
+        <div class="pagetitle">
+            <h1>ECharts</h1>
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+            </nav>
+        </div>
+
+        <p>
+            ECharts Examples. You can check the
+            <a href="https://echarts.apache.org/examples/en/index.html" target="_blank">official website</a>
+            for more examples.
+        </p>
+
+        @php
+            $echartCards = [
+                [
+                    'title' => 'Line Chart',
+                    'id' => 'lineChart',
+                    'options' => [
+                        'xAxis' => [
+                            'type' => 'category',
+                            'data' => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                        ],
+                        'yAxis' => ['type' => 'value'],
+                        'series' => [
+                            [
+                                'data' => [150, 230, 224, 218, 135, 147, 260],
+                                'type' => 'line',
+                                'smooth' => true,
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Area Chart',
+                    'id' => 'areaChart',
+                    'options' => [
+                        'xAxis' => [
+                            'type' => 'category',
+                            'boundaryGap' => false,
+                            'data' => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                        ],
+                        'yAxis' => ['type' => 'value'],
+                        'series' => [
+                            [
+                                'data' => [820, 932, 901, 934, 1290, 1330, 1320],
+                                'type' => 'line',
+                                'smooth' => true,
+                                'areaStyle' => (object) [],
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Bar Chart',
+                    'id' => 'barChart',
+                    'options' => [
+                        'xAxis' => [
+                            'type' => 'category',
+                            'data' => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                        ],
+                        'yAxis' => ['type' => 'value'],
+                        'series' => [
+                            [
+                                'data' => [120, 200, 150, 80, 70, 110, 130],
+                                'type' => 'bar',
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Vertical Bar Chart',
+                    'id' => 'verticalBarChart',
+                    'options' => [
+                        'title' => ['text' => 'World Population'],
+                        'tooltip' => [
+                            'trigger' => 'axis',
+                            'axisPointer' => ['type' => 'shadow'],
+                        ],
+                        'legend' => (object) [],
+                        'grid' => [
+                            'left' => '3%',
+                            'right' => '4%',
+                            'bottom' => '3%',
+                            'containLabel' => true,
+                        ],
+                        'xAxis' => [
+                            'type' => 'value',
+                            'boundaryGap' => [0, 0.01],
+                        ],
+                        'yAxis' => [
+                            'type' => 'category',
+                            'data' => ['Brazil', 'Indonesia', 'USA', 'India', 'China', 'World'],
+                        ],
+                        'series' => [
+                            [
+                                'name' => '2011',
+                                'type' => 'bar',
+                                'data' => [18203, 23489, 29034, 104970, 131744, 630230],
+                            ],
+                            [
+                                'name' => '2012',
+                                'type' => 'bar',
+                                'data' => [19325, 23438, 31000, 121594, 134141, 681807],
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Pie Chart',
+                    'id' => 'pieChart',
+                    'options' => [
+                        'title' => [
+                            'text' => 'Referer of a Website',
+                            'subtext' => 'Fake Data',
+                            'left' => 'center',
+                        ],
+                        'tooltip' => ['trigger' => 'item'],
+                        'legend' => [
+                            'orient' => 'vertical',
+                            'left' => 'left',
+                        ],
+                        'series' => [
+                            [
+                                'name' => 'Access From',
+                                'type' => 'pie',
+                                'radius' => '50%',
+                                'data' => [
+                                    ['value' => 1048, 'name' => 'Search Engine'],
+                                    ['value' => 735, 'name' => 'Direct'],
+                                    ['value' => 580, 'name' => 'Email'],
+                                    ['value' => 484, 'name' => 'Union Ads'],
+                                    ['value' => 300, 'name' => 'Video Ads'],
+                                ],
+                                'emphasis' => [
+                                    'itemStyle' => [
+                                        'shadowBlur' => 10,
+                                        'shadowOffsetX' => 0,
+                                        'shadowColor' => 'rgba(0, 0, 0, 0.5)',
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Donut Chart',
+                    'id' => 'donutChart',
+                    'options' => [
+                        'tooltip' => ['trigger' => 'item'],
+                        'legend' => [
+                            'top' => '5%',
+                            'left' => 'center',
+                        ],
+                        'series' => [
+                            [
+                                'name' => 'Access From',
+                                'type' => 'pie',
+                                'radius' => ['40%', '70%'],
+                                'avoidLabelOverlap' => false,
+                                'label' => [
+                                    'show' => false,
+                                    'position' => 'center',
+                                ],
+                                'emphasis' => [
+                                    'label' => [
+                                        'show' => true,
+                                        'fontSize' => '18',
+                                        'fontWeight' => 'bold',
+                                    ],
+                                ],
+                                'labelLine' => ['show' => false],
+                                'data' => [
+                                    ['value' => 1048, 'name' => 'Search Engine'],
+                                    ['value' => 735, 'name' => 'Direct'],
+                                    ['value' => 580, 'name' => 'Email'],
+                                    ['value' => 484, 'name' => 'Union Ads'],
+                                    ['value' => 300, 'name' => 'Video Ads'],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Radar Chart',
+                    'id' => 'radarChart',
+                    'options' => [
+                        'legend' => [
+                            'data' => ['Allocated Budget', 'Actual Spending'],
+                        ],
+                        'radar' => [
+                            'indicator' => [
+                                ['name' => 'Sales', 'max' => 6500],
+                                ['name' => 'Administration', 'max' => 16000],
+                                ['name' => 'Information Technology', 'max' => 30000],
+                                ['name' => 'Customer Support', 'max' => 38000],
+                                ['name' => 'Development', 'max' => 52000],
+                                ['name' => 'Marketing', 'max' => 25000],
+                            ],
+                        ],
+                        'series' => [
+                            [
+                                'name' => 'Budget vs spending',
+                                'type' => 'radar',
+                                'data' => [
+                                    [
+                                        'value' => [4200, 3000, 20000, 35000, 50000, 18000],
+                                        'name' => 'Allocated Budget',
+                                    ],
+                                    [
+                                        'value' => [5000, 14000, 28000, 26000, 42000, 21000],
+                                        'name' => 'Actual Spending',
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Polar Area Chart',
+                    'id' => 'polarAreaChart',
+                    'options' => [
+                        'angleAxis' => [
+                            'type' => 'category',
+                            'data' => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                        ],
+                        'radiusAxis' => (object) [],
+                        'polar' => (object) [],
+                        'series' => [
+                            [
+                                'type' => 'bar',
+                                'data' => [1, 2, 3, 4, 3, 5, 1],
+                                'coordinateSystem' => 'polar',
+                                'name' => 'A',
+                                'stack' => 'a',
+                                'emphasis' => ['focus' => 'series'],
+                            ],
+                            [
+                                'type' => 'bar',
+                                'data' => [2, 4, 6, 1, 3, 2, 1],
+                                'coordinateSystem' => 'polar',
+                                'name' => 'B',
+                                'stack' => 'a',
+                                'emphasis' => ['focus' => 'series'],
+                            ],
+                            [
+                                'type' => 'bar',
+                                'data' => [1, 2, 3, 4, 1, 2, 5],
+                                'coordinateSystem' => 'polar',
+                                'name' => 'C',
+                                'stack' => 'a',
+                                'emphasis' => ['focus' => 'series'],
+                            ],
+                        ],
+                        'legend' => [
+                            'show' => true,
+                            'data' => ['A', 'B', 'C'],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Candle Stick Chart',
+                    'id' => 'candleStickChart',
+                    'options' => [
+                        'xAxis' => [
+                            'data' => ['2017-10-24', '2017-10-25', '2017-10-26', '2017-10-27'],
+                        ],
+                        'yAxis' => (object) [],
+                        'series' => [
+                            [
+                                'type' => 'candlestick',
+                                'data' => [
+                                    [20, 34, 10, 38],
+                                    [40, 35, 30, 50],
+                                    [31, 38, 33, 44],
+                                    [38, 15, 5, 42],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'title' => 'Bubble Chart',
+                    'id' => 'bubbleChart',
+                    'options' => [
+                        'legend' => [
+                            'right' => '10%',
+                            'top' => '3%',
+                            'data' => ['1990', '2015'],
+                        ],
+                        'grid' => [
+                            'left' => '8%',
+                            'top' => '10%',
+                        ],
+                        'xAxis' => [
+                            'splitLine' => [
+                                'lineStyle' => ['type' => 'dashed'],
+                            ],
+                        ],
+                        'yAxis' => [
+                            'splitLine' => [
+                                'lineStyle' => ['type' => 'dashed'],
+                            ],
+                            'scale' => true,
+                        ],
+                        'series' => [
+                            [
+                                'name' => '1990',
+                                'type' => 'scatter',
+                                'symbolSize' => 18,
+                                'data' => [
+                                    [28604, 77, 17096869, 'Australia', 1990],
+                                    [31163, 77.4, 27662440, 'Canada', 1990],
+                                    [1516, 68, 1154605773, 'China', 1990],
+                                    [13670, 74.7, 10582082, 'Cuba', 1990],
+                                    [37062, 75.4, 252847810, 'United States', 1990],
+                                ],
+                                'itemStyle' => ['color' => 'rgb(251, 118, 123)'],
+                            ],
+                            [
+                                'name' => '2015',
+                                'type' => 'scatter',
+                                'symbolSize' => 18,
+                                'data' => [
+                                    [44056, 81.8, 23968973, 'Australia', 2015],
+                                    [43294, 81.7, 35939927, 'Canada', 2015],
+                                    [13334, 76.9, 1376048943, 'China', 2015],
+                                    [21291, 78.5, 11389562, 'Cuba', 2015],
+                                    [53354, 79.1, 321773631, 'United States', 2015],
+                                ],
+                                'itemStyle' => ['color' => 'rgb(129, 227, 238)'],
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+        @endphp
+
+        <section class="section">
+            <div class="row">
+                {% for chart in echartCards %}
+                    <div class="col-lg-6">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">{{ chart['title'] }}</h5>
+                                <x-echart :id="$chart['id']" :options="$chart['options']" />
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        </section>
+    </main>
+{% endblock %}
+
+
+

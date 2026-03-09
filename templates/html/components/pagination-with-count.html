@@ -1,0 +1,31 @@
+﻿@props(['pagination'])
+
+<div class="d-flex justify-content-lg-between flex-xl-row flex-lg-row align-items-center align-self-center my-1">
+    <!-- Pagination Links -->
+    <div class="pt-3" id="pagination-links">
+        {{ pagination.links() }}
+    </div>
+
+    <!-- Display current count out of total -->
+    <div class="text-muted">
+        <small>Showing {{ pagination.count() }} out of {{ pagination.total() }} entries
+        </small>
+    </div>
+</div>
+
+<!-- Include the loading component -->
+{% include 'html/components/loading.html' %}
+
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        document.addEventListener("click", function(event) {
+            let paginationLink = event.target.closest(".pagination a"); // Find nearest pagination link
+            if (paginationLink) {
+                showLoading(); // Show loading overlay
+            }
+        });
+    });
+</script>
+
+
+

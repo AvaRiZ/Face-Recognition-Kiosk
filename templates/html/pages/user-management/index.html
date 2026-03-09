@@ -1,0 +1,106 @@
+﻿<!-- resources/views/pages/user-management/index.blade.php -->
+
+{% extends 'html/layouts/app.html' %}
+{% block content %}
+
+    <!-- Flash Message -->
+    {% include 'html/components/toasts.html' %}
+
+    <main id="main" class="main animate__animated animate__fadeIn">
+        <div class="pagetitle">
+            <h1>User List</h1>
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+            </nav>
+        </div>
+
+        <section class="section">
+            <div class="row d-flex justify-content-center">
+                <div class="col-lg-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">Users</h5>
+
+                            <!-- Search Row -->
+                            <div class="d-flex justify-content-between flex-column flex-md-row align-items-start">
+                                <!-- Search Form -->
+                                <form class="mb-3 me-4" method="GET" action="{{ url_for('users.index') }}">
+                                    <div class="input-group">
+                                        <input type="text" name="query" class="form-control" placeholder="Search"
+                                            title="Enter search keyword" value="{{ request('query') }}">
+                                        <button type="submit" class="btn btn-danger" title="Search">
+                                            <i class="bi bi-search"></i>
+                                        </button>
+                                    </div>
+                                </form>
+
+                                <div class="d-flex gap-2 align-items-start">
+                                    {# @hasanyrole('admin|superadmin|manager') #}
+                                        <!-- Add User Button -->
+                                        <a href="{{ url_for('users.create') }}" class="btn btn-outline-danger btn-sm">
+                                            <i class="bi bi-plus"></i> Add User
+                                        </a>
+                                    {# @endhasanyrole #}
+                                </div>
+                            </div>
+
+                            <!-- User Table -->
+                            <x-table-responsive tableClass="table table-hover table-sm">
+                                @slot('thead')
+                                    <th>Username</th>
+                                    <th>Email</th>
+                                    <th>Role</th>
+                                    <th>Campus</th>
+                                    <th>Status</th>
+                                @endslot
+
+                                @slot('tbody')
+                                    {% if users.isEmpty( %})
+                                        <tr>
+                                            <td colspan="5" class="text-center text-muted">
+                                                {# No results found for "{{ request('query') }}" #}
+                                                No results found
+                                            </td>
+                                        </tr>
+                                    {% else %}
+                                        {% for user in users %}
+                                            <tr style="cursor: pointer;"
+                                                onclick="window.location='{{ route('users.edit', user.id) }}';">
+                                                <td>{{ user.name }}</td>
+                                                <td>{{ user.email }}</td>
+                                                <td>{{ user.roles.pluck('name').join(', ') }}</td>
+                                                <td>
+                                                    {% if user.campuses && user.campuses.count( %})
+                                                        {{ user.campuses.pluck('name').join(', ') }}
+                                                    {% else %}
+                                                        <span class="text-muted">-</span>
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    <span class="badge bg-{{ user.is_active ? 'success' : 'danger' }}">
+                                                        {{ user.is_active ? 'Active' : 'Inactive' }}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        {% endfor %}
+                                    {% endif %}
+                                @endslot
+                            </x-table-responsive>
+
+                            <!-- Pagination -->
+                            {% if users.isNotEmpty( %})
+                                <x-pagination-with-count :pagination="$users" />
+                            {% endif %}
+
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+{% endblock %}
+
+
+

@@ -1,0 +1,95 @@
+@props([
+    'id',
+    'options' => [],
+    'height' => '400px',
+])
+
+@php
+    $echartConfig = [
+        'options' => $options,
+    ];
+    $chartHeight = is_numeric($height) ? $height . 'px' : $height;
+@endphp
+
+<div {{ attributes }}>
+    <div id="{{ id }}" style="min-height: {{ chartHeight }};" class="echart"></div>
+</div>
+
+<script type="application/json" id="{{ id }}-echart-config" data-echart-config data-chart-id="{{ id }}">
+    @json($echartConfig)
+</script>
+
+@once
+    <script>
+        (function() {
+            window.__bladeCharts = window.__bladeCharts || {
+                apex: {},
+                chartjs: {},
+                echarts: {}
+            };
+
+            window.renderEchartBladeChart = function(chartId) {
+                var target = document.getElementById(chartId);
+                var configNode = document.getElementById(chartId + '-echart-config');
+
+                if (!target || !configNode || !window.echarts) {
+                    return;
+                }
+
+                var payload = {};
+                try {
+                    payload = JSON.parse(configNode.textContent || '{}');
+                } catch (error) {
+                    return;
+                }
+
+                if (window.__bladeCharts.echarts[chartId]) {
+                    window.__bladeCharts.echarts[chartId].dispose();
+                }
+
+                window.__bladeCharts.echarts[chartId] = window.echarts.init(target);
+                window.__bladeCharts.echarts[chartId].setOption(payload.options || {}, true);
+            };
+
+            window.initEchartBladeCharts = function() {
+                document.querySelectorAll('[data-echart-config]').forEach(function(config) {
+                    window.renderEchartBladeChart(config.dataset.chartId);
+                });
+            };
+
+            if (!window.__echartBladeChartsHooksBound) {
+                window.__echartBladeChartsHooksBound = true;
+
+                document.addEventListener('DOMContentLoaded', window.initEchartBladeCharts);
+                document.addEventListener('livewire:navigated', window.initEchartBladeCharts);
+                document.addEventListener('livewire:load', window.initEchartBladeCharts);
+
+                var bindEchartLivewireHooks = function() {
+                    if (window.Livewire && typeof window.Livewire.hook === 'function') {
+                        window.Livewire.hook('message.processed', function() {
+                            window.initEchartBladeCharts();
+                        });
+                    }
+                };
+
+                bindEchartLivewireHooks();
+                document.addEventListener('livewire:init', bindEchartLivewireHooks);
+
+                window.addEventListener('resize', function() {
+                    Object.keys(window.__bladeCharts.echarts).forEach(function(chartId) {
+                        var chart = window.__bladeCharts.echarts[chartId];
+                        if (chart && typeof chart.resize === 'function') {
+                            chart.resize();
+                        }
+                    });
+                });
+            }
+        })();
+    </script>
+@endonce
+
+<script>
+    if (typeof window.renderEchartBladeChart === 'function') {
+        window.renderEchartBladeChart(@json($id));
+    }
+</script>

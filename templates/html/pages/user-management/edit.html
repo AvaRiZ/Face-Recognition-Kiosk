@@ -1,0 +1,135 @@
+﻿<!-- resources/views/pages/user-management/edit.blade.php -->
+
+{% extends 'html/layouts/app.html' %}
+{% block content %}
+    {% include 'html/components/toasts.html' %}
+
+    <main id="main" class="main animate__animated animate__fadeIn">
+        <div class="pagetitle">
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+            </nav>
+        </div>
+
+        <section class="section">
+            <div class="row d-flex justify-content-center">
+                <div class="col-lg-8 mx-auto">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">Edit User</h5>
+
+                            <form action="{{ route('users.update', user.id) }}" method="POST"
+                                enctype="multipart/form-data">
+                                {# csrf token handled by Flask-WTF if enabled #}
+                                
+
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label for="name" class="form-label">Name</label>
+                                            <input type="text" class="form-control" id="name" name="name"
+                                                value="{{ old('name', user.name) }}" required>
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label for="username" class="form-label">Username</label>
+                                            <input type="text" class="form-control" id="username" name="username"
+                                                value="{{ old('username', user.username) }}" required>
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label for="email" class="form-label">Email</label>
+                                            <input type="email" class="form-control" id="email" name="email"
+                                                value="{{ old('email', user.email) }}" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label for="campuses" class="form-label">Campus</label>
+                                            <select class="form-select" id="campuses" name="campuses[]" multiple required>
+                                                {% for campus in campuses %}
+                                                    <option value="{{ campus.id }}" {{ (collect(old('campuses', user.campuses.pluck('id') ?? [])).contains(campus.id)) ? 'selected' : '' }}>{{ campus.name }}</option>
+                                                {% endfor %}
+                                            </select>
+                                            <div class="form-text">Hold Ctrl (Windows) or Command (Mac) to select multiple campuses.</div>
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label for="roles" class="form-label">Roles</label>
+                                            <select class="form-select" id="roles" name="roles[]" multiple required>
+                                                {% for role in roles %}{% set id = loop.index0 %}
+                                                    <option value="{{ id }}" {{ (collect(old('roles', user.roles.pluck('id') ?? [])).contains(id)) ? 'selected' : '' }}>{{ role }}</option>
+                                                {% endfor %}
+                                            </select>
+                                            <div class="form-text">Hold Ctrl (Windows) or Command (Mac) to select multiple roles.</div>
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label for="profile_picture" class="form-label">Profile Picture</label>
+                                            <input type="file" class="form-control" id="profile_picture"
+                                                name="profile_picture">
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label for="password" class="form-label">Password (leave blank to keep current)</label>
+                                            <input type="password" class="form-control" id="password" name="password">
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label for="password_confirmation" class="form-label">Confirm Password</label>
+                                            <input type="password" class="form-control" id="password_confirmation"
+                                                name="password_confirmation">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="text-center">
+                                    <button type="submit" class="btn btn-primary">Update User</button>
+                                    <a href="{{ url_for('users.index') }}" class="btn btn-secondary">Cancel</a>
+
+                                    {% if auth( %}->id() !== $user->id || !$user->hasAnyRole(['Admin', 'Superadmin']))
+                                        <!-- Delete User Button -->
+                                        <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal"
+                                            data-bs-target="#deleteUserModal">
+                                            Delete
+                                        </button>
+                                    {% endif %}
+                                </div>
+                            </form>
+
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal fade" id="deleteUserModal" tabindex="-1" aria-labelledby="deleteUserModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form action="{{ route('users.destroy', user.id) }}" method="POST">
+                    {# csrf token handled by Flask-WTF if enabled #}
+                    
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="deleteUserModalLabel">Confirm Delete</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"
+                            aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        Are you sure you want to delete <strong>{{ user.name }}</strong>? This action cannot be undone.
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-danger">Yes, Delete</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+
+
+

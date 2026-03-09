@@ -1,0 +1,162 @@
+{% extends "html/layouts/app.html" %}
+{% block title %}Registered Profiles{% endblock %}
+{% block content %}
+
+
+<div class="pagetitle">
+    <h1>Registered Profiles</h1>
+    <nav>
+        <ol class="breadcrumb mb-0">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin_routes.dashboard_page') }}">Home</a></li>
+            <li class="breadcrumb-item active">Registered Profiles</li>
+        </ol>
+    </nav>
+</div>
+
+<section class="section">
+    <div class="card mb-3 profiles-toolbar">
+        <div class="card-body">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <div class="input-group" style="max-width: 520px; width: 100%;">
+                        <input id="profileSearch" type="text" class="form-control" placeholder="Search Name">
+                        <button class="btn btn-danger" type="button"><i class="bi bi-search"></i></button>
+                </div>
+                <div class="d-flex flex-wrap justify-content-lg-end gap-2 ms-lg-auto">
+                    <button class="btn btn-outline-secondary" type="button">
+                        <i class="bi bi-archive me-1"></i>Archive
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Registered Profile List</h5>
+            <div class="row g-2 mb-3">
+                <div class="col-auto">
+                    <select id="pageSize" class="form-select">
+                        <option value="10" selected>10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <select id="sortBy" class="form-select">
+                        <option value="name_asc">Sort By: Name A-Z</option>
+                        <option value="name_desc">Sort By: Name Z-A</option>
+                        <option value="created_desc">Sort By: Newest</option>
+                        <option value="created_asc">Sort By: Oldest</option>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <select id="courseFilter" class="form-select">
+                        <option value="">All Courses</option>
+                        {% for _, _, _, course, _, _ in profile_rows %}
+                        {% if course %}
+                        <option value="{{ course }}">{{ course }}</option>
+                        {% endif %}
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Name</th>
+                            <th>SR Code</th>
+                            <th>Course</th>
+                            <th>Created</th>
+                            <th>Last Updated</th>
+                            <th class="text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="profileTableBody">
+                        {% for user_id, name, sr_code, course, created_at, last_updated in profile_rows %}
+                        <tr>
+                            <td>{{ loop.index }}</td>
+                            <td>{{ name or '-' }}</td>
+                            <td>{{ sr_code or '-' }}</td>
+                            <td>{{ course or '-' }}</td>
+                            <td>{{ created_at or '-' }}</td>
+                            <td>{{ last_updated or '-' }}</td>
+                            <td class="text-center">
+                                <button type="button" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="7" class="text-center text-muted">No registered profiles found.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="small text-muted mt-2" id="profileCountText"></div>
+        </div>
+    </div>
+</section>
+
+<script>
+    (function () {
+        const tableBody = document.getElementById("profileTableBody");
+        if (!tableBody) return;
+
+        const searchInput = document.getElementById("profileSearch");
+        const pageSizeSelect = document.getElementById("pageSize");
+        const sortBySelect = document.getElementById("sortBy");
+        const courseFilter = document.getElementById("courseFilter");
+        const countText = document.getElementById("profileCountText");
+
+        const rows = Array.from(tableBody.querySelectorAll("tr")).filter(r => r.children.length > 1);
+        if (!rows.length) return;
+
+        const rowData = rows.map((row, idx) => ({
+            row,
+            index: idx + 1,
+            name: row.children[1].textContent.trim(),
+            srCode: row.children[2].textContent.trim(),
+            course: row.children[3].textContent.trim(),
+            created: row.children[4].textContent.trim()
+        }));
+
+        function applyFilters() {
+            const searchValue = (searchInput.value || "").toLowerCase();
+            const selectedCourse = courseFilter.value || "";
+            const sortBy = sortBySelect.value;
+            const pageSize = parseInt(pageSizeSelect.value || "10", 10);
+
+            let filtered = rowData.filter(item => {
+                const nameMatch = item.name.toLowerCase().includes(searchValue);
+                const courseMatch = !selectedCourse || item.course === selectedCourse;
+                return nameMatch && courseMatch;
+            });
+
+            if (sortBy === "name_asc") filtered.sort((a, b) => a.name.localeCompare(b.name));
+            if (sortBy === "name_desc") filtered.sort((a, b) => b.name.localeCompare(a.name));
+            if (sortBy === "created_desc") filtered.sort((a, b) => b.created.localeCompare(a.created));
+            if (sortBy === "created_asc") filtered.sort((a, b) => a.created.localeCompare(b.created));
+
+            tableBody.innerHTML = "";
+
+            filtered.slice(0, pageSize).forEach((item, idx) => {
+                item.row.children[0].textContent = String(idx + 1);
+                tableBody.appendChild(item.row);
+            });
+
+            countText.textContent = `${Math.min(filtered.length, pageSize)} of ${filtered.length} profiles shown`;
+        }
+
+        searchInput.addEventListener("input", applyFilters);
+        pageSizeSelect.addEventListener("change", applyFilters);
+        sortBySelect.addEventListener("change", applyFilters);
+        courseFilter.addEventListener("change", applyFilters);
+        applyFilters();
+    })();
+</script>
+{% endblock %}

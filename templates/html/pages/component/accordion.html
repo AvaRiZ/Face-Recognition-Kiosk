@@ -1,0 +1,63 @@
+﻿{% extends 'html/layouts/app.html' %}
+{% block content %}
+
+    <main id="main" class="main animate__animated animate__fadeIn animate__fast">
+        <div class="pagetitle">
+            <h1>Accordion</h1>
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+            </nav>
+        </div>
+        <section class="section">
+            <div class="row">
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">Default Accordion</h5>
+                            <x-default-accordion :parentId="'accordionExample'" :items="[
+                                [
+                                    'title' => 'Accordion Item #1',
+                                    'content' => 'This is the first item\'s accordion body.',
+                                ],
+                                [
+                                    'title' => 'Accordion Item #2',
+                                    'content' => 'This is the second item\'s accordion body.',
+                                ],
+                                [
+                                    'title' => 'Accordion Item #3',
+                                    'content' => 'This is the third item\'s accordion body.',
+                                ],
+                            ]" />
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">Accordion without outline borders</h5>
+                            <x-flush-accordion :parentId="'accordionFlushExample'" :items="[
+                                [
+                                    'title' => 'Accordion Item #1',
+                                    'content' => 'This is the first item\'s accordion body.',
+                                ],
+                                [
+                                    'title' => 'Accordion Item #2',
+                                    'content' => 'This is the second item\'s accordion body.',
+                                ],
+                                [
+                                    'title' => 'Accordion Item #3',
+                                    'content' => 'This is the third item\'s accordion body.',
+                                ],
+                            ]" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+{% endblock %}
+
+
+

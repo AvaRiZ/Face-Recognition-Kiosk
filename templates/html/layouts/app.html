@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta content="width=device-width, initial-scale=1.0" name="viewport">
+    <title>{% block title %}Library Admin{% endblock %}</title>
+
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='assets/img/bsu-neu-logo.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/css/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/css/bootstrap-icons.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/css/style.css') }}">
+</head>
+<body>
+    {% include 'html/layouts/header.html' %}
+    {% include 'html/layouts/sidebar.html' %}
+
+    <main id="main" class="main">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer id="footer" class="footer">
+        <div class="copyright">
+            <strong>Batangas State University The National Engineering University</strong>
+        </div>
+    </footer>
+
+    <script src="{{ url_for('static', filename='assets/js/bootstrap.bundle.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='assets/js/main.js') }}"></script>
+</body>
+</html>
+

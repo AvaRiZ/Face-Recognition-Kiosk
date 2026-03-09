@@ -1,0 +1,74 @@
+﻿<!-- resources/views/authorization/roles-permissions/edit-permission.blade.php -->
+
+{% extends 'html/layouts/app.html' %}
+{% block content %}
+
+    <!-- Flash Message -->
+    {% include 'html/components/toasts.html' %}
+
+    <main id="main" class="main animate__animated animate__fadeIn">
+        <div class="pagetitle">
+            <h1>Edit Permission</h1>
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+            </nav>
+        </div>
+
+        <section class="section">
+            <div class="row d-flex justify-content-center">
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">Edit Permission: {{ permission.name }}</h5>
+
+                            <form action="{{ route('roles-permissions.update-permission', permission.id) }}" method="POST">
+                                {# csrf token handled by Flask-WTF if enabled #}
+                                
+
+                                <div class="mb-3">
+                                    <label for="name" class="form-label">Permission Name</label>
+                                    <input type="text" class="form-control @error('name') is-invalid @enderror"
+                                           id="name" name="name" value="{{ old('name', permission.name) }}" required>
+                                    @error('name')
+                                        <div class="invalid-feedback">{{ message }}</div>
+                                    @enderror
+                                </div>
+
+                                <div class="d-flex gap-2">
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="bi bi-check-circle"></i> Update Permission
+                                    </button>
+                                    <a href="{{ url_for('roles-permissions.index') }}" class="btn btn-secondary">
+                                        <i class="bi bi-arrow-left"></i> Back to List
+                                    </a>
+                                    <button type="button" class="btn btn-danger" onclick="deletePermission()">
+                                        <i class="bi bi-trash"></i> Delete Permission
+                                    </button>
+                                </div>
+                            </form>
+
+                            <!-- Delete Form -->
+                            <form id="deleteForm" action="{{ route('roles-permissions.destroy-permission', permission.id) }}" method="POST" style="display: none;">
+                                {# csrf token handled by Flask-WTF if enabled #}
+                                
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        function deletePermission() {
+            if (confirm('Are you sure you want to delete the permission "{{ permission.name }}"? This action cannot be undone.')) {
+                document.getElementById('deleteForm').submit();
+            }
+        }
+    </script>
+
+{% endblock %}
+
+
+

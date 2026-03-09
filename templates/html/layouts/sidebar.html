@@ -1,0 +1,68 @@
+<aside id="sidebar" class="sidebar">
+  <ul class="sidebar-nav" id="sidebar-nav">
+    <li class="nav-item">
+      <a
+        class="nav-link {{ '' if request.path == url_for('admin_routes.dashboard_page') else 'collapsed' }}"
+        href="{{ url_for('admin_routes.dashboard_page') }}"
+      >
+        <i class="bi bi-grid"></i>
+        <span>Dashboard</span>
+      </a>
+    </li>
+
+<!-- SUPER_ADMIN AND LIBRARY_ADMIN ONLY LINKS -->
+    {% if current_role in ['super_admin', 'library_admin'] %}
+
+     <li class="nav-item">
+      <a
+        class="nav-link {{ '' if request.path == '/admin/registered-profiles' else 'collapsed' }}"
+        href="/admin/registered-profiles"
+      >
+        <i class="bi bi-people-fill"></i>
+        <span>Registered Profiles</span>
+      </a>
+    </li>
+
+    <li class="nav-item">
+      <a
+        class="nav-link {{ '' if request.path == url_for('admin_routes.route_list_page') else 'collapsed' }}"
+        href="{{ url_for('admin_routes.route_list_page') }}"
+      >
+        <i class="bi bi-diagram-3"></i>
+        <span>Route List</span>
+      </a>
+    </li>
+
+    <li class="nav-item">
+      <a
+        class="nav-link {{ '' if request.path == url_for('admin_routes.policy_page') else 'collapsed' }}"
+        href="{{ url_for('admin_routes.policy_page') }}"
+      >
+        <i class="bi bi-shield-check"></i>
+        <span>Policy</span>
+      </a>
+    </li>
+
+    {% endif %} 
+    
+    <!-- SUPER_ADMIN-ONLY LINKS -->
+    {% if current_role == 'super_admin' %}
+    <li class="nav-item">
+      <a
+        class="nav-link {{ '' if request.path == url_for('admin_routes.settings') else 'collapsed' }}"
+        href="{{ url_for('admin_routes.settings') }}"
+      >
+        <i class="bi bi-gear"></i>
+        <span>Settings</span>
+      </a>
+    </li>
+    {% endif %}
+
+    <li class="nav-item">
+      <a class="nav-link collapsed" href="{{ url_for('kiosk') }}">
+        <i class="bi bi-camera-video"></i>
+        <span>Public Kiosk</span>
+      </a>
+    </li>
+  </ul>
+</aside>

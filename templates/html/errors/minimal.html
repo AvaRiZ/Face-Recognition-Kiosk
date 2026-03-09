@@ -1,0 +1,35 @@
+﻿{% include 'html/layouts/head.html' %}
+
+<style>
+    main {
+        content: "";
+        position: absolute;
+        background: url("/assets/img/background.jpg") no-repeat center center;
+        background-size: cover;
+        height: 100%;
+        width: 100%;
+    }
+</style>
+
+<main class="animate__animated animate__fadeIn animate__fast">
+    <div class="container">
+        <section class="section error-404 min-vh-100 d-flex flex-column align-items-center justify-content-center">
+            <h1 class="animate__animated animate__hinge animate__slower animate__delay-1s	1s">
+                {% block code %}{% endblock %}
+            </h1>
+            <h2>
+                {% block message %}{% endblock %}
+            </h2>
+            <a class="btn animate__animated animate__rubberBand animate__slow animate__infinite infinite animate__delay-5s	5s mb-3"
+                href="{{ url_for('login') }}">Back to home</a>
+            {# <img src="assets/img/not-found.svg" class="img-fluid py-5" alt="Page Not Found"> #}
+            <div class="credits animate__animated animate__fadeInUpBig animate__slow"> ICT Services | <a
+                    href="https://batstate-u.edu.ph/">BatStateU</a></div>
+        </section>
+    </div>
+</main>
+
+{% include 'html/layouts/scripts.html' %}
+
+
+

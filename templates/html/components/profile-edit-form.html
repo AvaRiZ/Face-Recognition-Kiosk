@@ -1,0 +1,63 @@
+@php
+    use Spatie\Permission\Models\Role;
+    $roles = Role::all();
+@endphp
+
+<form method="POST" action="{{ url_for('profile.update') }}" class="mt-4">
+    {# csrf token handled by Flask-WTF if enabled #}
+    <input type="hidden" name="_method" value="PATCH">
+
+    {% if errors.any( %})
+        <div class="alert alert-danger mb-3">
+            <ul class="mb-0">
+                {% for errors.all( %} as $error)
+                    <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
+    <div class="mb-3">
+        <label for="name" class="form-label">{{ __('Name') }}</label>
+        <input id="name" name="name" type="text" class="form-control" value="{{ old('name', user.name) }}" required autofocus autocomplete="name">
+        @error('name')
+            <div class="text-danger mt-2">{{ message }}</div>
+        @enderror
+    </div>
+
+    <div class="mb-3">
+        <label for="email" class="form-label">{{ __('Email') }}</label>
+        <input id="email" name="email" type="email" class="form-control" value="{{ old('email', user.email) }}" required autocomplete="username">
+        @error('email')
+            <div class="text-danger mt-2">{{ message }}</div>
+        @enderror
+    </div>
+
+    {% if user.canEditRoles( %})
+        <div class="mb-3">
+            <label for="roles" class="form-label">{{ __('Roles') }}</label>
+            <select id="roles" name="roles[]" class="form-select" multiple>
+                {% for role in roles %}
+                    <option value="{{ role.id }}" {{ user.hasRole(role) ? 'selected' : '' }}>
+                        {{ ucfirst(role.name) }}
+                    </option>
+                {% endfor %}
+            </select>
+            <div class="form-text">Hold Ctrl (Windows) or Command (Mac) to select multiple roles.</div>
+            @error('roles')
+                <div class="text-danger mt-2">{{ message }}</div>
+            @enderror
+        </div>
+    {% endif %}
+
+    <div class="d-flex justify-content-end">
+        {% if session('status' %} === 'profile-updated')
+            <div class="alert alert-success me-3 mb-0">
+                {{ __('Saved.') }}
+            </div>
+        {% endif %}
+        <button type="submit" class="btn btn-primary">
+            {{ __('Save') }}
+        </button>
+    </div>
+</form>

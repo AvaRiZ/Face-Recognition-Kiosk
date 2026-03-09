@@ -1,0 +1,8 @@
+@props(['user'])
+
+@php
+	$roles = $user?->getRoleNames();
+	$rolesLabel = $roles && $roles->isNotEmpty() ? $roles->join(', ') : 'No role assigned';
+@endphp
+
+<span>{{ rolesLabel }}</span>

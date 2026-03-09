@@ -1,0 +1,25 @@
+﻿{% extends 'html/layouts/app.html' %}
+{% block content %}
+
+    <main id="main" class="main animate__animated animate__fadeIn">
+        <div class="pagetitle">
+            <nav>
+                {% include 'html/components/breadcrumb.html' %}
+                
+                </ol>
+            </nav>
+        </div>
+        <section class="section">
+            <div class="row d-flex justify-content-center">
+                <div class="col-lg-6">
+                    <livewire:users-edit />
+                </div>
+            </div>
+        </section>
+    </main>
+    <!-- End #main -->
+
+{% endblock %}
+
+
+

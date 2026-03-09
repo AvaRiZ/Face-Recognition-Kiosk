@@ -1,4 +1,4 @@
-from flask import Flask, render_template, Response, request, redirect, url_for
+from flask import Flask, render_template, Response, request, redirect, url_for, session
 import cv2
 from ultralytics import YOLO
 import os
@@ -9,11 +9,28 @@ from deepface import DeepFace
 import pickle
 from collections import deque
 import statistics
+from auth import (
+    init_auth_db,
+    login_required,
+    role_required,
+)
+from routes.admin_routes import create_admin_blueprint
+from routes.auth_routes import create_auth_blueprint
+from routes.profile_routes import create_profile_blueprint
+from services.face_service import (
+    init_db,
+    load_all_embeddings,
+    log_recognition,
+    render_markdown_as_html,
+    save_user_with_multiple_embeddings,
+)
+from services.staff_service import ensure_profile_upload_dir, save_profile_image
 
 # -------------------------------
 # Flask app
 # -------------------------------
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-change-this-secret-key")
 
 # -------------------------------
 # YOLOv8M model
@@ -32,129 +49,24 @@ print(f"Using DeepFace with {CURRENT_MODEL} model")
 # -------------------------------
 # Database setup (SQLite) with improved schema
 # -------------------------------
-DB_PATH = "databse/faces_improved.db"
+DB_PATH = "database/faces_improved.db"
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            sr_code TEXT UNIQUE,
-            course TEXT,
-            embeddings BLOB NOT NULL,  -- Multiple embeddings per user
-            image_paths TEXT NOT NULL,  -- Multiple image paths
-            embedding_dim INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Create recognition history table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS recognition_log (
-            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            confidence REAL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-def save_user_with_multiple_embeddings(embeddings_list, image_paths, name, sr_code, course):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Check if SR code already exists
-    c.execute("SELECT user_id FROM users WHERE sr_code = ?", (sr_code,))
-    existing = c.fetchone()
-    
-    if existing:
-        print(f"User with SR Code {sr_code} already exists. Updating...")
-        user_id = existing[0]
-        
-        # Load existing embeddings
-        c.execute("SELECT embeddings FROM users WHERE user_id = ?", (user_id,))
-        existing_emb_blob = c.fetchone()[0]
-        if existing_emb_blob:
-            existing_embeddings = pickle.loads(existing_emb_blob)
-            all_embeddings = existing_embeddings + embeddings_list
-        else:
-            all_embeddings = embeddings_list
-        
-        # Update with new embeddings
-        embeddings_blob = pickle.dumps(all_embeddings)
-        c.execute("""
-            UPDATE users 
-            SET name = ?, course = ?, embeddings = ?, image_paths = ?, 
-                embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-        """, (name, course, embeddings_blob, ';'.join(image_paths), len(embeddings_list[0]), user_id))
-    else:
-        # Save new user with multiple embeddings
-        embeddings_blob = pickle.dumps(embeddings_list)
-        embedding_dim = len(embeddings_list[0])
-        c.execute("""
-            INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim) 
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (name, sr_code, course, embeddings_blob, ';'.join(image_paths), embedding_dim))
-        user_id = c.lastrowid
-    
-    conn.commit()
-    conn.close()
-    print(f"✓ User saved/updated with ID: {user_id} ({len(embeddings_list)} embeddings)")
-    return user_id
-
-def load_all_embeddings():
-    """Load all embeddings for all users"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT user_id, name, sr_code, embeddings FROM users")
-    rows = c.fetchall()
-    conn.close()
-    
-    all_embeddings = []
-    user_info = []
-    
-    for user_id, name, sr_code, emb_blob in rows:
-        if emb_blob:
-            embeddings_list = pickle.loads(emb_blob)
-            all_embeddings.append(embeddings_list)  # List of embeddings per user
-            user_info.append({
-                'id': user_id,
-                'name': name,
-                'sr_code': sr_code
-            })
-    
-    print(f"Loaded {len(all_embeddings)} users with embeddings")
-    return all_embeddings, user_info
-
-def log_recognition(user_id, confidence):
-    """Log recognition events for analysis"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO recognition_log (user_id, confidence) VALUES (?, ?)",
-              (user_id, confidence))
-    conn.commit()
-    conn.close()
 
 # -------------------------------
 # Setup directories
 # -------------------------------
 BASE_SAVE_DIR = "faces_improved"
 os.makedirs(BASE_SAVE_DIR, exist_ok=True)
+ensure_profile_upload_dir()
 
 # -------------------------------
 # Initialize database
 # -------------------------------
-init_db()
+init_db(DB_PATH)
+init_auth_db()
 
 # Load existing embeddings
-all_user_embeddings, user_info = load_all_embeddings()
+all_user_embeddings, user_info = load_all_embeddings(DB_PATH)
 user_count = len(user_info)
 
 # -------------------------------
@@ -390,7 +302,7 @@ class FaceRecognitionSystem:
                 self.recognition_history[user_info[best_user_idx]['id']].append(confidence)
 
                 # Log successful recognition
-                log_recognition(user_info[best_user_idx]['id'], confidence)
+                log_recognition(DB_PATH, user_info[best_user_idx]['id'], confidence)
 
         return best_match, all_distances
 
@@ -491,7 +403,7 @@ def register_or_recognize_face(face_crop, face_id=None):
         conn.commit()
         conn.close()
 
-        print(f"✓ Learned new embedding for {best_match['user_info']['name']} "
+        print(f"âœ“ Learned new embedding for {best_match['user_info']['name']} "
               f"(total: {len(all_user_embeddings[user_idx])} embeddings)")
 
         # Recognized user
@@ -502,7 +414,7 @@ def register_or_recognize_face(face_crop, face_id=None):
             'confidence': f"{best_match['confidence']:.2%}",
             'distance': f"{best_match['distance']:.4f}"
         }
-        print(f"✓ Recognized: {recognized_user['name']} "
+        print(f"âœ“ Recognized: {recognized_user['name']} "
               f"(conf: {best_match['confidence']:.2%}, dist: {best_match['distance']:.4f})")
         last_processed_face_id = face_id
         registration_in_progress = False
@@ -523,7 +435,7 @@ def register_or_recognize_face(face_crop, face_id=None):
                 # Enough faces captured, trigger registration
                 pending_registration = captured_faces_for_registration.copy()
                 registration_in_progress = True
-                print(f"✗ New face detected - Ready for registration with {len(pending_registration)} samples")
+                print(f"âœ— New face detected - Ready for registration with {len(pending_registration)} samples")
         
         last_processed_face_id = face_id
         return True
@@ -685,18 +597,117 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
-# -------------------------------
-# Flask routes
-# -------------------------------
+
+@app.template_global("time")
+def template_time():
+    return int(time.time())
+
+
+@app.template_global("csrf_token")
+def template_csrf_token():
+    # Placeholder so converted templates referencing csrf_token() can render.
+    return ""
+
+
+@app.context_processor
+def inject_auth_context():
+    return {
+        "is_authenticated": "staff_id" in session,
+        "current_username": session.get("username"),
+        "current_full_name": session.get("full_name"),
+        "current_role": session.get("role"),
+        "current_profile_image": session.get("profile_image"),
+    }
+
+
+def _get_user_count():
+    return user_count
+
+
+def _get_thresholds():
+    return BASE_THRESHOLD, ADAPTIVE_THRESHOLD_ENABLED, FACE_QUALITY_THRESHOLD
+
+
+def _set_thresholds(new_threshold, adaptive_enabled, quality_threshold):
+    global BASE_THRESHOLD, ADAPTIVE_THRESHOLD_ENABLED, FACE_QUALITY_THRESHOLD
+    BASE_THRESHOLD = new_threshold
+    ADAPTIVE_THRESHOLD_ENABLED = adaptive_enabled
+    FACE_QUALITY_THRESHOLD = quality_threshold
+
+
+def _reset_database_state():
+    global all_user_embeddings, user_info, user_count
+    all_user_embeddings = []
+    user_info = []
+    user_count = 0
+
+
+def _reset_registration_state():
+    global pending_registration, registration_in_progress, captured_faces_for_registration, face_capture_count
+    pending_registration = None
+    registration_in_progress = False
+    captured_faces_for_registration = []
+    face_capture_count = 0
+
+
+app.register_blueprint(create_auth_blueprint())
+app.register_blueprint(
+    create_admin_blueprint(
+        {
+            "render_markdown_as_html": render_markdown_as_html,
+            "get_user_count": _get_user_count,
+            "get_thresholds": _get_thresholds,
+            "set_thresholds": _set_thresholds,
+            "db_path": DB_PATH,
+            "base_save_dir": BASE_SAVE_DIR,
+            "reset_database_state": _reset_database_state,
+            "reset_registration_state": _reset_registration_state,
+        }
+    )
+)
+app.register_blueprint(create_profile_blueprint(save_profile_image))
+
+_endpoint_aliases = {
+    "auth_login": "auth_routes.auth_login",
+    "auth_logout": "auth_routes.auth_logout",
+    "unauthorized": "auth_routes.unauthorized",
+    "pages_home": "admin_routes.pages_home",
+    "policy_page": "admin_routes.policy_page",
+    "dashboard_page": "admin_routes.dashboard_page",
+    "route_list_page": "admin_routes.route_list_page",
+    "manage_users": "admin_routes.manage_users",
+    "manage_users_create": "admin_routes.manage_users_create",
+    "manage_users_toggle": "admin_routes.manage_users_toggle",
+    "settings": "admin_routes.settings",
+    "get_stats": "admin_routes.get_stats",
+    "reset_database": "admin_routes.reset_database",
+    "clear_log": "admin_routes.clear_log",
+    "reset_registration": "admin_routes.reset_registration",
+    "profile_settings": "profile_routes.profile_settings",
+    "profile_settings_update": "profile_routes.profile_settings_update",
+    "profile_change_password": "profile_routes.profile_change_password",
+}
+for legacy_name, namespaced_name in _endpoint_aliases.items():
+    if legacy_name not in app.view_functions and namespaced_name in app.view_functions:
+        app.view_functions[legacy_name] = app.view_functions[namespaced_name]
+
+
 @app.route("/")
 def kiosk():
     global pending_registration, recognized_user
-    return render_template("kiosk_improved.html", 
+    return render_template("html/kiosk_improved.html", 
                            pending_registration=pending_registration is not None,
                            recognized_user=recognized_user,
                            user_count=user_count)
 
-@app.route("/register", methods=["GET", "POST"])
+
+@app.route("/public")
+def public_page():
+    return render_template("html/pages/public-page.html", user_count=user_count)
+
+@app.route("/admin/register", methods=["GET", "POST"])
+@login_required
+@role_required("super_admin", "library_admin")
 def register():
     global pending_registration, all_user_embeddings, user_info, user_count
     global registration_in_progress, captured_faces_for_registration, face_capture_count
@@ -729,7 +740,7 @@ def register():
         
         if all_embeddings:
             # Save user with multiple embeddings
-            user_id = save_user_with_multiple_embeddings(all_embeddings, image_paths, name, sr_code, course)
+            user_id = save_user_with_multiple_embeddings(DB_PATH, all_embeddings, image_paths, name, sr_code, course)
             
             # Update in-memory data
             all_user_embeddings.append(all_embeddings)
@@ -740,7 +751,7 @@ def register():
             })
             user_count = len(user_info)
             
-            print(f"✓ Registered {name} with {len(all_embeddings)} embeddings")
+            print(f"âœ“ Registered {name} with {len(all_embeddings)} embeddings")
 
         # Reset registration state
         pending_registration = None
@@ -752,7 +763,7 @@ def register():
         
         return redirect(url_for("kiosk"))
 
-    return render_template("register_improved.html", 
+    return render_template("html/register_improved.html", 
                           capture_count=len(pending_registration) if pending_registration else 0)
 
 @app.route("/video_feed")
@@ -779,105 +790,11 @@ def check_status():
         }
     }
 
-@app.route("/settings", methods=["GET", "POST"])
-def settings():
-    """Settings page for adjusting parameters"""
-    global BASE_THRESHOLD, ADAPTIVE_THRESHOLD_ENABLED, FACE_QUALITY_THRESHOLD
-    
-    if request.method == "POST":
-        BASE_THRESHOLD = float(request.form.get("threshold", BASE_THRESHOLD))
-        ADAPTIVE_THRESHOLD_ENABLED = request.form.get("adaptive_threshold") == "on"
-        FACE_QUALITY_THRESHOLD = float(request.form.get("quality_threshold", FACE_QUALITY_THRESHOLD))
-        return redirect(url_for("settings"))
-    
-    return render_template("settings.html",
-                          threshold=BASE_THRESHOLD,
-                          adaptive_threshold=ADAPTIVE_THRESHOLD_ENABLED,
-                          quality_threshold=FACE_QUALITY_THRESHOLD,
-                          user_count=user_count)
-
-@app.route("/api/stats")
-def get_stats():
-    """Get system statistics"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Get recognition statistics
-    c.execute("""
-        SELECT u.name, COUNT(r.log_id) as recognitions, 
-               AVG(r.confidence) as avg_confidence
-        FROM users u
-        LEFT JOIN recognition_log r ON u.user_id = r.user_id
-        GROUP BY u.user_id
-        ORDER BY recognitions DESC
-    """)
-    stats = c.fetchall()
-    
-    conn.close()
-    
-    return {
-        "user_count": user_count,
-        "recognition_stats": [
-            {"name": name, "recognitions": rec_count, "avg_confidence": avg_conf}
-            for name, rec_count, avg_conf in stats
-        ]
-    }
-
-@app.route("/api/reset_database", methods=["POST"])
-def reset_database():
-    """DANGEROUS: Reset entire database"""
-    try:
-        # Delete all users
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("DELETE FROM users")
-        c.execute("DELETE FROM recognition_log")
-        conn.commit()
-        conn.close()
-        
-        # Delete all face images
-        import shutil
-        if os.path.exists(BASE_SAVE_DIR):
-            shutil.rmtree(BASE_SAVE_DIR)
-        
-        # Reset global variables
-        global all_user_embeddings, user_info, user_count
-        all_user_embeddings = []
-        user_info = []
-        user_count = 0
-        
-        return {"success": True, "message": "Database reset successfully"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}, 500
-
-@app.route("/api/clear_log", methods=["POST"])
-def clear_log():
-    """Clear recognition log"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("DELETE FROM recognition_log")
-        conn.commit()
-        conn.close()
-        return {"success": True, "message": "Recognition log cleared"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}, 500
-
-@app.route("/api/reset_registration", methods=["POST"])
-def reset_registration():
-    """Reset current registration state"""
-    global pending_registration, registration_in_progress, captured_faces_for_registration, face_capture_count
-    pending_registration = None
-    registration_in_progress = False
-    captured_faces_for_registration = []
-    face_capture_count = 0
-    return {"success": True, "message": "Registration state reset"}
-
 # -------------------------------
 # Run app
 # -------------------------------
 if __name__ == "__main__":
-    init_db()
+    init_db(DB_PATH)
     print(f"\n=== Improved Face Recognition System ===")
     print(f"Database: {DB_PATH}")
     print(f"Face model: {CURRENT_MODEL}")
@@ -888,3 +805,5 @@ if __name__ == "__main__":
     print(f"Open browser to: http://localhost:5000")
     print("="*50)
     app.run(host="0.0.0.0", port=5000, debug=True)
+
+

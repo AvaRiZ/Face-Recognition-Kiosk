@@ -1,0 +1,38 @@
+﻿{% extends "html/layouts/app.html" %}
+
+{% block title %}Route List{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">Application Route List</h1>
+<div class="card">
+    <div class="card-body py-3">
+        <div class="table-responsive">
+            <table class="table table-bordered table-striped table-sm">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>URI</th>
+                        <th>Name</th>
+                        <th>Action</th>
+                        <th>Methods</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for route in routes %}
+                    <tr>
+                        <td>{{ route.i }}</td>
+                        <td><code>{{ route.uri }}</code></td>
+                        <td>{{ route.name }}</td>
+                        <td>{{ route.action }}</td>
+                        <td>{{ ", ".join(route.methods) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+

@@ -1,0 +1,27 @@
+@import "bootstrap/dist/css/bootstrap.min.css";
+@import "bootstrap-icons/font/bootstrap-icons.css";
+@import "boxicons/css/boxicons.min.css";
+@import "remixicon/fonts/remixicon.css";
+@import "quill/dist/quill.snow.css";
+@import "quill/dist/quill.bubble.css";
+@import "simple-datatables/dist/style.css";
+@import "tom-select/dist/css/tom-select.bootstrap5.css";
+@import "../../public/assets/css/style.css";
+@import "../../public/assets/css/bootstrap-overrides.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Bootstrap collapse compatibility with Tailwind's `.collapse` utility */
+.collapse {
+    visibility: visible;
+}
+
+.collapse:not(.show) {
+    display: none;
+}
+
+[x-cloak] {
+    display: none;
+}

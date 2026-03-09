@@ -1,0 +1,23 @@
+@props(['active' => null])
+
+<nav class="homepage-navbar">
+    <div class="nav-content-wrapper">
+        <a href="{{ url_for('home') }}" style="text-decoration: none;">
+            <h1 style="display: flex; align-items: center; gap: 5px; text-transform: none !important;">
+                Library Mangement |
+                <img src="{{ url_for('static', filename='assets/img/BatStateU_logo-w.png') }}" alt="BatStateU" style="height: 25px; width: auto; object-fit: contain;">
+            </h1>
+        </a>
+        <ul>
+            <li><a href="{{ url_for('home') }}" @class(['red' => $active === 'home'])>HOME</a></li>
+            <li><a href="{{ url_for('joblist') }}" @class(['red' => $active === 'joblist'])>JOB LIST</a></li>
+            <li><a href="{{ url_for('partner-industries') }}" @class(['red' => $active === 'partner-industries'])>PARTNER INDUSTRIES</a></li>
+            <li><a href="{{ url_for('forms.index') }}" @class(['red' => $active === 'forms'])>OFFICIAL FORMS</a></li>
+            <li><a href="{{ url_for('login') }}" @class(['red' => $active === 'login'])>LOGIN</a></li>
+        </ul>
+    </div>
+</nav>
+
+
+
+

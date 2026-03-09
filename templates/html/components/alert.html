@@ -1,0 +1,187 @@
+<!-- resources/views/components/alert.blade.php -->
+
+{#
+USAGE EXAMPLES:
+
+1. Basic Alert:
+<x-alert class="alert-info">
+    This is a basic alert message.
+</x-alert>
+
+2. Alert with Heading:
+<x-alert class="alert-success" heading="Success!">
+    Your action was completed successfully.
+</x-alert>
+
+3. Dismissible Alert:
+<x-alert class="alert-warning" :dismissible="true">
+    This alert can be manually closed by clicking the × button.
+</x-alert>
+
+4. Auto-close Alert (default 8 seconds):
+<x-alert class="alert-info" :auto-close="true" :dismissible="true">
+    This alert will auto-close after 8 seconds.
+</x-alert>
+
+5. Auto-close with Custom Time:
+<x-alert class="alert-danger" :auto-close="5" :dismissible="true">
+    This alert will auto-close after 5 seconds.
+</x-alert>
+
+6. Persistent Alert (remembers dismissal):
+<x-alert class="alert-warning" :dismissible="true" persistent="maintenance-notice">
+    This alert won't show again once manually dismissed.
+</x-alert>
+
+7. Non-persistent Alert:
+<x-alert class="alert-info" :dismissible="true" :persistent="false">
+    This alert shows every time, even after dismissal.
+</x-alert>
+
+8. Complete Example (Auto-close + Persistent):
+<x-alert class="alert-warning fade show"
+         :dismissible="true"
+         :auto-close="10"
+         persistent="system-update-notice"
+         heading="System Update">
+    <p>The system will undergo maintenance on <strong>Sunday at 2:00 AM</strong>.</p>
+    <hr>
+    <small>This notification auto-closes in 10 seconds but won't show again once dismissed.</small>
+</x-alert>
+
+9. Alert with Icon:
+<x-alert class="alert-primary" icon="bi bi-info-circle" heading="Information">
+    This alert includes an icon for better visual communication.
+</x-alert>
+
+PROPERTIES:
+- class: Bootstrap alert classes (alert-primary, alert-success, alert-danger, etc.)
+- heading: Optional heading text
+- icon: Optional icon class (e.g., Bootstrap Icons)
+- dismissible: true/false - Shows close button
+- auto-close: true (8 seconds) or number (custom seconds)
+- persistent: true (auto-key), false (no persistence), or string (custom key)
+#}
+
+@php
+    $alertId = isset($autoClose) || isset($persistent) ? 'alert-' . uniqid() : null;
+    $persistentKey =
+        isset($persistent) && $persistent !== false
+            ? (is_string($persistent)
+                ? $persistent
+                : 'alert_' . md5($slot->toHtml() . ($heading ?? '')))
+            : null;
+@endphp
+
+{% if !persistentKey || !isset(persistent %} || $persistent === false)
+    <div {{ attributes.merge(['class' => 'alert' . (isset(dismissible) && dismissible ? ' alert-dismissible' : '')]) }}
+        role="alert" {% if alertId %} id="{{ alertId }}" {% endif %}>
+        {% if isset(heading %})
+            <h4 class="alert-heading">{{ heading }}</h4>
+            {% if slot.isNotEmpty( %})
+                <hr>
+            {% endif %}
+        {% endif %}
+
+        {% if isset(icon %})
+            <i class="{{ icon }} me-1"></i>
+        {% endif %}
+
+        {% block content %}{% endblock %}
+
+        {% if isset(dismissible %} && $dismissible)
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        {% endif %}
+    </div>
+{% else %}
+    <div {{ attributes.merge(['class' => 'alert' . (isset(dismissible) && dismissible ? ' alert-dismissible' : '')]) }}
+        role="alert" {% if alertId %} id="{{ alertId }}" {% endif %}
+        data-persistent-key="{{ persistentKey }}" style="display: none;">
+        {% if isset(heading %})
+            <h4 class="alert-heading">{{ heading }}</h4>
+            {% if slot.isNotEmpty( %})
+                <hr>
+            {% endif %}
+        {% endif %}
+
+        {% if isset(icon %})
+            <i class="{{ icon }} me-1"></i>
+        {% endif %}
+
+        {% block content %}{% endblock %}
+
+        {% if isset(dismissible %} && $dismissible)
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        {% endif %}
+    </div>
+{% endif %}
+
+{% if (isset(autoClose %} && $autoClose) || (isset($persistent) && $persistent !== false))
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const alert = document.getElementById('{{ alertId }}');
+
+            if (alert) {
+                const persistentKey = alert.dataset.persistentKey;
+                const isPersistent = {{ isset(persistent) && persistent !== false ? 'true' : 'false' }};
+
+                // Check if alert was previously dismissed (for persistent alerts)
+                if (isPersistent && persistentKey) {
+                    const dismissedAlerts = JSON.parse(localStorage.getItem('dismissed_alerts') || '{}');
+                    const currentTime = Date.now();
+
+                    // Clean up old entries (older than 30 days)
+                    Object.keys(dismissedAlerts).forEach(key => {
+                        if (currentTime - dismissedAlerts[key] > 30 * 24 * 60 * 60 * 1000) {
+                            delete dismissedAlerts[key];
+                        }
+                    });
+                    localStorage.setItem('dismissed_alerts', JSON.stringify(dismissedAlerts));
+
+                    // Check if this alert was dismissed
+                    if (dismissedAlerts[persistentKey]) {
+                        alert.remove();
+                        return;
+                    }
+
+                    // Show the alert if not dismissed
+                    alert.style.display = '';
+                }
+
+                {% if isset(autoClose %} && $autoClose)
+                    // Auto-close after specified time (default 8 seconds)
+                    const closeTime = {{ is_numeric(autoClose) ? autoClose * 1000 : 8000 }};
+
+                    setTimeout(function() {
+                        closeAlert();
+                    }, closeTime);
+                {% endif %}
+
+                // Handle manual close
+                const closeButton = alert.querySelector('.btn-close');
+                if (closeButton) {
+                    closeButton.addEventListener('click', function() {
+                        if (isPersistent && persistentKey) {
+                            // Save dismissal to localStorage
+                            const dismissedAlerts = JSON.parse(localStorage.getItem('dismissed_alerts') ||
+                                '{}');
+                            dismissedAlerts[persistentKey] = Date.now();
+                            localStorage.setItem('dismissed_alerts', JSON.stringify(dismissedAlerts));
+                        }
+                    });
+                }
+
+                function closeAlert() {
+                    alert.style.transition = 'opacity 0.5s ease-out';
+                    alert.style.opacity = '0';
+
+                    setTimeout(function() {
+                        if (alert.parentNode) {
+                            alert.remove();
+                        }
+                    }, 500);
+                }
+            }
+        });
+    </script>
+{% endif %}
