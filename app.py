@@ -1,5 +1,5 @@
 from flask import Flask, render_template, Response, request, redirect, url_for, session
-import cv2
+import cv2 
 from ultralytics import YOLO
 import os
 import time
@@ -9,6 +9,7 @@ from deepface import DeepFace
 import pickle
 from collections import deque
 import statistics
+import threading 
 from auth import (
     init_auth_db,
     login_required,
@@ -51,7 +52,6 @@ print(f"Using DeepFace with {CURRENT_MODEL} model")
 # -------------------------------
 DB_PATH = "database/faces_improved.db"
 
-
 # -------------------------------
 # Setup directories
 # -------------------------------
@@ -81,13 +81,47 @@ CONFIDENCE_SMOOTHING_WINDOW = 5  # Number of frames for smoothing
 # -------------------------------
 # Webcam setup
 # -------------------------------
-camera = cv2.VideoCapture(0)
-if not camera.isOpened():
-    print("Error: Camera not accessible")
-else:
-    print("Camera initialized successfully")
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
+
+
+class CameraManager:
+
+    def __init__(self):
+        self.camera = None
+        self.active_streams = 0
+        self.lock = threading.Lock()
+
+    def acquire(self):
+        with self.lock:
+            self.active_streams += 1
+            if self.camera is None or not self.camera.isOpened():
+                self.camera = cv2.VideoCapture(0)
+                if not self.camera.isOpened():
+                    print("Error: Camera not accessible")
+                    self.active_streams -= 1
+                    return False
+                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+                print("Camera initialized successfully")
+            return True
+
+    def release(self):
+        with self.lock:
+            self.active_streams = max(0, self.active_streams - 1)  # never go negative
+            if self.active_streams == 0 and self.camera:
+                self.camera.release()
+                self.camera = None
+                print("Camera released")
+
+    def read(self):
+        if self.camera and self.camera.isOpened():
+            return self.camera.read()
+        return False, None
+
+
+camera_manager = CameraManager()
+
 
 # -------------------------------
 # Face quality assessment
@@ -127,8 +161,8 @@ def assess_face_quality(face_crop):
     
     # 7. Check for face symmetry (simplified)
     if w > 20 and h > 20:
-        left_half = gray[:, :w//2]
-        right_half = gray[:, w//2:]
+        left_half = gray[:,:w // 2]
+        right_half = gray[:, w // 2:]
         if left_half.shape[1] == right_half.shape[1]:
             symmetry_diff = np.abs(left_half - cv2.flip(right_half, 1))
             symmetry_score = 1.0 - min(np.mean(symmetry_diff) / 50, 1.0)
@@ -139,17 +173,18 @@ def assess_face_quality(face_crop):
     
     # Weighted quality score
     quality_score = (
-        0.20 * size_score +
-        0.15 * brightness_score +
-        0.15 * contrast_score +
-        0.20 * sharpness_score +
-        0.15 * aspect_score +
+        0.20 * size_score + 
+        0.15 * brightness_score + 
+        0.15 * contrast_score + 
+        0.20 * sharpness_score + 
+        0.15 * aspect_score + 
         0.15 * symmetry_score
     )
     
     quality_status = "Good" if quality_score > FACE_QUALITY_THRESHOLD else "Poor"
     
     return quality_score, quality_status
+
 
 # -------------------------------
 # Improved embedding extraction
@@ -214,10 +249,12 @@ def extract_embedding_ensemble(face_crop):
         print(f"Embedding extraction error: {e}")
         return []
 
+
 # -------------------------------
 # Advanced face matching
 # -------------------------------
 class FaceRecognitionSystem:
+
     def __init__(self):
         self.recognition_history = {}
         self.confidence_smoothing = {}
@@ -306,6 +343,7 @@ class FaceRecognitionSystem:
 
         return best_match, all_distances
 
+
 # Initialize face recognition system
 face_recognition_system = FaceRecognitionSystem()
 
@@ -313,7 +351,7 @@ face_recognition_system = FaceRecognitionSystem()
 # Global variables
 # -------------------------------
 pending_registration = None  # Multiple face crops waiting for registration
-recognized_user = None       # Info of recognized user
+recognized_user = None  # Info of recognized user
 registration_in_progress = False
 last_processed_face_id = None
 captured_faces_for_registration = []  # Store multiple faces for registration
@@ -324,6 +362,7 @@ MAX_CAPTURES_FOR_REGISTRATION = 3  # Capture 3 faces for better registration
 face_stability_tracker = {}  # face_id -> {'positions': [], 'timestamps': [], 'stable_since': None}
 STABILITY_TIME_REQUIRED = 0.5  # seconds
 POSITION_TOLERANCE = 50  # pixels (increased for more natural movement tolerance)
+
 
 # -------------------------------
 # Register or Recognize Face
@@ -440,6 +479,7 @@ def register_or_recognize_face(face_crop, face_id=None):
         last_processed_face_id = face_id
         return True
 
+
 # -------------------------------
 # Face stability checking
 # -------------------------------
@@ -490,112 +530,120 @@ def check_face_stability(face_id, x1, y1, x2, y2):
 
     return False
 
+
 # -------------------------------
 # Video streaming with improved visualization
 # -------------------------------
 def generate_frames():
     global face_capture_count
 
-    while True:
-        success, frame = camera.read()
-        if not success:
-            break
+    if not camera_manager.acquire():
+        return  # Camera unavailable, stop the generator
 
-        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-        results = model(frame, conf=0.3)
+    try:
+        while True:
+            success, frame = camera_manager.read()  # <-- only change inside the loop
+            if not success:
+                break
 
-        face_crops = []
-        face_qualities = []
-        stable_faces = []
+            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+            results = model(frame, conf=0.3)
 
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
+            face_crops = []
+            face_qualities = []
+            stable_faces = []
 
-                # Check minimum size
-                if (x2 - x1) < MIN_FACE_SIZE or (y2 - y1) < MIN_FACE_SIZE:
-                    continue
+            for r in results:
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-                face_crop = frame[y1:y2, x1:x2]
-                face_crops.append(face_crop)
+                    # Check minimum size
+                    if (x2 - x1) < MIN_FACE_SIZE or (y2 - y1) < MIN_FACE_SIZE:
+                        continue
 
-                # Assess quality
-                quality_score, quality_status = assess_face_quality(face_crop)
-                face_qualities.append((quality_score, quality_status))
+                    face_crop = frame[y1:y2, x1:x2]
+                    face_crops.append(face_crop)
 
-                # Give each face a unique ID
-                face_id = f"{x1}_{y1}_{x2}_{y2}"
+                    # Assess quality
+                    quality_score, quality_status = assess_face_quality(face_crop)
+                    face_qualities.append((quality_score, quality_status))
 
-                # Check stability
-                is_stable = check_face_stability(face_id, x1, y1, x2, y2)
+                    # Give each face a unique ID
+                    face_id = f"{x1}_{y1}_{x2}_{y2}"
 
-                if is_stable:
-                    stable_faces.append((face_crop, face_id))
+                    # Check stability
+                    is_stable = check_face_stability(face_id, x1, y1, x2, y2)
 
-                # Draw rectangle with color based on stability and quality
-                conf = float(box.conf[0])
-                if is_stable:
-                    if quality_score > 0.7:
-                        color = (0, 255, 0)  # Green for stable good quality
-                    elif quality_score > 0.5:
-                        color = (0, 255, 255)  # Yellow for stable medium quality
+                    if is_stable:
+                        stable_faces.append((face_crop, face_id))
+
+                    # Draw rectangle with color based on stability and quality
+                    conf = float(box.conf[0])
+                    if is_stable:
+                        if quality_score > 0.7:
+                            color = (0, 255, 0)  # Green for stable good quality
+                        elif quality_score > 0.5:
+                            color = (0, 255, 255)  # Yellow for stable medium quality
+                        else:
+                            color = (0, 0, 255)  # Red for stable poor quality
                     else:
-                        color = (0, 0, 255)  # Red for stable poor quality
-                else:
-                    color = (128, 128, 128)  # Gray for unstable faces
+                        color = (128, 128, 128)  # Gray for unstable faces
 
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-                # Display stability and quality info
-                stability_text = "STABLE" if is_stable else "MOVING"
-                cv2.putText(frame, f"{stability_text} Q:{quality_score:.1f}",
-                           (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                           0.5, color, 1)
+                    # Display stability and quality info
+                    stability_text = "STABLE" if is_stable else "MOVING"
+                    cv2.putText(frame, f"{stability_text} Q:{quality_score:.1f}",
+                               (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                               0.5, color, 1)
 
-        # Process only stable faces
-        for face_crop, face_id in stable_faces:
-            if not registration_in_progress:
-                register_or_recognize_face(face_crop, face_id)
+            # Process only stable faces
+            for face_crop, face_id in stable_faces:
+                if not registration_in_progress:
+                    register_or_recognize_face(face_crop, face_id)
 
-        # Display thumbnails with quality info
-        for i, (crop, (quality_score, quality_status)) in enumerate(zip(face_crops[:5], face_qualities[:5])):
-            crop_h, crop_w = crop.shape[:2]
-            scale = 80 / crop_h
-            thumbnail = cv2.resize(crop, (int(crop_w * scale), 80))
-            x_start = 10 + i * 90
-            x_end = min(x_start + thumbnail.shape[1], FRAME_WIDTH)
-            frame[10:10+thumbnail.shape[0], x_start:x_end] = thumbnail[:, :x_end-x_start]
-            
-            # Quality indicator on thumbnail
-            cv2.putText(frame, f"{quality_score:.1f}",
-                       (x_start, 10+thumbnail.shape[0]+15),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                       (255, 255, 255), 1)
+            # Display thumbnails with quality info
+            for i, (crop, (quality_score, quality_status)) in enumerate(zip(face_crops[:5], face_qualities[:5])):
+                crop_h, crop_w = crop.shape[:2]
+                scale = 80 / crop_h
+                thumbnail = cv2.resize(crop, (int(crop_w * scale), 80))
+                x_start = 10 + i * 90
+                x_end = min(x_start + thumbnail.shape[1], FRAME_WIDTH)
+                frame[10:10 + thumbnail.shape[0], x_start:x_end] = thumbnail[:,:x_end - x_start]
 
-        # Display comprehensive status
-        status_y = FRAME_HEIGHT - 60
-        if recognized_user:
-            status_text = f"Recognized: {recognized_user['name']} ({recognized_user['confidence']})"
-            cv2.putText(frame, status_text, (10, status_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        elif registration_in_progress:
-            status_text = f"New face - Captured {face_capture_count}/{MAX_CAPTURES_FOR_REGISTRATION} samples"
-            cv2.putText(frame, status_text, (10, status_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-        else:
-            status_text = f"Detecting... | Users in DB: {user_count}"
-            cv2.putText(frame, status_text, (10, status_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        # Display threshold info
-        threshold_text = f"Threshold: 90% (Fixed)"
-        cv2.putText(frame, threshold_text, (10, status_y + 25),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                # Quality indicator on thumbnail
+                cv2.putText(frame, f"{quality_score:.1f}",
+                           (x_start, 10 + thumbnail.shape[0] + 15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                           (255, 255, 255), 1)
 
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            # Display comprehensive status
+            status_y = FRAME_HEIGHT - 60
+            if recognized_user:
+                status_text = f"Recognized: {recognized_user['name']} ({recognized_user['confidence']})"
+                cv2.putText(frame, status_text, (10, status_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            elif registration_in_progress:
+                status_text = f"New face - Captured {face_capture_count}/{MAX_CAPTURES_FOR_REGISTRATION} samples"
+                cv2.putText(frame, status_text, (10, status_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+            else:
+                status_text = f"Detecting... | Users in DB: {user_count}"
+                cv2.putText(frame, status_text, (10, status_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            # Display threshold info
+            threshold_text = f"Threshold: 90% (Fixed)"
+            cv2.putText(frame, threshold_text, (10, status_y + 25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+            _, buffer = cv2.imencode('.jpg', frame)
+            frame_bytes = buffer.tobytes()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+    finally:
+        camera_manager.release()  # Always releases when client disconnects
 
 
 @app.template_global("time")
@@ -692,10 +740,30 @@ for legacy_name, namespaced_name in _endpoint_aliases.items():
         app.view_functions[legacy_name] = app.view_functions[namespaced_name]
 
 
+@app.errorhandler(401)
+def unauthorized_error(error):
+    return render_template("html/errors/401.html"), 401
+
+
+@app.errorhandler(403)
+def forbidden_error(error):
+    return render_template("html/errors/403.html"), 403
+
+
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template("html/errors/404.html"), 404
+
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    return render_template("html/errors/500.html"), 500
+
+
 @app.route("/")
 def kiosk():
     global pending_registration, recognized_user
-    return render_template("html/kiosk_improved.html", 
+    return render_template("html/kiosk_improved.html",
                            pending_registration=pending_registration is not None,
                            recognized_user=recognized_user,
                            user_count=user_count)
@@ -704,6 +772,7 @@ def kiosk():
 @app.route("/public")
 def public_page():
     return render_template("html/pages/public-page.html", user_count=user_count)
+
 
 @app.route("/admin/register", methods=["GET", "POST"])
 @login_required
@@ -763,13 +832,21 @@ def register():
         
         return redirect(url_for("kiosk"))
 
-    return render_template("html/register_improved.html", 
+    return render_template("html/register_improved.html",
                           capture_count=len(pending_registration) if pending_registration else 0)
+
 
 @app.route("/video_feed")
 def video_feed():
     return Response(generate_frames(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+@app.route("/stop_feed")
+def stop_feed():
+    camera_manager.release()
+    return "", 204
+
 
 @app.route("/check_status")
 def check_status():
@@ -790,6 +867,7 @@ def check_status():
         }
     }
 
+
 # -------------------------------
 # Run app
 # -------------------------------
@@ -805,5 +883,4 @@ if __name__ == "__main__":
     print(f"Open browser to: http://localhost:5000")
     print("="*50)
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 

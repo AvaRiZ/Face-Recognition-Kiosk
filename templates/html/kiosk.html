@@ -1,158 +1,167 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-    <meta charset="UTF-8">
+  <head>
+    <meta charset="UTF-8" />
     <title>Library Facial Recognition Kiosk</title>
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='assets/css/style.css') }}">
+    <link
+      rel="stylesheet"
+      type="text/css"
+      href="{{ url_for('static', filename='assets/css/style.css') }}"
+    />
     <style>
-        .popup {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            background-color: white;
-            padding: 20px;
-            border: 3px solid #4CAF50;
-            border-radius: 10px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-            min-width: 300px;
-        }
-        
-        .popup h3 {
-            margin-top: 0;
-            color: #4CAF50;
-        }
-        
-        .popup button {
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin-top: 10px;
-        }
-        
-        .popup button:hover {
-            background-color: #45a049;
-        }
-        
-        .status-box {
-            background-color: #f0f0f0;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            border-left: 4px solid #4CAF50;
-        }
-    </style>
-</head>
-<body>
+      .popup {
+        display: none;
+        position: fixed;
+        z-index: 1000;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        background-color: white;
+        padding: 20px;
+        border: 3px solid #4caf50;
+        border-radius: 10px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        min-width: 300px;
+      }
 
+      .popup h3 {
+        margin-top: 0;
+        color: #4caf50;
+      }
+
+      .popup button {
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 5px;
+        cursor: pointer;
+        margin-top: 10px;
+      }
+
+      .popup button:hover {
+        background-color: #45a049;
+      }
+
+      .status-box {
+        background-color: #f0f0f0;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 10px 0;
+        border-left: 4px solid #4caf50;
+      }
+    </style>
+  </head>
+  <body>
     <h1>Library Access Kiosk</h1>
-    
+
     <div class="status-box">
-        <strong>Status:</strong> <span id="status-text">Initializing...</span>
+      <strong>Status:</strong> <span id="status-text">Initializing...</span>
     </div>
 
     <div class="video-container">
-        <img src="{{ url_for('video_feed') }}" width="720">
+      <img src="{{ url_for('video_feed') }}" width="720" />
     </div>
 
     <!-- Popup for recognized user -->
     <div id="recognized-popup" class="popup">
-        <h3>Welcome!</h3>
-        <p id="user-info"></p>
-        <button onclick="closeRecognizedPopup()">Close</button>
+      <h3>Welcome!</h3>
+      <p id="user-info"></p>
+      <button onclick="closeRecognizedPopup()">Close</button>
     </div>
 
     <!-- Popup for new registration -->
     <div id="register-popup" class="popup">
-        <h3>New Face Detected</h3>
-        <p>Please register this new face.</p>
-        <button onclick="goToRegister()">Register Now</button>
-        <button onclick="closeRegisterPopup()" style="background-color: #f44336;">Cancel</button>
+      <h3>New Face Detected</h3>
+      <p>Please register this new face.</p>
+      <button onclick="goToRegister()">Register Now</button>
+      <button onclick="closeRegisterPopup()" style="background-color: #f44336">
+        Cancel
+      </button>
     </div>
 
     <footer>
-        &copy; 2026 Library Facial Recognition System | Using DeepFace {{FACE_MODEL}}
+      &copy; 2026 Library Facial Recognition System | Using DeepFace
+      {{FACE_MODEL}}
     </footer>
 
     <script>
-        let registrationCheckInterval;
-        let statusCheckInterval;
-        
-        function updateStatus(status) {
-            document.getElementById('status-text').textContent = status;
-        }
-        
-        function showRecognizedPopup(userInfo) {
-            document.getElementById('user-info').innerHTML = 
-                `<strong>Name:</strong> ${userInfo.name}<br>
+      let registrationCheckInterval;
+      let statusCheckInterval;
+
+      function updateStatus(status) {
+        document.getElementById("status-text").textContent = status;
+      }
+
+      function showRecognizedPopup(userInfo) {
+        document.getElementById("user-info").innerHTML =
+          `<strong>Name:</strong> ${userInfo.name}<br>
                  <strong>SR Code:</strong> ${userInfo.sr_code}<br>
                  <strong>Course:</strong> ${userInfo.course}`;
-            document.getElementById('recognized-popup').style.display = 'block';
-        }
-        
-        function closeRecognizedPopup() {
-            document.getElementById('recognized-popup').style.display = 'none';
-        }
-        
-        function showRegisterPopup() {
-            document.getElementById('register-popup').style.display = 'block';
-        }
-        
-        function closeRegisterPopup() {
-            document.getElementById('register-popup').style.display = 'none';
-            // Reset registration on server
-            fetch('/api/reset_registration', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                }
-            });
-        }
-        
-        function goToRegister() {
-            window.location.href = "{{ url_for('register') }}";
-        }
-        
-        // Check for recognized users or pending registration
-        function checkStatus() {
-            fetch('{{ url_for("check_status") }}')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.recognized_user) {
-                        showRecognizedPopup(data.recognized_user);
-                        updateStatus(`Recognized: ${data.recognized_user.name}`);
-                    }
-                    
-                    if (data.pending_registration) {
-                        showRegisterPopup();
-                        updateStatus("New face detected - Please register");
-                    }
-                })
-                .catch(error => {
-                    console.error('Error checking status:', error);
-                });
-        }
-        
-        // Start checking status
-        statusCheckInterval = setInterval(checkStatus, 1000);
-        
-        // Initial check
-        checkStatus();
-        
-        // Update status based on what we see
-        updateStatus("Camera active - Detecting faces...");
-        
-        // Clean up intervals when page unloads
-        window.addEventListener('beforeunload', function() {
-            if (statusCheckInterval) clearInterval(statusCheckInterval);
-            if (registrationCheckInterval) clearInterval(registrationCheckInterval);
-        });
-    </script>
+        document.getElementById("recognized-popup").style.display = "block";
+      }
 
-</body>
+      function closeRecognizedPopup() {
+        document.getElementById("recognized-popup").style.display = "none";
+      }
+
+      function showRegisterPopup() {
+        document.getElementById("register-popup").style.display = "block";
+      }
+
+      function closeRegisterPopup() {
+        document.getElementById("register-popup").style.display = "none";
+        // Reset registration on server
+        fetch("/api/reset_registration", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
+      }
+
+      function goToRegister() {
+        window.location.href = "{{ url_for('register') }}";
+      }
+
+      // Check for recognized users or pending registration
+      function checkStatus() {
+        fetch('{{ url_for("check_status") }}')
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.recognized_user) {
+              showRecognizedPopup(data.recognized_user);
+              updateStatus(`Recognized: ${data.recognized_user.name}`);
+            }
+
+            if (data.pending_registration) {
+              showRegisterPopup();
+              updateStatus("New face detected - Please register");
+            }
+          })
+          .catch((error) => {
+            console.error("Error checking status:", error);
+          });
+      }
+
+      // Start checking status
+      statusCheckInterval = setInterval(checkStatus, 1000);
+
+      // Initial check
+      checkStatus();
+
+      // Update status based on what we see
+      updateStatus("Camera active - Detecting faces...");
+
+      // Clean up intervals when page unloads
+      window.addEventListener("beforeunload", function () {
+        if (statusCheckInterval) clearInterval(statusCheckInterval);
+        if (registrationCheckInterval) clearInterval(registrationCheckInterval);
+      });
+
+      window.addEventListener("beforeunload", function () {
+        navigator.sendBeacon("/stop_feed");
+      });
+    </script>
+  </body>
 </html>

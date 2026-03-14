@@ -1,8 +1,21 @@
-﻿{% extends 'html/errors::minimal.html' %}
-
-@section('title', __('Too Many Requests'))
-@section('code', '429')
-@section('message', __('Too Many Requests'))
-
-
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>429 Too many requests.</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/css/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/css/style.css') }}">
+</head>
+<body>
+    <main class="d-flex align-items-center justify-content-center min-vh-100">
+        <section class="section error-404 text-center">
+            <h1>429</h1>
+            <h2>Too many requests.</h2>
+            <a class="btn" href="{{ url_for('admin_routes.dashboard_page') if session.get('staff_id') else url_for('auth_routes.auth_login') }}">
+            Back to home
+            </a>
+        </section>
+    </main>
+</body>
+</html>

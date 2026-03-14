@@ -1,6 +1,7 @@
 import os
 import shutil
 import sqlite3
+import struct
 from pathlib import Path
 
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for, current_app
@@ -18,26 +19,68 @@ from auth import (
 def create_admin_blueprint(deps):
     bp = Blueprint("admin_routes", __name__)
 
-    @bp.route("/admin", endpoint="pages_home")
+    def _coerce_confidence(value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            raw = bytes(value)
+            try:
+                if len(raw) == 4:
+                    return struct.unpack("f", raw)[0]
+                if len(raw) == 8:
+                    return struct.unpack("d", raw)[0]
+            except struct.error:
+                pass
+            try:
+                return float(raw.decode("utf-8", errors="ignore"))
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    @bp.route("/home", endpoint="pages_home")
     @login_required
     @role_required("super_admin", "library_admin")
     def pages_home():
         return render_template("html/pages/admin-home.html")
 
-    @bp.route("/admin/policy", endpoint="policy_page")
+    @bp.route("/policy", endpoint="policy_page")
     @login_required
     @role_required("super_admin", "library_admin")
     def policy_page():
         policy_html = deps["render_markdown_as_html"](Path("static/content/markdown/policy.md"))
         return render_template("html/policy.html", policy=policy_html)
 
-    @bp.route("/admin/dashboard", endpoint="dashboard_page")
+    @bp.route("/dashboard", endpoint="dashboard_page")
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def dashboard_page():
-        return render_template("html/pages/admin-dashboard.html", user_count=deps["get_user_count"]())
+        conn = sqlite3.connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM recognition_log")
+        total_logs = c.fetchone()[0]
+        c.execute(
+            """
+            SELECT COUNT(*) FROM recognition_log
+            WHERE DATE(timestamp) = DATE('now')
+            """
+        )
+        today_logs = c.fetchone()[0]
+        c.execute("SELECT AVG(confidence) FROM recognition_log")
+        avg_conf = c.fetchone()[0]
+        conn.close()
 
-    @bp.route("/admin/routes", endpoint="route_list_page")
+        avg_confidence = round((avg_conf or 0) * 100, 1)
+        return render_template(
+            "html/pages/admin-dashboard.html",
+            user_count=deps["get_user_count"](),
+            total_logs=total_logs,
+            today_logs=today_logs,
+            avg_confidence=avg_confidence,
+        )
+
+    @bp.route("/routes", endpoint="route_list_page")
     @login_required
     @role_required("super_admin", "library_admin")
     def route_list_page():
@@ -54,14 +97,14 @@ def create_admin_blueprint(deps):
             )
         return render_template("html/pages/route-list/index.html", routes=routes)
 
-    @bp.route("/admin/manage-users", endpoint="manage_users")
+    @bp.route("/manage-users", endpoint="manage_users")
     @login_required
     @role_required("super_admin")
     def manage_users():
         staff_rows = get_all_staff()
         return render_template("html/pages/manage-users.html", staff_rows=staff_rows)
 
-    @bp.route("/admin/manage-users/create", methods=["POST"], endpoint="manage_users_create")
+    @bp.route("/manage-users/create", methods=["POST"], endpoint="manage_users_create")
     @login_required
     @role_required("super_admin")
     def manage_users_create():
@@ -92,7 +135,7 @@ def create_admin_blueprint(deps):
 
         return redirect(url_for("admin_routes.manage_users"))
 
-    @bp.route("/admin/manage-users/toggle/<int:staff_id>", methods=["POST"], endpoint="manage_users_toggle")
+    @bp.route("/manage-users/toggle/<int:staff_id>", methods=["POST"], endpoint="manage_users_toggle")
     @login_required
     @role_required("super_admin")
     def manage_users_toggle(staff_id):
@@ -105,7 +148,7 @@ def create_admin_blueprint(deps):
         flash("User status updated.", "success")
         return redirect(url_for("admin_routes.manage_users"))
 
-    @bp.route("/admin/settings", methods=["GET", "POST"], endpoint="settings")
+    @bp.route("/settings", methods=["GET", "POST"], endpoint="settings")
     @login_required
     @role_required("super_admin")
     def settings():
@@ -126,7 +169,7 @@ def create_admin_blueprint(deps):
             user_count=deps["get_user_count"](),
         )
 
-    @bp.route("/admin/api/stats", endpoint="get_stats")
+    @bp.route("/api/stats", endpoint="get_stats")
     @login_required
     @role_required("super_admin", "library_admin")
     def get_stats():
@@ -153,7 +196,7 @@ def create_admin_blueprint(deps):
             ],
         }
 
-    @bp.route("/admin/registered-profiles", endpoint="registered_profiles")
+    @bp.route("/registered-profiles", endpoint="registered_profiles")
     @login_required
     @role_required("super_admin", "library_admin")
     def registered_profiles():
@@ -163,6 +206,7 @@ def create_admin_blueprint(deps):
             """
             SELECT user_id, name, sr_code, course, created_at, last_updated
             FROM users
+            WHERE archived_at IS NULL
             ORDER BY created_at DESC
             """
         )
@@ -171,7 +215,91 @@ def create_admin_blueprint(deps):
 
         return render_template("html/pages/registered-profiles.html", profile_rows=profile_rows)
 
-    @bp.route("/admin/api/reset_database", methods=["POST"], endpoint="reset_database")
+    @bp.route("/registered-profiles/archive", methods=["GET", "POST"], endpoint="registered_profiles_archive")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def registered_profiles_archive():
+        if request.method == "POST":
+            return redirect(url_for("admin_routes.registered_profiles_archive"))
+        conn = sqlite3.connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT user_id, name, sr_code, course, created_at, last_updated
+            FROM users
+            WHERE archived_at IS NULL
+            ORDER BY created_at DESC
+            """
+        )
+        profile_rows = c.fetchall()
+        conn.close()
+
+        return render_template("html/pages/archive-profiles.html", profile_rows=profile_rows)
+
+    @bp.route("/registered-profiles/archive/submit", methods=["POST"], endpoint="registered_profiles_archive_submit")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def registered_profiles_archive_submit():
+        selected_ids = request.form.getlist("user_ids")
+        if not selected_ids:
+            flash("Select at least one profile to archive.", "profiles:error")
+            return redirect(url_for("admin_routes.registered_profiles_archive"))
+
+        conn = sqlite3.connect(deps["db_path"])
+        c = conn.cursor()
+        c.executemany(
+            "UPDATE users SET archived_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+            [(user_id,) for user_id in selected_ids],
+        )
+        conn.commit()
+        conn.close()
+
+        log_action("ARCHIVE_REGISTERED_PROFILES", target=",".join(selected_ids))
+        flash(f"Archived {len(selected_ids)} profile(s).", "profiles:success")
+        return redirect(url_for("admin_routes.registered_profiles_archive"))
+
+    @bp.route("/archived-profiles", endpoint="archived_profiles")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def archived_profiles():
+        conn = sqlite3.connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT user_id, name, sr_code, course, created_at, last_updated, archived_at
+            FROM users
+            WHERE archived_at IS NOT NULL
+            ORDER BY archived_at DESC
+            """
+        )
+        profile_rows = c.fetchall()
+        conn.close()
+
+        return render_template("html/pages/archived-profiles.html", profile_rows=profile_rows)
+
+    @bp.route("/archived-profiles/restore", methods=["POST"], endpoint="archived_profiles_restore")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def archived_profiles_restore():
+        selected_ids = request.form.getlist("user_ids")
+        if not selected_ids:
+            flash("Select at least one profile to restore.", "profiles:error")
+            return redirect(url_for("admin_routes.archived_profiles"))
+
+        conn = sqlite3.connect(deps["db_path"])
+        c = conn.cursor()
+        c.executemany(
+            "UPDATE users SET archived_at = NULL WHERE user_id = ?",
+            [(user_id,) for user_id in selected_ids],
+        )
+        conn.commit()
+        conn.close()
+
+        log_action("RESTORE_ARCHIVED_PROFILES", target=",".join(selected_ids))
+        flash(f"Restored {len(selected_ids)} profile(s).", "profiles:success")
+        return redirect(url_for("admin_routes.archived_profiles"))
+
+    @bp.route("/api/reset_database", methods=["POST"], endpoint="reset_database")
     @login_required
     @role_required("super_admin", "library_admin")
     def reset_database():
@@ -191,7 +319,7 @@ def create_admin_blueprint(deps):
         except Exception as e:
             return {"success": False, "message": str(e)}, 500
 
-    @bp.route("/admin/api/clear_log", methods=["POST"], endpoint="clear_log")
+    @bp.route("/api/clear_log", methods=["POST"], endpoint="clear_log")
     @login_required
     @role_required("super_admin", "library_admin")
     def clear_log():
@@ -205,11 +333,130 @@ def create_admin_blueprint(deps):
         except Exception as e:
             return {"success": False, "message": str(e)}, 500
 
-    @bp.route("/admin/api/reset_registration", methods=["POST"], endpoint="reset_registration")
+    @bp.route("/api/reset_registration", methods=["POST"], endpoint="reset_registration")
     @login_required
     @role_required("super_admin", "library_admin")
     def reset_registration():
         deps["reset_registration_state"]()
         return {"success": True, "message": "Registration state reset"}
+    
+    
+    @bp.route("/registered-profiles/delete/<int:user_id>", methods=["POST"], endpoint="delete_profile")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def delete_profile(user_id):
+        try:
+            conn = sqlite3.connect(deps["db_path"])
+            c = conn.cursor()
+ 
+            # Get student info before deleting
+            c.execute("SELECT name, sr_code FROM users WHERE user_id = ?", (user_id,))
+            student = c.fetchone()
+ 
+            if not student:
+                conn.close()
+                flash("Student not found.", "error")
+                return redirect(url_for("admin_routes.registered_profiles"))
+ 
+            name, sr_code = student
+ 
+            # Delete recognition logs first (foreign key constraint)
+            c.execute("DELETE FROM recognition_log WHERE user_id = ?", (user_id,))
+ 
+            # Delete the student
+            c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+ 
+            # Remove from in-memory embeddings
+            deps["remove_user_embedding"](user_id)
+ 
+            log_action("DELETE_STUDENT", target=f"{name} ({sr_code})")
+            flash(f"Student '{name}' deleted successfully.", "success")
+ 
+        except Exception as e:
+            flash(f"Failed to delete student: {str(e)}", "error")
+ 
+        return redirect(url_for("admin_routes.registered_profiles"))
+ 
+ 
+    @bp.route("/entry-exit-logs", endpoint="entry_exit_logs")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def entry_exit_logs():
+        conn = sqlite3.connect(deps["db_path"])
+        c = conn.cursor()
+ 
+        # All logs latest first
+        c.execute("""
+            SELECT u.name, u.sr_code, r.confidence, r.timestamp
+            FROM recognition_log r
+            JOIN users u ON r.user_id = u.user_id
+            ORDER BY r.timestamp DESC
+            LIMIT 500
+        """)
+        raw_logs = c.fetchall()
+        logs = []
+        for name, sr_code, confidence, timestamp in raw_logs:
+            logs.append((name, sr_code, _coerce_confidence(confidence), timestamp))
+ 
+        conn.close()
+
+        return render_template(
+            "html/pages/entry-exit-logs.html",
+            logs=logs,
+        )
+ 
+ 
+    @bp.route("/entry-exit-logs/export", endpoint="export_logs")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def export_logs():
+        import csv
+        import io
+        from datetime import date, datetime
+        from flask import make_response
+
+        conn = sqlite3.connect(deps["db_path"])
+        c = conn.cursor()
+        selected_date = request.args.get("date", "").strip()
+        date_for_name = date.today()
+
+        if selected_date:
+            try:
+                date_for_name = datetime.strptime(selected_date, "%Y-%m-%d").date()
+            except ValueError:
+                selected_date = ""
+
+        query = """
+            SELECT u.name, u.sr_code, u.course, r.confidence, r.timestamp
+            FROM recognition_log r
+            JOIN users u ON r.user_id = u.user_id
+        """
+        params = []
+        if selected_date:
+            query += " WHERE DATE(r.timestamp) = ?"
+            params.append(selected_date)
+        query += " ORDER BY r.timestamp DESC"
+
+        c.execute(query, params)
+        logs = c.fetchall()
+        conn.close()
+ 
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['Name', 'SR Code', 'Course', 'Confidence (%)', 'Timestamp'])
+        for name, sr_code, course, confidence, timestamp in logs:
+            confidence = _coerce_confidence(confidence)
+            conf_value = f"{confidence * 100:.1f}" if isinstance(confidence, (int, float)) else ""
+            writer.writerow([name, sr_code, course, conf_value, timestamp])
+ 
+        response = make_response(output.getvalue())
+        filename = f"library_logs_{date_for_name.strftime('%m-%d-%Y')}.csv"
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        response.headers['Content-type'] = 'text/csv'
+        log_action("EXPORT_LOGS")
+        return response
+ 
 
     return bp

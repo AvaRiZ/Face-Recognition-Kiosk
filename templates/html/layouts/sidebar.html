@@ -15,8 +15,8 @@
 
      <li class="nav-item">
       <a
-        class="nav-link {{ '' if request.path == '/admin/registered-profiles' else 'collapsed' }}"
-        href="/admin/registered-profiles"
+        class="nav-link {{ '' if request.path == url_for('admin_routes.registered_profiles') else 'collapsed' }}"
+        href="{{ url_for('admin_routes.registered_profiles') }}"
       >
         <i class="bi bi-people-fill"></i>
         <span>Registered Profiles</span>
@@ -44,6 +44,19 @@
     </li>
 
     {% endif %} 
+
+    <!-- LINKS FOR ALL STAFF ROLES -->
+    {% if current_role in ['super_admin', 'library_admin', 'library_staff'] %}
+    <li class="nav-item">
+      <a
+        class="nav-link {{ '' if request.path == url_for('admin_routes.entry_exit_logs') else 'collapsed' }}"
+        href="{{ url_for('admin_routes.entry_exit_logs') }}"
+      >
+        <i class="bi bi-people-fill"></i>
+        <span>Entry/Exit Logs</span>
+      </a>
+    </li>
+    {% endif %}
     
     <!-- SUPER_ADMIN-ONLY LINKS -->
     {% if current_role == 'super_admin' %}

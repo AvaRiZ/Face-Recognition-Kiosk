@@ -1574,35 +1574,6 @@ body.dark .back-to-top:hover {
   max-width: 120px;
 }
 
-/*--------------------------------------------------------------
-  # F.A.Q Page
-  --------------------------------------------------------------*/
-.faq .basic h6 {
-  font-size: var(--font-size-2xl);
-  font-weight: 600;
-  color: var(--secondary-color);
-}
-
-.faq .basic p {
-  color: var(--faq-text);
-}
-
-.profiles-toolbar .card-body {
-  padding-top: 0.6rem;
-  padding-bottom: 0.6rem;
-}
-
-.profiles-toolbar .form-control,
-.profiles-toolbar .btn {
-  min-height: 36px;
-  height: 36px;
-  padding-top: 0.3rem;
-  padding-bottom: 0.3rem;
-}
-
-.profiles-toolbar .input-group .btn {
-  min-width: 46px;
-}
 
 /* Compact search bars and action buttons in list/toolbars */
 .input-group > .form-control,

@@ -28,7 +28,7 @@
                     </li>
                     <li><hr class="dropdown-divider"></li>
                     <li>
-                        <a class="dropdown-item d-flex align-items-center" href="/admin/profile">
+                        <a class="dropdown-item d-flex align-items-center" href="{{ url_for('profile_routes.profile_settings') }}">
                             <i class="bi bi-person-circle"></i>
                             <span>Profile Settings</span>
                         </a>
@@ -36,7 +36,7 @@
                     <li><hr class="dropdown-divider"></li>
                     {% if current_role == 'super_admin' %}
                     <li>
-                        <a class="dropdown-item d-flex align-items-center" href="/admin/manage-users">
+                        <a class="dropdown-item d-flex align-items-center" href="{{ url_for('admin_routes.manage_users') }}">
                             <i class="bi bi-people"></i>
                             <span>Manage User</span>
                         </a>

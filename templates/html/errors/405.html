@@ -1,8 +1,21 @@
-﻿{% extends 'html/errors::minimal.html' %}
-
-@section('title', __('Method not allowed'))
-@section('code', '405')
-@section('message', __('The requested method is not allowed for this route.'))
-
-
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>405 Method not allowed.</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/css/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='assets/css/style.css') }}">
+</head>
+<body>
+    <main class="d-flex align-items-center justify-content-center min-vh-100">
+        <section class="section error-404 text-center">
+            <h1>405</h1>
+            <h2>Method not allowed.</h2>
+            <a class="btn" href="{{ url_for('admin_routes.dashboard_page') if session.get('staff_id') else url_for('auth_routes.auth_login') }}">
+            Back to home
+            </a>
+        </section>
+    </main>
+</body>
+</html>

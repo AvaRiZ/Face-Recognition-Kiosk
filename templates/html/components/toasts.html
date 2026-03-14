@@ -1,10 +1,19 @@
 {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
         {% for category, message in messages %}
-            <div class="alert {% if category == 'error' %}alert-danger{% else %}alert-success{% endif %} alert-dismissible fade show" role="alert">
-                {{ message }}
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-            </div>
+            {% set scope = None %}
+            {% set level = category %}
+            {% if ':' in category %}
+                {% set parts = category.split(':', 1) %}
+                {% set scope = parts[0] %}
+                {% set level = parts[1] %}
+            {% endif %}
+            {% if (toast_scope is not defined and scope is none) or (toast_scope is defined and scope == toast_scope) %}
+                <div class="alert {% if level == 'error' or level == 'danger' %}alert-danger{% else %}alert-success{% endif %} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endif %}
         {% endfor %}
     {% endif %}
 {% endwith %}

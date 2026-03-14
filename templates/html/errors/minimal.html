@@ -21,10 +21,10 @@
                 {% block message %}{% endblock %}
             </h2>
             <a class="btn animate__animated animate__rubberBand animate__slow animate__infinite infinite animate__delay-5s	5s mb-3"
-                href="{{ url_for('login') }}">Back to home</a>
-            {# <img src="assets/img/not-found.svg" class="img-fluid py-5" alt="Page Not Found"> #}
-            <div class="credits animate__animated animate__fadeInUpBig animate__slow"> ICT Services | <a
-                    href="https://batstate-u.edu.ph/">BatStateU</a></div>
+                href="{{ url_for('auth_routes.auth_login') }}">Back to home</a>
+            <div class="credits animate__animated animate__fadeInUpBig animate__slow">
+                Library Management
+            </div>
         </section>
     </div>
 </main>

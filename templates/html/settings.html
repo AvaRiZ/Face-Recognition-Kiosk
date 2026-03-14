@@ -141,7 +141,7 @@
         );
         if (!confirmed) return;
 
-        fetch('/admin/api/reset_database', { method: 'POST' })
+        fetch('{{ url_for('admin_routes.reset_database') }}', { method: 'POST' })
             .then(response => response.json())
             .then(async data => {
                 if (data.success) {
@@ -165,7 +165,7 @@
         );
         if (!confirmed) return;
 
-        fetch('/admin/api/clear_log', { method: 'POST' })
+        fetch('{{ url_for('admin_routes.clear_log') }}', { method: 'POST' })
             .then(response => response.json())
             .then(async data => {
                 if (data.success) {

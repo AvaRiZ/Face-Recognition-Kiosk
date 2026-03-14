@@ -16,7 +16,7 @@ from services.staff_service import refresh_profile_session
 def create_profile_blueprint(save_profile_image_fn):
     bp = Blueprint("profile_routes", __name__)
 
-    @bp.route("/admin/profile", endpoint="profile_settings")
+    @bp.route("/profile", endpoint="profile_settings")
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def profile_settings():
@@ -26,7 +26,7 @@ def create_profile_blueprint(save_profile_image_fn):
             return redirect(url_for("auth_routes.auth_login"))
         return render_template("html/pages/profile-settings.html", staff=staff)
 
-    @bp.route("/admin/profile", methods=["POST"], endpoint="profile_settings_update")
+    @bp.route("/profile", methods=["POST"], endpoint="profile_settings_update")
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def profile_settings_update():
@@ -57,7 +57,7 @@ def create_profile_blueprint(save_profile_image_fn):
         flash("Profile information updated.", "success")
         return redirect(url_for("profile_routes.profile_settings"))
 
-    @bp.route("/admin/profile/password", methods=["POST"], endpoint="profile_change_password")
+    @bp.route("/profile/password", methods=["POST"], endpoint="profile_change_password")
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def profile_change_password():

@@ -19,7 +19,8 @@ def init_db(db_path):
             image_paths TEXT NOT NULL,
             embedding_dim INTEGER NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            archived_at TIMESTAMP
         )
         """
     )
@@ -34,6 +35,11 @@ def init_db(db_path):
         )
         """
     )
+
+    c.execute("PRAGMA table_info(users)")
+    existing_cols = {row[1] for row in c.fetchall()}
+    if "archived_at" not in existing_cols:
+        c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
     conn.commit()
     conn.close()
 

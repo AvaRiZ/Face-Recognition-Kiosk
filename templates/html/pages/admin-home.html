@@ -11,11 +11,12 @@
             <h5 class="card-title">Quick Links</h5>
             <ul class="mb-0">
                 <li><a href="{{ url_for('admin_routes.dashboard_page') }}">Dashboard</a></li>
+                <li><a href="{{ url_for('admin_routes.entry_exit_logs') }}">Entry/Exit Logs</a></li>
                 <li><a href="{{ url_for('admin_routes.route_list_page') }}">Route List</a></li>
                 <li><a href="{{ url_for('admin_routes.policy_page') }}">Policy</a></li>
                 <li><a href="{{ url_for('admin_routes.settings') }}">Settings</a></li>
                 {% if current_role == 'super_admin' %}
-                <li><a href="/admin/manage-users">Manage User</a></li>
+                <li><a href="{{ url_for('admin_routes.manage_users') }}">Manage User</a></li>
                 {% endif %}
             </ul>
         </div>
