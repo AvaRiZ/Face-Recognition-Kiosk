@@ -7,5 +7,10 @@
     "navbar",
     "scrolltop",
     "sidenav"
-  ]
+  ],
+  "python-envs.defaultEnvManager": "ms-python.python:venv",
+  "python.analysis.ignorePatterns": [
+    "cv2"
+  ],
+  "python.pythonPath": ".venv\\Scripts\\python.exe"
 }

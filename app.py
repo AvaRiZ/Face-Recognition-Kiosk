@@ -740,24 +740,24 @@ for legacy_name, namespaced_name in _endpoint_aliases.items():
         app.view_functions[legacy_name] = app.view_functions[namespaced_name]
 
 
-@app.errorhandler(401)
-def unauthorized_error(error):
-    return render_template("html/errors/401.html"), 401
+def _render_error(error):
+    code = getattr(error, "code", 500)
+    template = f"html/errors/{code}.html"
+    try:
+        return render_template(template), code
+    except Exception:
+        return render_template("html/errors/500.html"), 500
 
 
-@app.errorhandler(403)
-def forbidden_error(error):
-    return render_template("html/errors/403.html"), 403
+try:
+    from werkzeug.exceptions import default_exceptions
+except Exception:
+    default_exceptions = {}
 
-
-@app.errorhandler(404)
-def not_found_error(error):
-    return render_template("html/errors/404.html"), 404
-
-
-@app.errorhandler(500)
-def internal_server_error(error):
-    return render_template("html/errors/500.html"), 500
+_error_codes = (401, 402, 403, 404, 405, 408, 419, 429, 500, 501, 502, 503, 504, 507)
+for _code in _error_codes:
+    if _code in default_exceptions:
+        app.register_error_handler(_code, _render_error)
 
 
 @app.route("/")
@@ -774,7 +774,7 @@ def public_page():
     return render_template("html/pages/public-page.html", user_count=user_count)
 
 
-@app.route("/admin/register", methods=["GET", "POST"])
+@app.route("/register", methods=["GET", "POST"])
 @login_required
 @role_required("super_admin", "library_admin")
 def register():
