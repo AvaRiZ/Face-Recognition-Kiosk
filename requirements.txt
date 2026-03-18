@@ -2,7 +2,10 @@ flask
 opencv-python
 ultralytics
 numpy
-tensorflow keras
+tensorflow 
+keras
 mtcnn
 lz4
 keras-facenet
+deepface
+tf-keras
