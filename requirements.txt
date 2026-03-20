@@ -1,8 +1,12 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+torchaudio
 flask
 opencv-python
 ultralytics
 numpy
-tensorflow 
+tensorflow==2.10.*
 keras
 mtcnn
 lz4
