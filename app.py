@@ -48,7 +48,7 @@ def configure_devices(torch_device_index=1, tf_use_gpu=False):
     except Exception as e:
         print(f"GPU configuration warning (TensorFlow): {e}")
 
-configure_devices(torch_device_index=0, tf_use_gpu=False)
+configure_devices(torch_device_index=0, tf_use_gpu=True)
 
 # Import DeepFace only after TensorFlow GPU configuration
 from deepface import DeepFace
