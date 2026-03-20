@@ -1,3 +1,11 @@
+#NVIDIA REQUIREMENTS
+#Python 3.10
+#TensorFlow 2.10.0
+#CUDA 11.2.0: https://developer.nvidia.com/cuda-11.2.0-download-archive
+#cuDNN 8.1.1: https://developer.nvidia.com/rdp/cudnn-archive
+#IMPORTANT: Paste cuDNN files into CUDA folder (e.g., C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2)
+#Add CUDA and cuDNN to PATH environment variable (e.g., C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\bin and C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\libnvvp)
+
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.5.0
 torchvision==0.20.0
