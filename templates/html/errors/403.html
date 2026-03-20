@@ -13,7 +13,7 @@
             <h1>403</h1>
             <h2>User does not have the required role.</h2>
         <p class="text-muted mb-4">You do not have permission to access this page.</p>
-            <a class="btn" href="{{ url_for('admin_routes.dashboard_page') if session.get('staff_id') else url_for('auth_routes.auth_login') }}">
+            <a class="btn" href="{{ url_for('routes.dashboard_page') if session.get('staff_id') else url_for('auth_routes.auth_login') }}">
             Back to home
             </a>
         </section>

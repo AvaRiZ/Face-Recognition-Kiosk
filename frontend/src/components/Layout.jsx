@@ -1,0 +1,21 @@
+import React from 'react';
+import { Outlet } from 'react-router-dom';
+import Header from './Header.jsx';
+import Sidebar from './Sidebar.jsx';
+
+export default function Layout() {
+  return (
+    <div>
+      <Header />
+      <Sidebar />
+      <main id="main" className="main">
+        <Outlet />
+      </main>
+      <footer id="footer" className="footer">
+        <div className="copyright">
+          <strong>Batangas State University The National Engineering University</strong>
+        </div>
+      </footer>
+    </div>
+  );
+}

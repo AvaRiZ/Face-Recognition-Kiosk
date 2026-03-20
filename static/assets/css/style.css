@@ -1407,6 +1407,102 @@ body.dark .back-to-top:hover {
     background: #ffecdf;
 }
 
+.dashboard .occupancy-card .card-icon {
+    color: #dc3545;
+    background: #ffe5e8;
+}
+
+.occupancy-card-panel {
+    display: grid;
+    grid-template-columns: minmax(150px, 220px) 1fr;
+    gap: 1rem;
+    align-items: center;
+    min-height: 180px;
+}
+
+.occupancy-chart-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 220px;
+    margin: 0 auto;
+}
+
+.occupancy-chart {
+    position: relative;
+}
+
+.occupancy-center-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    pointer-events: none;
+}
+
+.occupancy-center-label strong {
+    font-size: 28px;
+    line-height: 1;
+    color: var(--dashboard-info-color);
+}
+
+.occupancy-center-label span {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--secondary-color);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.occupancy-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.occupancy-primary {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--secondary-color);
+}
+
+.occupancy-progress {
+    height: 10px;
+    background: #eceff4;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.occupancy-progress .progress-bar {
+    background: linear-gradient(90deg, #d2232a 0%, #f15a29 100%);
+    border-radius: 999px;
+}
+
+.occupancy-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 12px;
+    color: #6c757d;
+}
+
+@media (max-width: 991.98px) {
+    .occupancy-card-panel {
+        grid-template-columns: 1fr;
+        text-align: center;
+    }
+
+    .occupancy-meta {
+        align-items: stretch;
+    }
+
+    .occupancy-legend {
+        justify-content: center;
+    }
+}
+
 /* Activity */
 .dashboard .activity {
     font-size: 13px;
@@ -1943,4 +2039,22 @@ body.dark .back-to-top:hover {
     text-align: center;
     font-size: var(--font-size-md);
     color: var(--secondary-color);
+}
+
+/*--------------------------------------------------------------
+  # Auth Pages
+  --------------------------------------------------------------*/
+.auth-page {
+    min-height: 100vh;
+    background: url("../img/background.jpg") center center / cover no-repeat fixed;
+}
+
+.auth-page .section.register {
+    background: transparent;
+}
+
+.auth-page .card {
+    background: rgba(255, 255, 255, 0.94);
+    border-radius: 18px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
 }

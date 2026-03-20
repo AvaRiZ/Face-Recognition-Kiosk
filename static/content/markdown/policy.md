@@ -104,8 +104,6 @@ Updated versions will be posted through official system channels.
 ## 12. Contact
 
 For privacy concerns, correction requests, or access/deletion requests, contact:
-
-- **Library Administration Office**
-- **ICT Services Office**
+**Library Management**
 
 Please include your full name, SR Code, and concern details for verification and faster processing.

@@ -12,7 +12,7 @@
         <section class="section error-404 text-center">
             <h1>405</h1>
             <h2>Method not allowed.</h2>
-            <a class="btn" href="{{ url_for('admin_routes.dashboard_page') if session.get('staff_id') else url_for('auth_routes.auth_login') }}">
+            <a class="btn" href="{{ url_for('routes.dashboard_page') if session.get('staff_id') else url_for('auth_routes.auth_login') }}">
             Back to home
             </a>
         </section>

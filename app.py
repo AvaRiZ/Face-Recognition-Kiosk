@@ -1,4 +1,4 @@
-from flask import Flask, render_template, Response, request, redirect, url_for, session
+from flask import Flask, render_template, Response, request, redirect, url_for, session, send_from_directory, jsonify
 import cv2 
 from ultralytics import YOLO
 import os
@@ -15,7 +15,7 @@ from auth import (
     login_required,
     role_required,
 )
-from routes.admin_routes import create_admin_blueprint
+from routes.routes import create_routes_blueprint, init_imported_logs_table
 from routes.auth_routes import create_auth_blueprint
 from routes.profile_routes import create_profile_blueprint
 from services.face_service import (
@@ -64,6 +64,7 @@ ensure_profile_upload_dir()
 # -------------------------------
 init_db(DB_PATH)
 init_auth_db()
+init_imported_logs_table(DB_PATH)
 
 # Load existing embeddings
 all_user_embeddings, user_info = load_all_embeddings(DB_PATH)
@@ -700,7 +701,7 @@ def _reset_registration_state():
 
 app.register_blueprint(create_auth_blueprint())
 app.register_blueprint(
-    create_admin_blueprint(
+    create_routes_blueprint(
         {
             "render_markdown_as_html": render_markdown_as_html,
             "get_user_count": _get_user_count,
@@ -719,18 +720,17 @@ _endpoint_aliases = {
     "auth_login": "auth_routes.auth_login",
     "auth_logout": "auth_routes.auth_logout",
     "unauthorized": "auth_routes.unauthorized",
-    "pages_home": "admin_routes.pages_home",
-    "policy_page": "admin_routes.policy_page",
-    "dashboard_page": "admin_routes.dashboard_page",
-    "route_list_page": "admin_routes.route_list_page",
-    "manage_users": "admin_routes.manage_users",
-    "manage_users_create": "admin_routes.manage_users_create",
-    "manage_users_toggle": "admin_routes.manage_users_toggle",
-    "settings": "admin_routes.settings",
-    "get_stats": "admin_routes.get_stats",
-    "reset_database": "admin_routes.reset_database",
-    "clear_log": "admin_routes.clear_log",
-    "reset_registration": "admin_routes.reset_registration",
+    "policy_page": "routes.policy_page",
+    "dashboard_page": "routes.dashboard_page",
+    "route_list_page": "routes.route_list_page",
+    "manage_users": "routes.manage_users",
+    "manage_users_create": "routes.manage_users_create",
+    "manage_users_toggle": "routes.manage_users_toggle",
+    "settings": "routes.settings",
+    "get_stats": "routes.get_stats",
+    "reset_database": "routes.reset_database",
+    "clear_log": "routes.clear_log",
+    "reset_registration": "routes.reset_registration",
     "profile_settings": "profile_routes.profile_settings",
     "profile_settings_update": "profile_routes.profile_settings_update",
     "profile_change_password": "profile_routes.profile_change_password",
@@ -760,18 +760,22 @@ for _code in _error_codes:
         app.register_error_handler(_code, _render_error)
 
 
-@app.route("/")
+def _spa_index():
+    built_path = os.path.join(app.static_folder, "react", "index.html")
+    if os.path.exists(built_path):
+        return send_from_directory(os.path.join(app.static_folder, "react"), "index.html")
+    # Dev fallback: serve Vite index.html directly if build output is missing.
+    return send_from_directory(os.path.join("frontend"), "index.html")
+
+
+@app.route("/", endpoint="kiosk")
 def kiosk():
-    global pending_registration, recognized_user
-    return render_template("html/kiosk_improved.html",
-                           pending_registration=pending_registration is not None,
-                           recognized_user=recognized_user,
-                           user_count=user_count)
+    return _spa_index()
 
 
 @app.route("/public")
 def public_page():
-    return render_template("html/pages/public-page.html", user_count=user_count)
+    return _spa_index()
 
 
 @app.route("/register", methods=["GET", "POST"])
@@ -782,7 +786,9 @@ def register():
     global registration_in_progress, captured_faces_for_registration, face_capture_count
 
     if not pending_registration:
-        return redirect(url_for('kiosk'))
+        if request.method == "POST":
+            return jsonify({"success": False, "message": "No pending registration."}), 400
+        return _spa_index()
 
     if request.method == "POST":
         name = request.form["name"]
@@ -830,10 +836,26 @@ def register():
         
         time.sleep(1)  # Brief pause
         
-        return redirect(url_for("kiosk"))
+        return jsonify({"success": True})
 
-    return render_template("html/register_improved.html",
-                          capture_count=len(pending_registration) if pending_registration else 0)
+    return _spa_index()
+
+
+@app.route("/api/register-info")
+@login_required
+@role_required("super_admin", "library_admin")
+def register_info():
+    return jsonify(
+        {
+            "capture_count": len(pending_registration) if pending_registration else 0,
+            "has_pending": pending_registration is not None,
+        }
+    )
+
+
+@app.route("/api/kiosk-metrics")
+def kiosk_metrics():
+    return jsonify({"user_count": user_count})
 
 
 @app.route("/video_feed")
@@ -866,6 +888,13 @@ def check_status():
             "percentage": (face_capture_count / MAX_CAPTURES_FOR_REGISTRATION) * 100 if MAX_CAPTURES_FOR_REGISTRATION > 0 else 0
         }
     }
+
+
+@app.route("/<path:path>")
+def spa_catch_all(path):
+    if path.startswith("api/"):
+        return "Not Found", 404
+    return _spa_index()
 
 
 # -------------------------------
