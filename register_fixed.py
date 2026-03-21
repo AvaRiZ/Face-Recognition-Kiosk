@@ -3,11 +3,63 @@ import numpy as np
 import sqlite3
 import os
 import time
-from ultralytics import YOLO
-from deepface import DeepFace
 import pickle
 from collections import deque
 import statistics
+import torch
+import tensorflow as tf
+from ultralytics import YOLO
+from deepface import DeepFace
+
+def configure_gpu(target_index=1):
+    """Configure CUDA device for both Torch/Ultralytics and TensorFlow/DeepFace."""
+    # Torch / Ultralytics
+    if torch.cuda.is_available():
+        if torch.cuda.device_count() > target_index:
+            torch.cuda.set_device(target_index)
+        else:
+            torch.cuda.set_device(0)
+
+    # TensorFlow / DeepFace
+    try:
+        gpus = tf.config.list_physical_devices("GPU")
+        if gpus:
+            if len(gpus) > target_index:
+                tf.config.set_visible_devices(gpus[target_index], "GPU")
+                tf.config.experimental.set_memory_growth(gpus[target_index], True)
+            else:
+                tf.config.set_visible_devices(gpus[0], "GPU")
+                tf.config.experimental.set_memory_growth(gpus[0], True)
+    except Exception as e:
+        print(f"GPU configuration warning (TensorFlow): {e}")
+
+configure_gpu(target_index=1)
+
+def log_gpu_info():
+    """Log GPU name for Torch and TensorFlow."""
+    # Torch
+    if torch.cuda.is_available():
+        try:
+            torch_name = torch.cuda.get_device_name(0)
+            print(f"GPU (Torch): {torch_name}")
+        except Exception as e:
+            print(f"GPU (Torch) info unavailable: {e}")
+    else:
+        print("GPU (Torch): CUDA not available")
+
+    # TensorFlow
+    try:
+        tf_gpus = tf.config.list_logical_devices("GPU")
+        if tf_gpus:
+            print(f"GPU (TensorFlow): {tf_gpus[0].name}")
+        else:
+            print("GPU (TensorFlow): No GPU visible")
+            print("WARNING: TensorFlow cannot see a GPU. DeepFace will run on CPU.")
+    except Exception as e:
+        print(f"GPU (TensorFlow) info unavailable: {e}")
+        print("WARNING: TensorFlow GPU check failed. DeepFace may run on CPU.")
+
+log_gpu_info()
 
 # -------------------------------
 # Configuration - Aligned with app.py
@@ -22,7 +74,18 @@ SECONDARY_MODEL = "Facenet"
 MODELS = [PRIMARY_MODEL, SECONDARY_MODEL]
 
 print("Loading YOLOv8 model...")
+DEVICE = "cpu"
+if torch.cuda.is_available():
+    if torch.cuda.device_count() > 1:
+        DEVICE = "cuda:1"
+    else:
+        DEVICE = "cuda:0"
+
 yolo_model = YOLO(MODEL_PATH)
+try:
+    yolo_model.to(DEVICE)
+except Exception as e:
+    print(f"GPU warning (YOLO): {e}")
 print("✓ YOLOv8 loaded!")
 print(f"Using Dual Models: {PRIMARY_MODEL} + {SECONDARY_MODEL}")
 
@@ -49,7 +112,7 @@ def init_db():
     conn.close()
     print("Database initialized (app.py compatible schema)")
 
-def save_user_with_multiple_embeddings(embeddings_list, image_paths, name, sr_code, course):
+def save_user_with_multiple_embeddings(embeddings_by_model, image_paths, name, sr_code, course):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
@@ -64,9 +127,9 @@ def save_user_with_multiple_embeddings(embeddings_list, image_paths, name, sr_co
         existing_emb_blob = c.fetchone()[0]
         if existing_emb_blob:
             existing_embeddings = pickle.loads(existing_emb_blob)
-            all_embeddings = existing_embeddings + embeddings_list
+            all_embeddings = merge_embeddings_by_model(existing_embeddings, embeddings_by_model)
         else:
-            all_embeddings = embeddings_list
+            all_embeddings = normalize_embeddings_by_model(embeddings_by_model)
         
         embeddings_blob = pickle.dumps(all_embeddings)
         c.execute("""
@@ -74,10 +137,11 @@ def save_user_with_multiple_embeddings(embeddings_list, image_paths, name, sr_co
             SET name = ?, course = ?, embeddings = ?, image_paths = ?, 
                 embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
             WHERE user_id = ?
-        """, (name, course, embeddings_blob, ';'.join(image_paths), len(embeddings_list[0]), user_id))
+        """, (name, course, embeddings_blob, ';'.join(image_paths), infer_embedding_dim(all_embeddings), user_id))
     else:
-        embeddings_blob = pickle.dumps(embeddings_list)
-        embedding_dim = len(embeddings_list[0])
+        embeddings_by_model = normalize_embeddings_by_model(embeddings_by_model)
+        embeddings_blob = pickle.dumps(embeddings_by_model)
+        embedding_dim = infer_embedding_dim(embeddings_by_model)
         c.execute("""
             INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim) 
             VALUES (?, ?, ?, ?, ?, ?)
@@ -86,8 +150,79 @@ def save_user_with_multiple_embeddings(embeddings_list, image_paths, name, sr_co
     
     conn.commit()
     conn.close()
-    print(f"✓ User saved/updated with ID: {user_id} ({len(embeddings_list)} embeddings)")
+    total_emb = count_embeddings(embeddings_by_model)
+    print(f"✓ User saved/updated with ID: {user_id} ({total_emb} embeddings across models)")
     return user_id
+
+def _normalize_embedding_list(value):
+    if value is None:
+        return []
+    if isinstance(value, np.ndarray):
+        if value.ndim == 1:
+            return [value.astype(np.float32, copy=False)]
+        if value.ndim == 2:
+            return [row.astype(np.float32, copy=False) for row in value]
+        return []
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return []
+        first = value[0]
+        if isinstance(first, np.ndarray):
+            return [v.astype(np.float32, copy=False) for v in value if isinstance(v, np.ndarray)]
+        if isinstance(first, (list, tuple, np.ndarray)):
+            out = []
+            for v in value:
+                arr = v if isinstance(v, np.ndarray) else np.array(v, dtype=np.float32)
+                if arr.ndim == 1:
+                    out.append(arr.astype(np.float32, copy=False))
+                elif arr.ndim == 2:
+                    out.extend([row.astype(np.float32, copy=False) for row in arr])
+            return out
+        if isinstance(first, (int, float, np.floating, np.integer)):
+            arr = np.array(value, dtype=np.float32)
+            if arr.ndim == 1:
+                return [arr]
+            return []
+    if isinstance(value, (int, float, np.floating, np.integer)):
+        return [np.array([value], dtype=np.float32)]
+    return []
+
+def normalize_embeddings_by_model(embeddings_by_model):
+    normalized = {}
+    for model_name, value in (embeddings_by_model or {}).items():
+        normalized[model_name] = _normalize_embedding_list(value)
+    return normalized
+
+def merge_embeddings_by_model(existing, new):
+    """Merge embeddings dicts: {model_name: [embeddings...]}"""
+    merged = {}
+    for model_name, emb_list in normalize_embeddings_by_model(existing).items():
+        merged[model_name] = list(emb_list)
+    for model_name, emb_list in normalize_embeddings_by_model(new).items():
+        if model_name not in merged:
+            merged[model_name] = []
+        merged[model_name].extend(list(emb_list))
+    return merged
+
+def infer_embedding_dim(embeddings_by_model):
+    """Infer embedding dim from the first available embedding"""
+    if not embeddings_by_model:
+        return 0
+    normalized = normalize_embeddings_by_model(embeddings_by_model)
+    for emb_list in normalized.values():
+        if emb_list:
+            emb = emb_list[0]
+            if isinstance(emb, np.ndarray) and emb.ndim == 1:
+                return emb.shape[0]
+            if isinstance(emb, (list, tuple)):
+                return len(emb)
+    return 0
+
+def count_embeddings(embeddings_by_model):
+    if not embeddings_by_model:
+        return 0
+    normalized = normalize_embeddings_by_model(embeddings_by_model)
+    return sum(len(v) for v in normalized.values() if v)
 
 def load_all_embeddings():
     """Load all embeddings for compatibility with app.py"""
@@ -102,8 +237,8 @@ def load_all_embeddings():
     
     for user_id, name, sr_code, emb_blob in rows:
         if emb_blob:
-            embeddings_list = pickle.loads(emb_blob)
-            all_embeddings.append(embeddings_list)
+            embeddings_by_model = normalize_embeddings_by_model(pickle.loads(emb_blob))
+            all_embeddings.append(embeddings_by_model)
             user_info.append({
                 'id': user_id,
                 'name': name,
@@ -164,7 +299,7 @@ def extract_embedding_ensemble(face_crop):
             else:
                 face_rgb = face_crop
         
-        embeddings = []
+        embeddings = {}
         
         for model_name in MODELS:
             try:
@@ -184,7 +319,7 @@ def extract_embedding_ensemble(face_crop):
                 if norm > 1e-8:
                     embedding = embedding / norm
                 
-                embeddings.append(embedding)
+                embeddings[model_name] = [embedding]
                 print(f"  ✓ {model_name} embedding extracted (dim: {len(embedding)})")
                 
             except Exception as e:
@@ -220,7 +355,7 @@ def capture_best_face():
             break
         
         frame = cv2.resize(frame, (640, 480))
-        results = yolo_model(frame, conf=0.5)
+        results = yolo_model(frame, conf=0.5, device=DEVICE)
         
         current_best_face = None
         current_best_conf = 0
@@ -302,7 +437,7 @@ def register_new_user():
         print("Failed to extract embeddings")
         return
     
-    print(f"✓ Dual embeddings: ArcFace({len(embeddings[0])}dim), Facenet({len(embeddings[1])}dim)")
+    print(f"✓ Dual embeddings: ArcFace({len(embeddings[PRIMARY_MODEL])}dim), Facenet({len(embeddings[SECONDARY_MODEL])}dim)")
     
     # Input info
     print("\n=== USER INFO ===")
