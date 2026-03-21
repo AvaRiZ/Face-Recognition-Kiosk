@@ -93,58 +93,59 @@ class AppConfig:
     secondary_threshold: float = 0.6
     base_threshold: float = 0.5
     adaptive_threshold_enabled: bool = True
-    face_quality_threshold: float = 0.58
-    face_quality_good_threshold: float = 0.75
+    face_quality_threshold: float = 0.56
+    face_quality_good_threshold: float = 0.78
     min_face_size: int = 50
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 2
     recognition_cooldown_seconds: int = 2
+    revalidation_interval_seconds: float = 4.0
+    identity_lock_confidence_threshold: float = 0.7
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
 
     # Face quality scoring thresholds
-    quality_face_area_low: int = 50 * 50
-    quality_face_area_high: int = 130 * 130
-    quality_detection_confidence_low: float = 0.35
-    quality_detection_confidence_high: float = 0.80
-    quality_sharpness_low: float = 80.0
-    quality_sharpness_high: float = 250.0
-    quality_contrast_low: float = 20.0
-    quality_contrast_high: float = 60.0
-    quality_dark_intensity_threshold: int = 40
-    quality_bright_intensity_threshold: int = 220
-    quality_dark_ratio_good: float = 0.08
-    quality_dark_ratio_bad: float = 0.35
-    quality_bright_ratio_good: float = 0.05
-    quality_bright_ratio_bad: float = 0.28
-    quality_dynamic_range_low: float = 30.0
-    quality_dynamic_range_high: float = 90.0
+    quality_face_area_low: int = 56 * 56
+    quality_face_area_high: int = 170 * 170
+    quality_detection_confidence_low: float = 0.40
+    quality_detection_confidence_high: float = 0.82
+    quality_sharpness_low: float = 45.0
+    quality_sharpness_high: float = 140.0
+    quality_dark_intensity_threshold: int = 45
+    quality_bright_intensity_threshold: int = 215
+    quality_dark_ratio_good: float = 0.10
+    quality_dark_ratio_bad: float = 0.45
+    quality_bright_ratio_good: float = 0.08
+    quality_bright_ratio_bad: float = 0.35
+    quality_dynamic_range_low: float = 28.0
+    quality_dynamic_range_high: float = 95.0
     quality_canny_low: int = 50
     quality_canny_high: int = 150
-    quality_edge_density_low: float = 0.03
-    quality_edge_density_high: float = 0.12
-    quality_low_detail_std_threshold: float = 12.0
-    quality_low_detail_ratio_good: float = 0.20
-    quality_low_detail_ratio_bad: float = 0.65
-    quality_eye_tilt_good_ratio: float = 0.08
-    quality_eye_tilt_bad_ratio: float = 0.20
-    quality_pose_good_ratio: float = 0.10
-    quality_pose_bad_ratio: float = 0.30
-    quality_band_alignment_good_ratio: float = 0.06
-    quality_band_alignment_bad_ratio: float = 0.18
-    quality_pose_balance_good: float = 0.15
-    quality_pose_balance_bad: float = 0.45
+    quality_eye_tilt_good_ratio: float = 0.11
+    quality_eye_tilt_bad_ratio: float = 0.29
+    quality_pose_good_ratio: float = 0.15
+    quality_pose_bad_ratio: float = 0.40
+    quality_band_alignment_good_ratio: float = 0.09
+    quality_band_alignment_bad_ratio: float = 0.24
+    quality_pose_balance_good: float = 0.22
+    quality_pose_balance_bad: float = 0.58
+
+    # Missing but impactful dimensions for ArcFace/Facenet robustness.
+    quality_contrast_low: float = 20.0
+    quality_contrast_high: float = 58.0
+    quality_aspect_ratio_good: float = 1.25
+    quality_aspect_ratio_bad: float = 1.95
 
     # Face quality scoring weights (recognition-focused priorities)
-    quality_weight_size: float = 0.22
-    quality_weight_sharpness: float = 0.24
-    quality_weight_detection_confidence: float = 0.20
+    quality_weight_size: float = 0.16
+    quality_weight_sharpness: float = 0.26
+    quality_weight_detection_confidence: float = 0.14
     quality_weight_alignment: float = 0.14
-    quality_weight_pose: float = 0.08
-    quality_weight_exposure: float = 0.07
-    quality_weight_contrast: float = 0.03
-    quality_weight_occlusion: float = 0.02
+    quality_weight_pose: float = 0.10
+    quality_weight_exposure: float = 0.15
+    quality_weight_contrast: float = 0.10
+    quality_weight_aspect_ratio: float = 0.05
 
     @property
     def models(self):
@@ -676,7 +677,6 @@ def _approximate_alignment_pose(edges):
 def _compute_exposure_metrics(gray):
     gray_f = gray.astype(np.float32, copy=False)
     brightness = float(np.mean(gray_f))
-    contrast = float(np.std(gray_f))
 
     dark_ratio = float(np.mean(gray_f <= CONFIG.quality_dark_intensity_threshold))
     bright_ratio = float(np.mean(gray_f >= CONFIG.quality_bright_intensity_threshold))
@@ -700,49 +700,13 @@ def _compute_exposure_metrics(gray):
         CONFIG.quality_dynamic_range_high,
     )
 
-    exposure_score = _clamp01(0.45 * underexposed_score + 0.45 * overexposed_score + 0.10 * range_score)
-    contrast_score = _three_level_score(
-        contrast,
-        CONFIG.quality_contrast_low,
-        CONFIG.quality_contrast_high,
-    )
-
+    exposure_score = _clamp01(0.35 * underexposed_score + 0.35 * overexposed_score + 0.30 * range_score)
     return {
         "brightness": brightness,
-        "contrast": contrast,
         "dark_ratio": dark_ratio,
         "bright_ratio": bright_ratio,
         "dynamic_range": dynamic_range,
         "exposure_score": exposure_score,
-        "contrast_score": contrast_score,
-    }
-
-
-def _compute_detail_metrics(gray, edges):
-    edge_density = float(np.mean(edges > 0))
-    edge_density_score = _score_higher_better(
-        edge_density,
-        CONFIG.quality_edge_density_low,
-        CONFIG.quality_edge_density_high,
-    )
-
-    # Fast 4x4 local-detail map over a normalized 32x32 crop.
-    gray_small = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
-    blocks = gray_small.reshape(4, 8, 4, 8)
-    local_std = blocks.std(axis=(1, 3))
-    low_detail_ratio = float(np.mean(local_std < CONFIG.quality_low_detail_std_threshold))
-
-    low_detail_score = _score_lower_better(
-        low_detail_ratio,
-        CONFIG.quality_low_detail_ratio_good,
-        CONFIG.quality_low_detail_ratio_bad,
-    )
-    occlusion_score = _clamp01(0.6 * edge_density_score + 0.4 * low_detail_score)
-
-    return {
-        "edge_density": edge_density,
-        "low_detail_ratio": low_detail_ratio,
-        "occlusion_score": occlusion_score,
     }
 
 
@@ -758,6 +722,7 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
             "brightness": 0.0,
             "contrast": 0.0,
             "alignment_score": 0.0,
+            "aspect_ratio_score": 0.0,
             "detection_confidence": float(detection_confidence) if detection_confidence is not None else 0.0,
         }
         return 0.0, "Poor", debug_info
@@ -765,11 +730,12 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
     h, w = face_crop.shape[:2]
     area = h * w
     gray = _to_grayscale(face_crop)
+    aspect_ratio = float(max(h, w)) / max(float(min(h, w)), 1.0)
 
-    size_score = _three_level_score(area, CONFIG.quality_face_area_low, CONFIG.quality_face_area_high)
+    size_score = _score_higher_better(area, CONFIG.quality_face_area_low, CONFIG.quality_face_area_high)
 
     laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    sharpness_score = _three_level_score(
+    sharpness_score = _score_higher_better(
         laplacian_var,
         CONFIG.quality_sharpness_low,
         CONFIG.quality_sharpness_high,
@@ -784,10 +750,19 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
     )
 
     exposure_metrics = _compute_exposure_metrics(gray)
+    contrast = float(np.std(gray.astype(np.float32, copy=False)))
+    contrast_score = _score_higher_better(
+        contrast,
+        CONFIG.quality_contrast_low,
+        CONFIG.quality_contrast_high,
+    )
+    aspect_ratio_score = _score_lower_better(
+        aspect_ratio,
+        CONFIG.quality_aspect_ratio_good,
+        CONFIG.quality_aspect_ratio_bad,
+    )
 
     edges = cv2.Canny(gray, CONFIG.quality_canny_low, CONFIG.quality_canny_high)
-    detail_metrics = _compute_detail_metrics(gray, edges)
-
     normalized_landmarks = _normalize_landmarks(landmarks)
     if normalized_landmarks is not None:
         alignment_score, pose_score = _alignment_pose_from_landmarks(normalized_landmarks)
@@ -803,8 +778,8 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
         + CONFIG.quality_weight_alignment * alignment_score
         + CONFIG.quality_weight_pose * pose_score
         + CONFIG.quality_weight_exposure * exposure_metrics["exposure_score"]
-        + CONFIG.quality_weight_contrast * exposure_metrics["contrast_score"]
-        + CONFIG.quality_weight_occlusion * detail_metrics["occlusion_score"]
+        + CONFIG.quality_weight_contrast * contrast_score
+        + CONFIG.quality_weight_aspect_ratio * aspect_ratio_score
     )
 
     weights_total = (
@@ -815,7 +790,7 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
         + CONFIG.quality_weight_pose
         + CONFIG.quality_weight_exposure
         + CONFIG.quality_weight_contrast
-        + CONFIG.quality_weight_occlusion
+        + CONFIG.quality_weight_aspect_ratio
     )
     quality_score = _clamp01(weighted_sum / max(weights_total, 1e-6))
 
@@ -829,18 +804,18 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
     debug_info = {
         "sharpness": laplacian_var,
         "brightness": exposure_metrics["brightness"],
-        "contrast": exposure_metrics["contrast"],
+        "contrast": contrast,
         "alignment_score": alignment_score,
         "detection_confidence": confidence_value,
         "pose_score": pose_score,
         "size_score": size_score,
         "sharpness_score": sharpness_score,
         "exposure_score": exposure_metrics["exposure_score"],
+        "contrast_score": contrast_score,
+        "aspect_ratio": aspect_ratio,
+        "aspect_ratio_score": aspect_ratio_score,
         "dark_ratio": exposure_metrics["dark_ratio"],
         "bright_ratio": exposure_metrics["bright_ratio"],
-        "edge_density": detail_metrics["edge_density"],
-        "low_detail_ratio": detail_metrics["low_detail_ratio"],
-        "occlusion_score": detail_metrics["occlusion_score"],
         "alignment_source": alignment_source,
     }
 
@@ -1165,13 +1140,55 @@ def initialize_track_state(track_id, current_time):
     if track_id not in STATE.tracked_identities:
         STATE.tracked_identities[track_id] = {
             "recognized": False,
+            "identity_locked": False,
             "user": None,
             "last_seen": current_time,
             "last_recognition_time": 0.0,
+            "confidence": 0.0,
+            "quality": 0.0,
         }
     else:
         STATE.tracked_identities[track_id]["last_seen"] = current_time
     return STATE.tracked_identities[track_id]
+
+def parse_confidence_value(confidence_text):
+    """Parse confidence text like '87.50%' into a 0..1 float."""
+    if confidence_text is None:
+        return 0.0
+    if isinstance(confidence_text, (int, float)):
+        value = float(confidence_text)
+        return value if value <= 1.0 else value / 100.0
+
+    try:
+        text = str(confidence_text).strip().replace('%', '')
+        value = float(text)
+        return value / 100.0 if value > 1.0 else value
+    except (ValueError, TypeError):
+        return 0.0
+
+def update_track_identity_state(track_state, result, current_time, quality_score):
+    """Apply recognition result to a per-track identity state machine."""
+    track_state["last_seen"] = current_time
+    track_state["last_recognition_time"] = current_time
+    track_state["quality"] = float(quality_score)
+
+    if result is True:
+        user_snapshot = dict(STATE.recognized_user) if STATE.recognized_user else None
+        confidence_value = parse_confidence_value(user_snapshot.get("confidence") if user_snapshot else 0.0)
+
+        track_state["recognized"] = True
+        track_state["user"] = user_snapshot
+        track_state["confidence"] = confidence_value
+        # Lock identity only when confidence and quality are both strong.
+        track_state["identity_locked"] = (
+            confidence_value >= CONFIG.identity_lock_confidence_threshold
+            and float(quality_score) >= CONFIG.face_quality_good_threshold
+        )
+    elif result is False:
+        track_state["recognized"] = False
+        track_state["identity_locked"] = False
+        track_state["user"] = None
+        track_state["confidence"] = 0.0
 
 def cleanup_stale_tracks(current_time):
     """Remove old tracker states and stability buffers that are no longer visible."""
@@ -1365,14 +1382,15 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 track_state = STATE.tracked_identities.get(face_id) if face_id is not None else None
                 if track_state and track_state.get("recognized") and track_state.get("user"):
                     cached_user = track_state["user"]
-                    confidence_text = cached_user.get("confidence")
-                    identity_text = (
-                        f"{cached_user['name']} ({confidence_text})"
-                        if confidence_text else cached_user["name"]
-                    )
-                    identity_color = (0, 255, 0)
+                    confidence_value = track_state.get("confidence", 0.0)
+                    if track_state.get("identity_locked"):
+                        identity_text = f"{cached_user['name']} LOCKED {confidence_value:.0%}"
+                        identity_color = (0, 255, 0)
+                    else:
+                        identity_text = f"{cached_user['name']} UNLOCKED {confidence_value:.0%}"
+                        identity_color = (0, 255, 255)
                 elif track_state and track_state.get("last_recognition_time", 0.0) > 0.0:
-                    identity_text = "Unknown"
+                    identity_text = "UNKNOWN"
                     identity_color = (0, 165, 255)
                 else:
                     identity_text = "Untracked" if face_id is None else "Tracking"
@@ -1396,21 +1414,35 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 continue
 
             track_state = initialize_track_state(face_id, current_time)
+            quality_score = quality_tuple[0]
 
             if STATE.manual_registration_requested and not STATE.manual_registration_active and track_state.get("recognized"):
                 print("Face already in database. Manual registration canceled.")
                 STATE.manual_registration_requested = False
                 continue
 
-            if track_state.get("recognized"):
-                continue
-
+            # Per-track state machine:
+            # - UNLOCKED tracks can run recognition after cooldown.
+            # - LOCKED tracks only revalidate every revalidation interval.
             last_attempt = track_state.get("last_recognition_time", 0.0)
-            if (current_time - last_attempt) < CONFIG.recognition_cooldown_seconds:
+            should_recognize = False
+            is_revalidation = False
+
+            if track_state.get("identity_locked"):
+                if (current_time - last_attempt) >= CONFIG.revalidation_interval_seconds:
+                    should_recognize = True
+                    is_revalidation = True
+            else:
+                if (current_time - last_attempt) >= CONFIG.recognition_cooldown_seconds:
+                    should_recognize = True
+
+            if not should_recognize:
                 continue
 
+            # Mark attempt time now so failed/unknown attempts still obey cooldown.
             track_state["last_recognition_time"] = current_time
             track_state["last_seen"] = current_time
+            track_state["quality"] = float(quality_score)
             
             if STATE.manual_registration_requested and not STATE.manual_registration_active:
                 result = register_or_recognize_face(
@@ -1423,21 +1455,11 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 if result is None:
                     continue
                 if result:
-                    track_state.update({
-                        "recognized": True,
-                        "user": dict(STATE.recognized_user) if STATE.recognized_user else None,
-                        "last_seen": current_time,
-                        "last_recognition_time": current_time,
-                    })
+                    update_track_identity_state(track_state, True, current_time, quality_score)
                     print("Face already in database. Manual registration canceled.")
                     STATE.manual_registration_requested = False
                 else:
-                    track_state.update({
-                        "recognized": False,
-                        "user": None,
-                        "last_seen": current_time,
-                        "last_recognition_time": current_time,
-                    })
+                    update_track_identity_state(track_state, False, current_time, quality_score)
                     print("Unknown face. Capturing 3 samples for registration...")
                     STATE.manual_registration_requested = False
                     STATE.manual_registration_active = True
@@ -1469,19 +1491,12 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
             )
 
             if result is True:
-                track_state.update({
-                    "recognized": True,
-                    "user": dict(STATE.recognized_user) if STATE.recognized_user else None,
-                    "last_seen": current_time,
-                    "last_recognition_time": current_time,
-                })
+                update_track_identity_state(track_state, True, current_time, quality_score)
             elif result is False:
-                track_state.update({
-                    "recognized": False,
-                    "user": None,
-                    "last_seen": current_time,
-                    "last_recognition_time": current_time,
-                })
+                # Revalidation failure explicitly unlocks and marks unknown.
+                update_track_identity_state(track_state, False, current_time, quality_score)
+                if is_revalidation:
+                    print(f"Track {face_id}: identity unlock after failed revalidation")
 
             if STATE.manual_registration_active:
                 if result is True:
