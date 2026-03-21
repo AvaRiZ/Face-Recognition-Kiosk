@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import sqlite3
 import os
+import sys
 import time
 from ultralytics.models import YOLO
 from deepface import DeepFace  # @UnresolvedImport
@@ -9,6 +10,7 @@ import pickle
 from collections import deque
 import statistics
 import threading 
+from flask import Flask, redirect, session, url_for
 from auth import (
     init_auth_db,
     login_required,
@@ -17,13 +19,7 @@ from auth import (
 from routes.routes import create_routes_blueprint, init_imported_logs_table
 from routes.auth_routes import create_auth_blueprint
 from routes.profile_routes import create_profile_blueprint
-from services.face_service import (
-    init_db,
-    load_all_embeddings,
-    log_recognition,
-    render_markdown_as_html,
-    save_user_with_multiple_embeddings,
-)
+from services.face_service import render_markdown_as_html
 from services.staff_service import ensure_profile_upload_dir, save_profile_image
 
 # -------------------------------
@@ -174,12 +170,12 @@ ensure_profile_upload_dir()
 # -------------------------------
 # Initialize database
 # -------------------------------
-init_db(DB_PATH)
+init_db()
 init_auth_db()
 init_imported_logs_table(DB_PATH)
 
 # Load existing embeddings
-all_user_embeddings, user_info = load_all_embeddings(DB_PATH)
+all_user_embeddings, user_info = load_all_embeddings()
 user_count = len(user_info)
 
 # -------------------------------
@@ -499,6 +495,91 @@ MAX_CAPTURES_FOR_REGISTRATION = 3
 face_stability_tracker = {}
 STABILITY_TIME_REQUIRED = 0.5
 POSITION_TOLERANCE = 50
+
+
+def get_thresholds():
+    return BASE_THRESHOLD, ADAPTIVE_THRESHOLD_ENABLED, FACE_QUALITY_THRESHOLD
+
+
+def set_thresholds(threshold, adaptive_enabled, quality_threshold):
+    global BASE_THRESHOLD, ADAPTIVE_THRESHOLD_ENABLED, FACE_QUALITY_THRESHOLD
+    BASE_THRESHOLD = float(threshold)
+    ADAPTIVE_THRESHOLD_ENABLED = bool(adaptive_enabled)
+    FACE_QUALITY_THRESHOLD = float(quality_threshold)
+
+
+def get_user_count():
+    return len(user_info)
+
+
+def reset_registration_state():
+    global pending_registration, recognized_user, registration_in_progress
+    global last_processed_face_id, captured_faces_for_registration
+    global face_capture_count, face_stability_tracker
+
+    pending_registration = None
+    recognized_user = None
+    registration_in_progress = False
+    last_processed_face_id = None
+    captured_faces_for_registration = []
+    face_capture_count = 0
+    face_stability_tracker = {}
+
+
+def reset_database_state():
+    global all_user_embeddings, user_info, user_count
+
+    reset_registration_state()
+    all_user_embeddings = []
+    user_info = []
+    user_count = 0
+
+
+def remove_user_embedding(user_id):
+    global all_user_embeddings, user_info, user_count
+
+    for idx, info in enumerate(user_info):
+        if info["id"] == user_id:
+            user_info.pop(idx)
+            if idx < len(all_user_embeddings):
+                all_user_embeddings.pop(idx)
+            break
+    user_count = len(user_info)
+
+
+def create_app():
+    app = Flask(__name__, static_folder="static", static_url_path="/static")
+    app.secret_key = os.environ.get("FLASK_SECRET_KEY", "face-recognition-kiosk-dev-secret")
+
+    deps = {
+        "db_path": DB_PATH,
+        "base_save_dir": BASE_SAVE_DIR,
+        "get_thresholds": get_thresholds,
+        "set_thresholds": set_thresholds,
+        "get_user_count": get_user_count,
+        "reset_database_state": reset_database_state,
+        "reset_registration_state": reset_registration_state,
+        "remove_user_embedding": remove_user_embedding,
+        "render_markdown_as_html": render_markdown_as_html,
+    }
+
+    app.register_blueprint(create_routes_blueprint(deps))
+    app.register_blueprint(create_auth_blueprint())
+    app.register_blueprint(create_profile_blueprint(save_profile_image))
+
+    @app.route("/")
+    def index():
+        if "staff_id" in session:
+            return redirect(url_for("routes.dashboard_page"))
+        return redirect(url_for("auth_routes.auth_login"))
+
+    @app.route("/register")
+    @app.route("/kiosk")
+    @app.route("/kiosk-improved")
+    def spa_public_routes():
+        return app.send_static_file("react/index.html")
+
+    return app
 
 
 # -------------------------------
@@ -1037,12 +1118,19 @@ def main_menu():
 # -------------------------------
 if __name__ == "__main__":
     init_db()
-    print(f"\n=== CCTV Face Recognition System ===")
-    print(f"Database: {DB_PATH}")
-    print(f"Face models: {PRIMARY_MODEL} + {SECONDARY_MODEL}")
-    print(f"Base threshold: {BASE_THRESHOLD}")
-    print(f"Users in database: {user_count}")
-    print("="*50)
-    
-    main_menu()
+    if "--cli" in sys.argv:
+        print(f"\n=== CCTV Face Recognition System ===")
+        print(f"Database: {DB_PATH}")
+        print(f"Face models: {PRIMARY_MODEL} + {SECONDARY_MODEL}")
+        print(f"Base threshold: {BASE_THRESHOLD}")
+        print(f"Users in database: {user_count}")
+        print("="*50)
+        main_menu()
+    else:
+        app = create_app()
+        print("\n=== Face Recognition Kiosk Web Server ===")
+        print("Open: http://127.0.0.1:5000")
+        print("Use 'python app.py --cli' for the terminal menu")
+        print("=" * 50)
+        app.run(host="127.0.0.1", port=5000, debug=True)
 
