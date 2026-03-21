@@ -67,7 +67,8 @@ def init_db():
             image_paths TEXT NOT NULL,
             embedding_dim INTEGER NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            archived_at TIMESTAMP
         )
     ''')
     
@@ -81,6 +82,11 @@ def init_db():
         )
     ''')
     
+    c.execute("PRAGMA table_info(users)")
+    existing_columns = {row[1] for row in c.fetchall()}
+    if "archived_at" not in existing_columns:
+        c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
+
     conn.commit()
     conn.close()
 
@@ -130,7 +136,13 @@ def load_all_embeddings():
     """Load all embeddings for all users"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT user_id, name, sr_code, embeddings FROM users")
+    c.execute(
+        """
+        SELECT user_id, name, sr_code, embeddings
+        FROM users
+        WHERE archived_at IS NULL
+        """
+    )
     rows = c.fetchall()
     conn.close()
     
