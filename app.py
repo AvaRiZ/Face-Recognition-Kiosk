@@ -1,3 +1,4 @@
+import argparse
 import sys
 import subprocess
 import cv2
@@ -7,7 +8,7 @@ import os
 import sys
 import time
 from deepface import DeepFace  # @UnresolvedImport
-import pickles
+import pickle
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -2002,16 +2003,46 @@ def main_menu():
             print("Invalid choice")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Face Recognition Kiosk")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Start the Flask web interface instead of the interactive CLI menu.",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("FLASK_RUN_HOST", "127.0.0.1"),
+        help="Host interface for web mode.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("FLASK_RUN_PORT", 5000)),
+        help="Port for web mode.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable Flask debug mode in web mode.",
+    )
+    return parser.parse_args()
+
+
 # -------------------------------
 # Run the system
 # -------------------------------
 if __name__ == "__main__":
-    init_db()
+    args = parse_args()
     log_header("CCTV Face Recognition System - Initialization")
     log_step(f"Database: {CONFIG.db_path}")
     log_step(f"Face models: {CONFIG.primary_model} + {CONFIG.secondary_model}")
     log_step(f"Base threshold: {CONFIG.base_threshold}")
     log_step(f"Users in database: {STATE.user_count}")
-    
-    main_menu()
+
+    if args.web:
+        log_step(f"Starting web server at http://{args.host}:{args.port}")
+        create_app().run(host=args.host, port=args.port, debug=args.debug)
+    else:
+        main_menu()
 

@@ -14,6 +14,10 @@ flask
 ultralytics
 deepface
 numpy<2
+pandas
+scipy
+scikit-learn
+statsmodels
 opencv-python<4.13
 tensorflow==2.10.*
 keras
