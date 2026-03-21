@@ -9,11 +9,15 @@ from deepface import DeepFace
 # -------------------------------
 # Configuration
 # -------------------------------
-MODEL_PATH = "yolov8m.pt"
-DB_PATH = "faces.db"
-BASE_SAVE_DIR = "faces"
-FACE_MODEL = "Facenet"  # Options: 'VGG-Face', 'Facenet', 'OpenFace', 'DeepID', 'ArcFace'
-THRESHOLD = 0.4  # Lower threshold for DeepFace Facenet (cosine distance)
+MODEL_PATH = "models/yolov8m.pt"
+DB_PATH = "database/faces_improved.db"
+BASE_SAVE_DIR = "faces_improved"
+MODEL_PATH = "models/face_yolov8m.pt"
+PRIMARY_MODEL = "ArcFace"
+SECONDARY_MODEL = "Facenet"
+MODELS = [PRIMARY_MODEL, SECONDARY_MODEL]
+PRIMARY_THRESHOLD = 0.45
+SECONDARY_THRESHOLD = 0.35
 
 # -------------------------------
 # Initialize models
