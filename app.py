@@ -3,8 +3,8 @@ import numpy as np
 import sqlite3
 import os
 import time
-from ultralytics import YOLO
-from deepface import DeepFace
+from ultralytics.models import YOLO
+from deepface import DeepFace  # @UnresolvedImport
 import pickle
 from collections import deque
 import statistics
@@ -190,6 +190,8 @@ ADAPTIVE_THRESHOLD_ENABLED = True
 FACE_QUALITY_THRESHOLD = 0.2
 MIN_FACE_SIZE = 40
 CONFIDENCE_SMOOTHING_WINDOW = 2.5
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
 
 
 class CameraManager:
@@ -701,31 +703,35 @@ def process_cctv_stream(stream_url, frame_width=640, frame_height=480):
         frame = cv2.resize(frame, (frame_width, frame_height))
         results = model(frame, conf=0.3)
 
-            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-            results = model(frame, conf=0.3)
+        face_crops = []
+        face_qualities = []
+        stable_faces = []
 
-            face_crops = []
-            face_qualities = []
-            stable_faces = []
+        for result in results:
+            for box in result.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(frame.shape[1], x2)
+                y2 = min(frame.shape[0], y2)
 
                 if (x2 - x1) < MIN_FACE_SIZE or (y2 - y1) < MIN_FACE_SIZE:
                     continue
 
-                    # Check minimum size
-                    if (x2 - x1) < MIN_FACE_SIZE or (y2 - y1) < MIN_FACE_SIZE:
-                        continue
+                face_crop = frame[y1:y2, x1:x2]
+                if face_crop.size == 0:
+                    continue
 
+                face_crops.append(face_crop)
                 quality_score, quality_status = assess_face_quality(face_crop)
                 face_qualities.append((quality_score, quality_status))
 
                 face_id = f"{x1}_{y1}_{x2}_{y2}"
-
                 is_stable = check_face_stability(face_id, x1, y1, x2, y2)
+                if is_stable:
+                    stable_faces.append((face_crop, face_id))
 
-                    # Check stability
-                    is_stable = check_face_stability(face_id, x1, y1, x2, y2)
-
-                conf = float(box.conf[0])
+                conf = float(box.conf[0]) if box.conf is not None else 0.0
                 if is_stable:
                     if quality_score > 0.7:
                         color = (0, 255, 0)
@@ -736,12 +742,18 @@ def process_cctv_stream(stream_url, frame_width=640, frame_height=480):
                 else:
                     color = (128, 128, 128)
 
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
                 stability_text = "STABLE" if is_stable else "MOVING"
-                cv2.putText(frame, f"{stability_text} Q:{quality_score:.1f}",
-                           (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                           0.5, color, 1)
+                cv2.putText(
+                    frame,
+                    f"{stability_text} Q:{quality_score:.1f} C:{conf:.2f}",
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    1,
+                )
 
         for face_crop, face_id in stable_faces:
             if not registration_in_progress:
