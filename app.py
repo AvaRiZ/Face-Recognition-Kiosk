@@ -6,8 +6,8 @@ import sqlite3
 import os
 import sys
 import time
-from ultralytics.models import YOLO
-import pickle
+from deepface import DeepFace  # @UnresolvedImport
+import pickles
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -26,6 +26,7 @@ from services.face_service import render_markdown_as_html
 from services.staff_service import ensure_profile_upload_dir, save_profile_image
 import torch
 import tensorflow as tf
+from ultralytics import YOLO
 
 def log_header(title):
     print("\n" + "=" * 60)
@@ -64,7 +65,7 @@ def configure_devices(torch_device_index=1, tf_use_gpu=False):
 configure_devices(torch_device_index=0, tf_use_gpu=True)
 
 # Import DeepFace only after TensorFlow GPU configuration
-from deepface import DeepFace  # @UnresolvedImport
+from deepface import DeepFace
 
 def log_gpu_info():
     """Log GPU name for Torch and TensorFlow."""
@@ -1109,33 +1110,38 @@ def get_user_count():
 
 
 def reset_registration_state():
-    STATE.pending_registration = None
-    STATE.recognized_user = None
-    STATE.registration_in_progress = False
-    STATE.captured_faces_for_registration = []
-    STATE.face_capture_count = 0
-    STATE.face_stability_tracker = {}
-    STATE.tracked_identities = {}
-    STATE.manual_registration_requested = False
-    STATE.manual_registration_active = False
-    STATE.manual_registration_track_id = None
+    global pending_registration, recognized_user, registration_in_progress
+    global last_processed_face_id, captured_faces_for_registration
+    global face_capture_count, face_stability_tracker
+
+    pending_registration = None
+    recognized_user = None
+    registration_in_progress = False
+    last_processed_face_id = None
+    captured_faces_for_registration = []
+    face_capture_count = 0
+    face_stability_tracker = {}
 
 
 def reset_database_state():
+    global all_user_embeddings, user_info, user_count
+
     reset_registration_state()
-    STATE.all_user_embeddings = []
-    STATE.user_info = []
-    STATE.user_count = 0
+    all_user_embeddings = []
+    user_info = []
+    user_count = 0
 
 
 def remove_user_embedding(user_id):
-    for idx, info in enumerate(STATE.user_info):
+    global all_user_embeddings, user_info, user_count
+
+    for idx, info in enumerate(user_info):
         if info["id"] == user_id:
-            STATE.user_info.pop(idx)
-            if idx < len(STATE.all_user_embeddings):
-                STATE.all_user_embeddings.pop(idx)
+            user_info.pop(idx)
+            if idx < len(all_user_embeddings):
+                all_user_embeddings.pop(idx)
             break
-    STATE.user_count = len(STATE.user_info)
+    user_count = len(user_info)
 
 
 def create_app():
@@ -2006,12 +2012,6 @@ if __name__ == "__main__":
     log_step(f"Face models: {CONFIG.primary_model} + {CONFIG.secondary_model}")
     log_step(f"Base threshold: {CONFIG.base_threshold}")
     log_step(f"Users in database: {STATE.user_count}")
-
-    if "--web" in sys.argv:
-        web_app = create_app()
-        log_step("Starting web server at http://127.0.0.1:5000")
-        log_step("Use 'python app.py' for the terminal menu")
-        web_app.run(host="127.0.0.1", port=5000, debug=True)
-    else:
-        main_menu()
+    
+    main_menu()
 
