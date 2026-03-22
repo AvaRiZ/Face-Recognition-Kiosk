@@ -95,16 +95,25 @@ class AppConfig:
     base_threshold: float = 0.5
     adaptive_threshold_enabled: bool = True
     face_quality_threshold: float = 0.56
-    face_quality_good_threshold: float = 0.78
+    face_quality_good_threshold: float = 0.70
     min_face_size: int = 50
     confidence_smoothing_window: int = 3
-    detection_every_n_frames: int = 2
-    recognition_cooldown_seconds: int = 2
-    revalidation_interval_seconds: float = 4.0
+    detection_every_n_frames: int = 3
+    recognition_cooldown_seconds: int = 4
+    revalidation_interval_seconds: float = 6.0
     identity_lock_confidence_threshold: float = 0.7
     stability_time_required: float = 0.3
     position_tolerance: int = 200
-    track_stale_seconds: float = 5.0
+    track_stale_seconds: float = 10.0
+    candidate_min_confidence: float = 0.85
+    candidate_consistent_frames: int = 2
+    candidate_min_time_gap_seconds: float = 0.35
+    candidate_static_motion_threshold_px: float = 4.0
+    candidate_batch_min_size: int = 3
+    candidate_max_spread: float = 0.20
+    candidate_duplicate_similarity: float = 0.98
+    max_embeddings_per_user_per_model: int = 30
+    embedding_commit_interval_seconds: float = 3.0
 
     # Face quality scoring thresholds
     # Size: pixel area of the face crop (h*w). Too small faces lose identity detail.
@@ -117,8 +126,8 @@ class AppConfig:
 
     # Sharpness from Laplacian variance on grayscale crop.
     # < low: blurry, > high: reliably sharp for embedding extraction.
-    quality_sharpness_low: float = 45.0
-    quality_sharpness_high: float = 140.0
+    quality_sharpness_low: float = 28.0
+    quality_sharpness_high: float = 100.0
 
     # Exposure clipping thresholds in grayscale intensity (0..255).
     quality_dark_intensity_threshold: int = 45
@@ -127,7 +136,7 @@ class AppConfig:
     # Ratios of over-dark / over-bright pixels in the face crop.
     # "good" is near-ideal, "bad" is heavily clipped.
     quality_dark_ratio_good: float = 0.10
-    quality_dark_ratio_bad: float = 0.45
+    quality_dark_ratio_bad: float = 0.60
     quality_bright_ratio_good: float = 0.08
     quality_bright_ratio_bad: float = 0.35
 
@@ -143,13 +152,13 @@ class AppConfig:
     quality_eye_tilt_good_ratio: float = 0.11
     quality_eye_tilt_bad_ratio: float = 0.29
     quality_pose_good_ratio: float = 0.15
-    quality_pose_bad_ratio: float = 0.40
+    quality_pose_bad_ratio: float = 0.80
 
     # Landmark-free alignment/pose proxies from horizontal feature consistency.
     quality_band_alignment_good_ratio: float = 0.09
     quality_band_alignment_bad_ratio: float = 0.24
     quality_pose_balance_good: float = 0.22
-    quality_pose_balance_bad: float = 0.58
+    quality_pose_balance_bad: float = 0.80
 
     # Additional robustness dimensions:
     # - Contrast: std-dev of grayscale intensity.
@@ -161,13 +170,13 @@ class AppConfig:
 
     # Face quality scoring weights (sum to 1.0).
     # Higher weight means stronger impact on overall quality gate/lock decisions.
-    quality_weight_size: float = 0.16
+    quality_weight_size: float = 0.10
     quality_weight_sharpness: float = 0.26
     quality_weight_detection_confidence: float = 0.14
     quality_weight_alignment: float = 0.14
     quality_weight_pose: float = 0.10
     quality_weight_exposure: float = 0.15
-    quality_weight_contrast: float = 0.10
+    quality_weight_contrast: float = 0.15
     quality_weight_aspect_ratio: float = 0.05
 
     @property
@@ -196,6 +205,9 @@ class AppState:
     manual_registration_track_id: Optional[int] = None
     face_stability_tracker: dict = field(default_factory=dict)
     tracked_identities: dict = field(default_factory=dict)
+    embedding_candidates: dict = field(default_factory=dict)
+    embedding_consistency_tracker: dict = field(default_factory=dict)
+    last_embedding_commit_time: float = 0.0
 
 
 CONFIG = AppConfig()
@@ -239,6 +251,7 @@ def init_db():
             embeddings BLOB NOT NULL,
             image_paths TEXT NOT NULL,
             embedding_dim INTEGER NOT NULL,
+            embedding_metadata BLOB,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -268,6 +281,11 @@ def init_db():
     for col_name, col_type in extra_columns.items():
         if col_name not in existing_columns:
             c.execute(f"ALTER TABLE recognition_log ADD COLUMN {col_name} {col_type}")
+
+    c.execute("PRAGMA table_info(users)")
+    user_columns = {row[1] for row in c.fetchall()}
+    if "embedding_metadata" not in user_columns:
+        c.execute("ALTER TABLE users ADD COLUMN embedding_metadata BLOB")
     
     conn.commit()
     conn.close()
@@ -971,6 +989,164 @@ def _compute_exposure_metrics(gray):
         "exposure_score": exposure_score,
     }
 
+def _quality_component_factors(debug_info):
+    """Return component scores + human-readable details for CLI diagnostics."""
+    factors = []
+
+    area = debug_info.get("area")
+    height = debug_info.get("height")
+    width = debug_info.get("width")
+    if area is not None:
+        area = float(area)
+        if area < CONFIG.quality_face_area_low:
+            detail = f"area {area:.0f} < {CONFIG.quality_face_area_low} (too small)"
+        elif area < CONFIG.quality_face_area_high:
+            detail = f"area {area:.0f} < {CONFIG.quality_face_area_high} (below ideal)"
+        else:
+            detail = f"area {area:.0f} (ok)"
+        if height is not None and width is not None:
+            detail = f"{detail}, size {int(height)}x{int(width)}"
+        factors.append(
+            {
+                "name": "size",
+                "score": debug_info.get("size_score"),
+                "detail": detail,
+            }
+        )
+
+    sharpness = debug_info.get("sharpness")
+    if sharpness is not None:
+        sharpness = float(sharpness)
+        if sharpness < CONFIG.quality_sharpness_low:
+            detail = f"laplacian {sharpness:.1f} < {CONFIG.quality_sharpness_low} (blurry)"
+        elif sharpness < CONFIG.quality_sharpness_high:
+            detail = f"laplacian {sharpness:.1f} < {CONFIG.quality_sharpness_high} (not sharp enough)"
+        else:
+            detail = f"laplacian {sharpness:.1f} (sharp)"
+        factors.append(
+            {
+                "name": "sharpness",
+                "score": debug_info.get("sharpness_score"),
+                "detail": detail,
+            }
+        )
+
+    detection_conf = debug_info.get("detection_confidence")
+    if detection_conf is not None:
+        detection_conf = float(detection_conf)
+        if detection_conf < CONFIG.quality_detection_confidence_low:
+            detail = f"det {detection_conf:.2f} < {CONFIG.quality_detection_confidence_low:.2f} (weak detection)"
+        elif detection_conf < CONFIG.quality_detection_confidence_high:
+            detail = f"det {detection_conf:.2f} < {CONFIG.quality_detection_confidence_high:.2f} (below ideal)"
+        else:
+            detail = f"det {detection_conf:.2f} (strong)"
+        factors.append(
+            {
+                "name": "detection",
+                "score": debug_info.get("detection_score"),
+                "detail": detail,
+            }
+        )
+
+    alignment_score = debug_info.get("alignment_score")
+    if alignment_score is not None:
+        detail = f"alignment_score {float(alignment_score):.2f}"
+        factors.append(
+            {
+                "name": "alignment",
+                "score": alignment_score,
+                "detail": detail,
+            }
+        )
+
+    pose_score = debug_info.get("pose_score")
+    if pose_score is not None:
+        detail = f"pose_score {float(pose_score):.2f}"
+        factors.append(
+            {
+                "name": "pose",
+                "score": pose_score,
+                "detail": detail,
+            }
+        )
+
+    dark_ratio = debug_info.get("dark_ratio")
+    bright_ratio = debug_info.get("bright_ratio")
+    dynamic_range = debug_info.get("dynamic_range")
+    if dark_ratio is not None and bright_ratio is not None and dynamic_range is not None:
+        dark_ratio = float(dark_ratio)
+        bright_ratio = float(bright_ratio)
+        dynamic_range = float(dynamic_range)
+        if dark_ratio >= CONFIG.quality_dark_ratio_bad:
+            detail = f"dark_ratio {dark_ratio:.2f} >= {CONFIG.quality_dark_ratio_bad:.2f} (underexposed)"
+        elif bright_ratio >= CONFIG.quality_bright_ratio_bad:
+            detail = f"bright_ratio {bright_ratio:.2f} >= {CONFIG.quality_bright_ratio_bad:.2f} (overexposed)"
+        elif dynamic_range < CONFIG.quality_dynamic_range_low:
+            detail = f"dynamic_range {dynamic_range:.1f} < {CONFIG.quality_dynamic_range_low:.1f} (flat lighting)"
+        elif (dark_ratio > CONFIG.quality_dark_ratio_good
+              or bright_ratio > CONFIG.quality_bright_ratio_good
+              or dynamic_range < CONFIG.quality_dynamic_range_high):
+            detail = (
+                f"exposure not ideal (dark {dark_ratio:.2f}, bright {bright_ratio:.2f}, "
+                f"range {dynamic_range:.1f})"
+            )
+        else:
+            detail = f"exposure ok (dark {dark_ratio:.2f}, bright {bright_ratio:.2f}, range {dynamic_range:.1f})"
+        factors.append(
+            {
+                "name": "exposure",
+                "score": debug_info.get("exposure_score"),
+                "detail": detail,
+            }
+        )
+
+    contrast = debug_info.get("contrast")
+    if contrast is not None:
+        contrast = float(contrast)
+        if contrast < CONFIG.quality_contrast_low:
+            detail = f"contrast {contrast:.1f} < {CONFIG.quality_contrast_low:.1f} (low)"
+        elif contrast < CONFIG.quality_contrast_high:
+            detail = f"contrast {contrast:.1f} < {CONFIG.quality_contrast_high:.1f} (below ideal)"
+        else:
+            detail = f"contrast {contrast:.1f} (ok)"
+        factors.append(
+            {
+                "name": "contrast",
+                "score": debug_info.get("contrast_score"),
+                "detail": detail,
+            }
+        )
+
+    aspect_ratio = debug_info.get("aspect_ratio")
+    if aspect_ratio is not None:
+        aspect_ratio = float(aspect_ratio)
+        if aspect_ratio >= CONFIG.quality_aspect_ratio_bad:
+            detail = f"aspect {aspect_ratio:.2f} >= {CONFIG.quality_aspect_ratio_bad:.2f} (crop too tall/wide)"
+        elif aspect_ratio >= CONFIG.quality_aspect_ratio_good:
+            detail = f"aspect {aspect_ratio:.2f} >= {CONFIG.quality_aspect_ratio_good:.2f} (not ideal)"
+        else:
+            detail = f"aspect {aspect_ratio:.2f} (ok)"
+        factors.append(
+            {
+                "name": "aspect",
+                "score": debug_info.get("aspect_ratio_score"),
+                "detail": detail,
+            }
+        )
+
+    return factors
+
+def _quality_reason_summary(debug_info, limit=3):
+    factors = [f for f in _quality_component_factors(debug_info) if f.get("score") is not None]
+    if not factors:
+        return ""
+    factors.sort(key=lambda item: float(item.get("score", 0.0)))
+    worst = factors[:limit]
+    parts = []
+    for item in worst:
+        parts.append(f"{item['name']}={float(item['score']):.2f} ({item['detail']})")
+    return "; ".join(parts)
+
 
 def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
     """Recognition-oriented face quality scoring.
@@ -1064,11 +1240,16 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
         quality_status = "Poor"
 
     debug_info = {
+        "height": h,
+        "width": w,
+        "area": area,
         "sharpness": laplacian_var,
         "brightness": exposure_metrics["brightness"],
+        "dynamic_range": exposure_metrics["dynamic_range"],
         "contrast": contrast,
         "alignment_score": alignment_score,
         "detection_confidence": confidence_value,
+        "detection_score": detection_score,
         "pose_score": pose_score,
         "size_score": size_score,
         "sharpness_score": sharpness_score,
@@ -1340,6 +1521,340 @@ face_recognition_system = FaceRecognitionSystem()
 # Runtime state is centralized under STATE
 # -------------------------------
 
+def _get_track_motion_px(face_id):
+    """Estimate per-track motion using the latest two center points."""
+    tracker = STATE.face_stability_tracker.get(face_id) if face_id is not None else None
+    if not tracker:
+        return 0.0
+    positions = tracker.get("positions", [])
+    if len(positions) < 2:
+        return 0.0
+    (x1, y1), (x2, y2) = positions[-2], positions[-1]
+    return float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+
+
+def embedding_similarity_check(new_embedding, existing_embeddings, threshold=0.98):
+    """Return True when incoming embedding is effectively a near-duplicate."""
+    incoming = _normalize_embedding_vector(new_embedding)
+    if incoming is None:
+        return False
+
+    for existing in existing_embeddings or []:
+        existing_vec = _normalize_embedding_vector(existing)
+        if existing_vec is None or existing_vec.shape[0] != incoming.shape[0]:
+            continue
+        similarity = float(np.dot(incoming, existing_vec))
+        if similarity >= float(threshold):
+            return True
+    return False
+
+
+def _ensure_embedding_metadata_shape(metadata_by_model, embeddings_by_model):
+    """Keep per-model metadata aligned with embedding counts for safe pruning/scoring."""
+    shaped = {}
+    for model_name in CONFIG.models:
+        emb_list = normalize_embeddings_by_model(embeddings_by_model).get(model_name, [])
+        incoming_meta = metadata_by_model.get(model_name, []) if isinstance(metadata_by_model, dict) else []
+        if not isinstance(incoming_meta, list):
+            incoming_meta = []
+
+        aligned = []
+        now = time.time()
+        for idx in range(len(emb_list)):
+            if idx < len(incoming_meta) and isinstance(incoming_meta[idx], dict):
+                meta = dict(incoming_meta[idx])
+            else:
+                meta = {}
+            meta.setdefault("quality", 0.0)
+            meta.setdefault("confidence", 0.0)
+            meta.setdefault("timestamp", now)
+            meta["weight"] = float(meta.get("confidence", 0.0)) * float(meta.get("quality", 0.0))
+            aligned.append(meta)
+        shaped[model_name] = aligned
+    return shaped
+
+
+def batch_consistency_check(embeddings_batch_by_model):
+    """Validate that a candidate batch is identity-consistent via centroid spread."""
+    normalized = normalize_embeddings_by_model(embeddings_batch_by_model)
+    spread_by_model = {}
+    total_samples = 0
+
+    for model_name in CONFIG.models:
+        emb_list = normalized.get(model_name, [])
+        if len(emb_list) < CONFIG.candidate_batch_min_size:
+            return False, {
+                "reason": f"insufficient batch size for {model_name}",
+                "spread": spread_by_model,
+            }
+
+        vectors = []
+        for emb in emb_list:
+            vec = _normalize_embedding_vector(emb)
+            if vec is None:
+                continue
+            vectors.append(vec)
+
+        if len(vectors) < CONFIG.candidate_batch_min_size:
+            return False, {
+                "reason": f"insufficient valid vectors for {model_name}",
+                "spread": spread_by_model,
+            }
+
+        matrix = np.vstack(vectors).astype(np.float32, copy=False)
+        centroid = matrix.mean(axis=0)
+        centroid_norm = np.linalg.norm(centroid)
+        if centroid_norm < 1e-8:
+            return False, {
+                "reason": f"degenerate centroid for {model_name}",
+                "spread": spread_by_model,
+            }
+        centroid = centroid / centroid_norm
+
+        similarities = np.clip(matrix @ centroid, -1.0, 1.0)
+        spread = float(max(0.0, 1.0 - float(np.mean(similarities))))
+        spread_by_model[model_name] = spread
+        total_samples += len(vectors)
+
+        if spread > CONFIG.candidate_max_spread:
+            return False, {
+                "reason": f"inconsistent batch for {model_name}",
+                "spread": spread_by_model,
+            }
+
+    return total_samples >= (CONFIG.candidate_batch_min_size * len(CONFIG.models)), {
+        "reason": "ok",
+        "spread": spread_by_model,
+    }
+
+
+def update_user_embeddings(user_id, new_embeddings_with_meta):
+    """Safely merge validated embeddings, enforce per-user limits, and persist metadata."""
+    user_idx = _get_user_index_by_id(user_id)
+    if user_idx == -1:
+        print(f"Rejected embedding: user {user_id} not found")
+        return False
+
+    conn = sqlite3.connect(CONFIG.db_path)
+    c = conn.cursor()
+    c.execute("SELECT embeddings, image_paths, embedding_metadata FROM users WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        print(f"Rejected embedding: user {user_id} missing in DB")
+        return False
+
+    existing_emb_blob, existing_paths_str, existing_meta_blob = row
+    existing_embeddings = normalize_embeddings_by_model(pickle.loads(existing_emb_blob) if existing_emb_blob else {})
+    existing_meta = pickle.loads(existing_meta_blob) if existing_meta_blob else {}
+    existing_meta = _ensure_embedding_metadata_shape(existing_meta, existing_embeddings)
+
+    incoming = {}
+    incoming_meta = {}
+    for model_name in CONFIG.models:
+        model_items = new_embeddings_with_meta.get(model_name, []) if isinstance(new_embeddings_with_meta, dict) else []
+        model_vectors = []
+        model_meta = []
+
+        for item in model_items:
+            if not isinstance(item, dict):
+                continue
+            vec = _normalize_embedding_vector(item.get("embedding"))
+            if vec is None:
+                continue
+            model_vectors.append(vec)
+            meta = {
+                "quality": float(item.get("quality", 0.0)),
+                "confidence": float(item.get("confidence", 0.0)),
+                "timestamp": float(item.get("timestamp", time.time())),
+            }
+            meta["weight"] = meta["quality"] * meta["confidence"]
+            model_meta.append(meta)
+
+        incoming[model_name] = model_vectors
+        incoming_meta[model_name] = model_meta
+
+    for model_name in CONFIG.models:
+        current_vectors = list(existing_embeddings.get(model_name, []))
+        current_meta = list(existing_meta.get(model_name, []))
+
+        for idx, vec in enumerate(incoming.get(model_name, [])):
+            if embedding_similarity_check(
+                vec,
+                current_vectors,
+                threshold=CONFIG.candidate_duplicate_similarity,
+            ):
+                print(f"Rejected embedding: duplicate for user {user_id} model {model_name}")
+                continue
+            current_vectors.append(vec)
+            current_meta.append(incoming_meta.get(model_name, [])[idx])
+
+        max_count = int(CONFIG.max_embeddings_per_user_per_model)
+        if len(current_vectors) > max_count:
+            # Keep strongest + newest mix by ranking with weight first, then timestamp.
+            ranked_indices = sorted(
+                range(len(current_vectors)),
+                key=lambda i: (
+                    float(current_meta[i].get("weight", 0.0)),
+                    float(current_meta[i].get("timestamp", 0.0)),
+                ),
+                reverse=True,
+            )
+            keep_indices = sorted(ranked_indices[:max_count])
+            current_vectors = [current_vectors[i] for i in keep_indices]
+            current_meta = [current_meta[i] for i in keep_indices]
+
+        existing_embeddings[model_name] = current_vectors
+        existing_meta[model_name] = current_meta
+
+    updated_emb_blob = pickle.dumps(existing_embeddings)
+    updated_meta_blob = pickle.dumps(existing_meta)
+    c.execute(
+        """
+        UPDATE users
+        SET embeddings = ?, embedding_metadata = ?, last_updated = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+        """,
+        (updated_emb_blob, updated_meta_blob, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+    STATE.all_user_embeddings[user_idx] = existing_embeddings
+    refresh_faiss()
+    return True
+
+
+def add_to_candidate_buffer(
+    user_id,
+    embedding,
+    confidence,
+    quality,
+    face_id=None,
+    identity_locked=False,
+    quality_debug=None,
+):
+    """Stage high-quality embeddings after strict gating and temporal checks."""
+    confidence = float(confidence)
+    quality = float(quality)
+
+    if confidence < CONFIG.candidate_min_confidence:
+        print("Rejected embedding: low confidence")
+        return False
+    if quality < CONFIG.face_quality_good_threshold:
+        print("Rejected embedding: low quality")
+        if quality_debug:
+            reason = _quality_reason_summary(quality_debug)
+            if reason:
+                print(f"  Not 'Good' yet because: {reason}")
+        return False
+    if not identity_locked:
+        print("Rejected embedding: identity not locked")
+        return False
+
+    normalized = normalize_embeddings_by_model(embedding)
+    if any(model_name not in normalized or not normalized[model_name] for model_name in CONFIG.models):
+        print("Rejected embedding: missing model embeddings")
+        return False
+
+    consistency_key = face_id if face_id is not None else f"uid:{user_id}"
+    record = STATE.embedding_consistency_tracker.get(
+        consistency_key,
+        {"user_id": user_id, "count": 0},
+    )
+    if record.get("user_id") == user_id:
+        record["count"] = int(record.get("count", 0)) + 1
+    else:
+        record = {"user_id": user_id, "count": 1}
+    STATE.embedding_consistency_tracker[consistency_key] = record
+
+    if record["count"] < int(CONFIG.candidate_consistent_frames):
+        print("Rejected embedding: insufficient temporal consistency")
+        return False
+
+    now = time.time()
+    user_candidates = STATE.embedding_candidates.setdefault(user_id, [])
+    if user_candidates:
+        last_ts = float(user_candidates[-1].get("timestamp", 0.0))
+        if (now - last_ts) < CONFIG.candidate_min_time_gap_seconds:
+            print("Rejected embedding: duplicate timestamp window")
+            return False
+
+    motion_px = _get_track_motion_px(face_id)
+    if motion_px < CONFIG.candidate_static_motion_threshold_px:
+        print("Rejected embedding: static face sequence")
+        return False
+
+    primary_vec = _normalize_embedding_vector(normalized.get(CONFIG.primary_model, [None])[0])
+    user_candidates.append(
+        {
+            "embedding": primary_vec,
+            "embeddings_by_model": {
+                model_name: _normalize_embedding_vector(normalized.get(model_name, [None])[0])
+                for model_name in CONFIG.models
+            },
+            "quality": quality,
+            "confidence": confidence,
+            "timestamp": now,
+        }
+    )
+    return True
+
+
+def process_embedding_candidates():
+    """Validate candidate batches and commit only consistent, bounded updates."""
+    if not STATE.embedding_candidates:
+        return 0
+
+    accepted_users = 0
+    for user_id in list(STATE.embedding_candidates.keys()):
+        candidates = STATE.embedding_candidates.get(user_id, [])
+        if len(candidates) < CONFIG.candidate_batch_min_size:
+            continue
+
+        batch = candidates[:CONFIG.candidate_batch_min_size]
+        batch_embeddings = {model_name: [] for model_name in CONFIG.models}
+        for candidate in batch:
+            model_map = candidate.get("embeddings_by_model", {})
+            for model_name in CONFIG.models:
+                vec = _normalize_embedding_vector(model_map.get(model_name))
+                if vec is not None:
+                    batch_embeddings[model_name].append(vec)
+
+        is_consistent, diagnostics = batch_consistency_check(batch_embeddings)
+        if not is_consistent:
+            print(f"Rejected embedding: {diagnostics.get('reason', 'inconsistent batch')}")
+            STATE.embedding_candidates[user_id] = candidates[1:]
+            continue
+
+        payload = {model_name: [] for model_name in CONFIG.models}
+        for candidate in batch:
+            for model_name in CONFIG.models:
+                vec = _normalize_embedding_vector(candidate.get("embeddings_by_model", {}).get(model_name))
+                if vec is None:
+                    continue
+                payload[model_name].append(
+                    {
+                        "embedding": vec,
+                        "quality": float(candidate.get("quality", 0.0)),
+                        "confidence": float(candidate.get("confidence", 0.0)),
+                        "timestamp": float(candidate.get("timestamp", time.time())),
+                    }
+                )
+
+        if update_user_embeddings(user_id, payload):
+            accepted_users += 1
+            STATE.embedding_candidates[user_id] = candidates[CONFIG.candidate_batch_min_size:]
+            print(f"Accepted {CONFIG.candidate_batch_min_size} embeddings for user {user_id}")
+        else:
+            print(f"Rejected embedding: failed to persist user {user_id}")
+            STATE.embedding_candidates[user_id] = candidates[1:]
+
+        if not STATE.embedding_candidates.get(user_id):
+            STATE.embedding_candidates.pop(user_id, None)
+
+    return accepted_users
+
 # -------------------------------
 # Register or Recognize Face
 # -------------------------------
@@ -1365,6 +1880,10 @@ def register_or_recognize_face(
     
     if quality_score < CONFIG.face_quality_threshold:
         print(f"  Skipping low quality face: {quality_score:.2f} ({quality_status})")
+        if quality_debug:
+            reason = _quality_reason_summary(quality_debug)
+            if reason:
+                print(f"  Low quality factors: {reason}")
         return None
     
     print(
@@ -1372,6 +1891,10 @@ def register_or_recognize_face(
         f"| sharpness={quality_debug.get('sharpness', 0.0):.1f} "
         f"| det={quality_debug.get('detection_confidence', 0.0):.2f}"
     )
+    if quality_status != "Good" and quality_debug:
+        reason = _quality_reason_summary(quality_debug)
+        if reason:
+            print(f"  Not 'Good' yet because: {reason}")
     
     embeddings = extract_embedding_ensemble(face_crop)
     if not embeddings:
@@ -1383,59 +1906,23 @@ def register_or_recognize_face(
     )
     
     if best_match:
-        user_idx = best_match['user_idx']
         user_id = best_match['user_info']['id']
+        confidence_value = float(best_match.get('confidence', 0.0))
 
-        new_embeddings_by_model = normalize_embeddings_by_model(embeddings)
-        existing_counts = {
-            model_name: len(
-                normalize_embeddings_by_model(STATE.all_user_embeddings[user_idx]).get(model_name, [])
-            )
-            for model_name in CONFIG.models
-        }
-
-        for model_name in CONFIG.models:
-            STATE.all_user_embeddings[user_idx].setdefault(model_name, []).extend(
-                new_embeddings_by_model.get(model_name, [])
-            )
-
-        timestamp = int(time.time() * 1000)
-        user_folder = os.path.join(CONFIG.base_save_dir, best_match['user_info']['sr_code'])
-        os.makedirs(user_folder, exist_ok=True)
-        filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
-        cv2.imwrite(filename, face_crop)
-
-        conn = sqlite3.connect(CONFIG.db_path)
-        c = conn.cursor()
-
-        c.execute("SELECT embeddings, image_paths FROM users WHERE user_id = ?", (user_id,))
-        existing_emb_blob, existing_paths_str = c.fetchone()
-        existing_embeddings = pickle.loads(existing_emb_blob) if existing_emb_blob else {}
-        existing_paths = existing_paths_str.split(';') if existing_paths_str else []
-
-        existing_embeddings = merge_embeddings_by_model(existing_embeddings, embeddings)
-        existing_paths.append(filename)
-
-        updated_emb_blob = pickle.dumps(existing_embeddings)
-        updated_paths_str = ';'.join(existing_paths)
-        c.execute("""
-            UPDATE users
-            SET embeddings = ?, image_paths = ?, last_updated = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-        """, (updated_emb_blob, updated_paths_str, user_id))
-
-        conn.commit()
-        conn.close()
-
-        total_emb = count_embeddings(STATE.all_user_embeddings[user_idx])
-        print(f"✓ Learned new embedding for {best_match['user_info']['name']} "
-              f"(total: {total_emb} embeddings across models)")
-
-        add_embeddings_incremental(
+        track_state = STATE.tracked_identities.get(face_id) if face_id is not None else None
+        identity_locked = bool(track_state.get("identity_locked")) if track_state else False
+        added = add_to_candidate_buffer(
             user_id=user_id,
-            embeddings_by_model=new_embeddings_by_model,
-            start_offsets=existing_counts,
+            embedding=embeddings,
+            confidence=confidence_value,
+            quality=quality_score,
+            face_id=face_id,
+            identity_locked=identity_locked,
+            quality_debug=quality_debug,
         )
+        if added:
+            pending_count = len(STATE.embedding_candidates.get(user_id, []))
+            print(f"Candidate embedding buffered for user {user_id} (pending={pending_count})")
 
         STATE.recognized_user = {
             'name': best_match['user_info']['name'],
@@ -1530,6 +2017,7 @@ def cleanup_stale_tracks(current_time):
     for track_id in stale_track_ids:
         STATE.tracked_identities.pop(track_id, None)
         STATE.face_stability_tracker.pop(track_id, None)
+        STATE.embedding_consistency_tracker.pop(track_id, None)
     return stale_track_ids
 
 # -------------------------------
@@ -1839,6 +2327,12 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                     STATE.manual_registration_active = False
                     STATE.manual_registration_track_id = None
 
+        if (current_time - float(STATE.last_embedding_commit_time)) >= CONFIG.embedding_commit_interval_seconds:
+            accepted_batches = process_embedding_candidates()
+            if accepted_batches > 0:
+                print(f"Background commit: {accepted_batches} user batch(es) committed")
+            STATE.last_embedding_commit_time = current_time
+
         if STATE.registration_in_progress and STATE.pending_registration and not registration_prompted:
             registration_prompted = True
             handle_registration()
@@ -1917,6 +2411,9 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
             registration_prompted = False
             STATE.tracked_identities.clear()
             STATE.face_stability_tracker.clear()
+            STATE.embedding_candidates.clear()
+            STATE.embedding_consistency_tracker.clear()
+            STATE.last_embedding_commit_time = 0.0
             print("Recognition status reset")
         elif key == ord('n'):
             if STATE.registration_in_progress:
