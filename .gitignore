@@ -28,3 +28,7 @@ Thumbs.db
 # Local config
 .env
 .env.*
+
+#Database
+database/
+faces_improved/
