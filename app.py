@@ -6,6 +6,7 @@ import sqlite3
 import os
 import time
 import pickle
+import faiss  # pyright: ignore[reportMissingImports]
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -106,38 +107,60 @@ class AppConfig:
     track_stale_seconds: float = 5.0
 
     # Face quality scoring thresholds
+    # Size: pixel area of the face crop (h*w). Too small faces lose identity detail.
     quality_face_area_low: int = 56 * 56
     quality_face_area_high: int = 170 * 170
+
+    # Detector confidence gates used by the 3-level detector score mapping.
     quality_detection_confidence_low: float = 0.40
     quality_detection_confidence_high: float = 0.82
+
+    # Sharpness from Laplacian variance on grayscale crop.
+    # < low: blurry, > high: reliably sharp for embedding extraction.
     quality_sharpness_low: float = 45.0
     quality_sharpness_high: float = 140.0
+
+    # Exposure clipping thresholds in grayscale intensity (0..255).
     quality_dark_intensity_threshold: int = 45
     quality_bright_intensity_threshold: int = 215
+
+    # Ratios of over-dark / over-bright pixels in the face crop.
+    # "good" is near-ideal, "bad" is heavily clipped.
     quality_dark_ratio_good: float = 0.10
     quality_dark_ratio_bad: float = 0.45
     quality_bright_ratio_good: float = 0.08
     quality_bright_ratio_bad: float = 0.35
+
+    # Contrast span proxy (P95 - P5 intensity). Low range means flat/washed detail.
     quality_dynamic_range_low: float = 28.0
     quality_dynamic_range_high: float = 95.0
+
+    # Canny edge thresholds used by landmark-free alignment/pose approximation.
     quality_canny_low: int = 50
     quality_canny_high: int = 150
+
+    # Landmark-based alignment/pose tolerances, expressed as normalized ratios.
     quality_eye_tilt_good_ratio: float = 0.11
     quality_eye_tilt_bad_ratio: float = 0.29
     quality_pose_good_ratio: float = 0.15
     quality_pose_bad_ratio: float = 0.40
+
+    # Landmark-free alignment/pose proxies from horizontal feature consistency.
     quality_band_alignment_good_ratio: float = 0.09
     quality_band_alignment_bad_ratio: float = 0.24
     quality_pose_balance_good: float = 0.22
     quality_pose_balance_bad: float = 0.58
 
-    # Missing but impactful dimensions for ArcFace/Facenet robustness.
+    # Additional robustness dimensions:
+    # - Contrast: std-dev of grayscale intensity.
+    # - Aspect ratio: penalizes extreme crop distortions/partial faces.
     quality_contrast_low: float = 20.0
     quality_contrast_high: float = 58.0
     quality_aspect_ratio_good: float = 1.25
     quality_aspect_ratio_bad: float = 1.95
 
-    # Face quality scoring weights (recognition-focused priorities)
+    # Face quality scoring weights (sum to 1.0).
+    # Higher weight means stronger impact on overall quality gate/lock decisions.
     quality_weight_size: float = 0.16
     quality_weight_sharpness: float = 0.26
     quality_weight_detection_confidence: float = 0.14
@@ -156,6 +179,11 @@ class AppConfig:
 class AppState:
     all_user_embeddings: list = field(default_factory=list)
     user_info: list = field(default_factory=list)
+    faiss_indexes: dict = field(default_factory=dict)
+    faiss_metadata: dict = field(default_factory=dict)
+    faiss_id_maps: dict = field(default_factory=dict)
+    faiss_user_vector_ids: dict = field(default_factory=dict)
+    faiss_next_id: dict = field(default_factory=dict)
     user_count: int = 0
     pending_registration: Optional[list] = None
     recognized_user: Optional[dict] = None
@@ -425,6 +453,239 @@ def load_all_embeddings():
     log_step(f"Loaded {len(all_embeddings)} users with embeddings")
     return all_embeddings, user_info
 
+
+def _normalize_embedding_vector(embedding):
+    """Prepare a single embedding vector for FAISS (float32 + unit norm)."""
+    if embedding is None:
+        return None
+    arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+    if arr.ndim != 1 or arr.size == 0:
+        return None
+
+    norm = np.linalg.norm(arr)
+    if norm <= 0:
+        return None
+    arr = arr / norm
+    return arr
+
+
+def _ensure_faiss_support_state():
+    """Ensure all FAISS support maps exist for configured models."""
+    if not isinstance(STATE.faiss_indexes, dict):
+        STATE.faiss_indexes = {}
+    if not isinstance(STATE.faiss_metadata, dict):
+        STATE.faiss_metadata = {}
+    if not isinstance(STATE.faiss_id_maps, dict):
+        STATE.faiss_id_maps = {}
+    if not isinstance(STATE.faiss_user_vector_ids, dict):
+        STATE.faiss_user_vector_ids = {}
+    if not isinstance(STATE.faiss_next_id, dict):
+        STATE.faiss_next_id = {}
+
+    for model_name in CONFIG.models:
+        STATE.faiss_indexes.setdefault(model_name, None)
+        STATE.faiss_metadata.setdefault(model_name, [])
+        STATE.faiss_id_maps.setdefault(model_name, {})
+        STATE.faiss_user_vector_ids.setdefault(model_name, {})
+        STATE.faiss_next_id.setdefault(model_name, 0)
+
+
+def _faiss_create_index(dim):
+    """Create an ID-addressable FAISS index while keeping IndexFlatIP as backend."""
+    base = faiss.IndexFlatIP(int(dim))
+    return faiss.IndexIDMap2(base)
+
+
+def _faiss_rebuild_with_reason(reason):
+    log_step(f"FAISS map mismatch detected. Rebuilding all indexes. Reason: {reason}", status="WARN")
+    refresh_faiss()
+
+
+def _get_user_index_by_id(user_id):
+    for idx, info in enumerate(STATE.user_info):
+        if isinstance(info, dict) and info.get('id') == user_id:
+            return idx
+    return -1
+
+
+def build_faiss_indexes(all_user_embeddings, user_info):
+    """Build per-model FAISS IndexFlatIP instances and vector metadata mappings."""
+    faiss_indexes = {model_name: None for model_name in CONFIG.models}
+    faiss_metadata = {model_name: [] for model_name in CONFIG.models}
+    faiss_id_maps = {model_name: {} for model_name in CONFIG.models}
+    faiss_user_vector_ids = {model_name: {} for model_name in CONFIG.models}
+    faiss_next_id = {model_name: 0 for model_name in CONFIG.models}
+
+    user_id_by_index = {
+        idx: info.get('id')
+        for idx, info in enumerate(user_info)
+        if isinstance(info, dict) and info.get('id') is not None
+    }
+
+    for model_name in CONFIG.models:
+        vectors = []
+        metadata = []
+        faiss_ids = []
+
+        for user_idx, user_embeddings_by_model in enumerate(all_user_embeddings):
+            if not isinstance(user_embeddings_by_model, dict):
+                continue
+
+            user_id = user_id_by_index.get(user_idx)
+            if user_id is None:
+                continue
+
+            normalized_models = normalize_embeddings_by_model(user_embeddings_by_model)
+            model_embeddings = normalized_models.get(model_name, [])
+            for embedding_id, embedding in enumerate(model_embeddings):
+                vec = _normalize_embedding_vector(embedding)
+                if vec is None:
+                    continue
+                faiss_id = faiss_next_id[model_name]
+                faiss_next_id[model_name] += 1
+
+                vectors.append(vec)
+                metadata.append((user_id, embedding_id))
+                faiss_ids.append(faiss_id)
+                faiss_id_maps[model_name][faiss_id] = (user_id, embedding_id)
+                faiss_user_vector_ids[model_name].setdefault(user_id, set()).add(faiss_id)
+
+        if vectors:
+            vector_matrix = np.vstack(vectors).astype(np.float32, copy=False)
+            index = _faiss_create_index(vector_matrix.shape[1])
+            id_array = np.array(faiss_ids, dtype=np.int64)
+            index.add_with_ids(vector_matrix, id_array)
+            faiss_indexes[model_name] = index
+            faiss_metadata[model_name] = metadata
+
+            log_step(
+                f"FAISS index built for {model_name}: {index.ntotal} vectors, dim={index.d}"
+            )
+        else:
+            faiss_metadata[model_name] = []
+            log_step(f"FAISS index built for {model_name}: 0 vectors", status="WARN")
+
+    return faiss_indexes, faiss_metadata, faiss_id_maps, faiss_user_vector_ids, faiss_next_id
+
+
+def refresh_faiss():
+    """Refresh FAISS indexes from in-memory STATE embeddings after data changes."""
+    (
+        STATE.faiss_indexes,
+        STATE.faiss_metadata,
+        STATE.faiss_id_maps,
+        STATE.faiss_user_vector_ids,
+        STATE.faiss_next_id,
+    ) = build_faiss_indexes(
+        STATE.all_user_embeddings,
+        STATE.user_info,
+    )
+    _ensure_faiss_support_state()
+
+
+def add_embeddings_incremental(user_id, embeddings_by_model, start_offsets=None):
+    """Incrementally add vectors to FAISS for one user.
+
+    Falls back to full rebuild on index/map mismatches.
+    """
+    _ensure_faiss_support_state()
+    normalized = normalize_embeddings_by_model(embeddings_by_model)
+    if not normalized:
+        return True
+
+    if start_offsets is None:
+        start_offsets = {model_name: 0 for model_name in CONFIG.models}
+
+    try:
+        for model_name in CONFIG.models:
+            model_embeddings = normalized.get(model_name, [])
+            if not model_embeddings:
+                continue
+
+            prepared_vectors = []
+            prepared_ids = []
+            prepared_meta = []
+
+            for local_idx, embedding in enumerate(model_embeddings):
+                vec = _normalize_embedding_vector(embedding)
+                if vec is None:
+                    continue
+
+                faiss_id = int(STATE.faiss_next_id.get(model_name, 0))
+                STATE.faiss_next_id[model_name] = faiss_id + 1
+                embedding_id = int(start_offsets.get(model_name, 0)) + local_idx
+
+                prepared_vectors.append(vec)
+                prepared_ids.append(faiss_id)
+                prepared_meta.append((faiss_id, user_id, embedding_id))
+
+            if not prepared_vectors:
+                continue
+
+            matrix = np.vstack(prepared_vectors).astype(np.float32, copy=False)
+            index = STATE.faiss_indexes.get(model_name)
+
+            if index is None:
+                index = _faiss_create_index(matrix.shape[1])
+                STATE.faiss_indexes[model_name] = index
+
+            if index.d != matrix.shape[1]:
+                _faiss_rebuild_with_reason(
+                    f"dimension mismatch on incremental add for {model_name} (index={index.d}, incoming={matrix.shape[1]})"
+                )
+                return False
+
+            id_array = np.array(prepared_ids, dtype=np.int64)
+            index.add_with_ids(matrix, id_array)
+
+            for faiss_id, uid, emb_id in prepared_meta:
+                STATE.faiss_id_maps[model_name][faiss_id] = (uid, emb_id)
+                STATE.faiss_user_vector_ids[model_name].setdefault(uid, set()).add(faiss_id)
+                STATE.faiss_metadata[model_name].append((uid, emb_id))
+
+        return True
+    except Exception as e:
+        _faiss_rebuild_with_reason(f"incremental add exception: {e}")
+        return False
+
+
+def remove_user_incremental(user_id):
+    """Incrementally remove all vectors for one user from FAISS.
+
+    Falls back to full rebuild on index/map mismatches.
+    """
+    _ensure_faiss_support_state()
+
+    try:
+        for model_name in CONFIG.models:
+            user_id_set_map = STATE.faiss_user_vector_ids.get(model_name, {})
+            ids = sorted(list(user_id_set_map.get(user_id, set())))
+            if not ids:
+                continue
+
+            index = STATE.faiss_indexes.get(model_name)
+            if index is None:
+                _faiss_rebuild_with_reason(f"missing index during remove for {model_name}")
+                return False
+
+            id_array = np.array(ids, dtype=np.int64)
+            removed_count = int(index.remove_ids(id_array))
+            if removed_count != len(ids):
+                _faiss_rebuild_with_reason(
+                    f"remove count mismatch for {model_name} (removed={removed_count}, expected={len(ids)})"
+                )
+                return False
+
+            for vector_id in ids:
+                STATE.faiss_id_maps.get(model_name, {}).pop(vector_id, None)
+
+            user_id_set_map.pop(user_id, None)
+
+        return True
+    except Exception as e:
+        _faiss_rebuild_with_reason(f"incremental remove exception: {e}")
+        return False
+
 def log_recognition(
     user_id,
     confidence,
@@ -482,6 +743,7 @@ init_db()
 # Load existing embeddings
 STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
 STATE.user_count = len(STATE.user_info)
+refresh_faiss()
 
 # -------------------------------
 # Improved thresholds and parameters
@@ -907,7 +1169,7 @@ class FaceRecognitionSystem:
         smoothed = statistics.mean(self.confidence_smoothing[user_id])
         return smoothed
     
-    def find_best_match(self, query_embeddings, user_embeddings_list, user_info, face_quality):
+    def find_best_match(self, query_embeddings, user_embeddings_list, user_info, face_quality, _allow_retry=True):
         """Find the best match using Two-Factor Verification - BOTH models must confirm"""
         
         # Check if we have embeddings from both models
@@ -923,55 +1185,108 @@ class FaceRecognitionSystem:
         if isinstance(secondary_emb, list) and secondary_emb:
             secondary_emb = secondary_emb[0]
 
+        primary_query = _normalize_embedding_vector(primary_emb)
+        secondary_query = _normalize_embedding_vector(secondary_emb)
+        if primary_query is None or secondary_query is None:
+            print("  Warning: Invalid query embedding(s) for FAISS search")
+            return None, []
+
+        index_primary = STATE.faiss_indexes.get(CONFIG.primary_model)
+        index_secondary = STATE.faiss_indexes.get(CONFIG.secondary_model)
+        id_map_primary = STATE.faiss_id_maps.get(CONFIG.primary_model, {})
+        id_map_secondary = STATE.faiss_id_maps.get(CONFIG.secondary_model, {})
+
+        if index_primary is None or index_secondary is None:
+            print("  Warning: FAISS indexes are not ready for both models")
+            return None, []
+
+        if index_primary.ntotal == 0 or index_secondary.ntotal == 0:
+            return None, []
+
+        if primary_query.shape[0] != index_primary.d or secondary_query.shape[0] != index_secondary.d:
+            print("  Warning: Query embedding dimension mismatch with FAISS index")
+            return None, []
+
+        top_k_primary = min(5, index_primary.ntotal)
+        top_k_secondary = min(5, index_secondary.ntotal)
+
+        D_primary, I_primary = index_primary.search(primary_query.reshape(1, -1).astype(np.float32), top_k_primary)
+        D_secondary, I_secondary = index_secondary.search(secondary_query.reshape(1, -1).astype(np.float32), top_k_secondary)
+
+        candidate_scores = {}
+        map_mismatch = False
+
+        for score, idx in zip(D_primary[0], I_primary[0]):
+            if idx < 0:
+                continue
+            faiss_id = int(idx)
+            mapping = id_map_primary.get(faiss_id)
+            if mapping is None:
+                map_mismatch = True
+                break
+
+            user_id, _embedding_id = mapping
+            if user_id not in candidate_scores:
+                candidate_scores[user_id] = {
+                    CONFIG.primary_model: None,
+                    CONFIG.secondary_model: None,
+                }
+            current = candidate_scores[user_id].get(CONFIG.primary_model)
+            score = float(score)
+            if current is None or score > current:
+                candidate_scores[user_id][CONFIG.primary_model] = score
+
+        if not map_mismatch:
+            for score, idx in zip(D_secondary[0], I_secondary[0]):
+                if idx < 0:
+                    continue
+                faiss_id = int(idx)
+                mapping = id_map_secondary.get(faiss_id)
+                if mapping is None:
+                    map_mismatch = True
+                    break
+
+                user_id, _embedding_id = mapping
+                if user_id not in candidate_scores:
+                    candidate_scores[user_id] = {
+                        CONFIG.primary_model: None,
+                        CONFIG.secondary_model: None,
+                    }
+                current = candidate_scores[user_id].get(CONFIG.secondary_model)
+                score = float(score)
+                if current is None or score > current:
+                    candidate_scores[user_id][CONFIG.secondary_model] = score
+
+        if map_mismatch:
+            if _allow_retry:
+                _faiss_rebuild_with_reason("search returned vector IDs missing from id map")
+                return self.find_best_match(query_embeddings, user_embeddings_list, user_info, face_quality, _allow_retry=False)
+            return None, []
+
+        user_lookup = {
+            info.get('id'): (idx, info)
+            for idx, info in enumerate(user_info)
+            if isinstance(info, dict) and info.get('id') is not None
+        }
+
         best_match = None
         best_user_idx = -1
-        best_primary_dist = float('inf')
-        best_secondary_dist = float('inf')
+        best_avg_confidence = -1.0
 
-        # Compare against all users
-        for user_idx, user_embeddings_by_model in enumerate(user_embeddings_list):
-            user_id = user_info[user_idx]['id']
-            
-            if user_embeddings_by_model is None or not isinstance(user_embeddings_by_model, dict):
+        # Candidates are pre-filtered by FAISS top-K from both models.
+        for user_id, scores in candidate_scores.items():
+            user_snapshot = user_lookup.get(user_id)
+            if user_snapshot is None:
                 continue
-            if CONFIG.primary_model not in user_embeddings_by_model or CONFIG.secondary_model not in user_embeddings_by_model:
+
+            user_idx, info = user_snapshot
+            primary_confidence = scores.get(CONFIG.primary_model)
+            secondary_confidence = scores.get(CONFIG.secondary_model)
+            if primary_confidence is None or secondary_confidence is None:
                 continue
-            
-            # Find best match for PRIMARY model
-            primary_best_dist = float('inf')
-            for user_embedding in user_embeddings_by_model.get(CONFIG.primary_model, []):
-                if user_embedding is None or not isinstance(user_embedding, np.ndarray):
-                    continue
-                if user_embedding.size == 0 or user_embedding.ndim != 1:
-                    continue
-                if primary_emb.shape != user_embedding.shape:
-                    continue
-                
-                try:
-                    distance = 1 - np.dot(primary_emb, user_embedding)
-                    primary_best_dist = min(primary_best_dist, distance)
-                except:
-                    continue
-            
-            # Find best match for SECONDARY model
-            secondary_best_dist = float('inf')
-            for user_embedding in user_embeddings_by_model.get(CONFIG.secondary_model, []):
-                if user_embedding is None or not isinstance(user_embedding, np.ndarray):
-                    continue
-                if user_embedding.size == 0 or user_embedding.ndim != 1:
-                    continue
-                if secondary_emb.shape != user_embedding.shape:
-                    continue
-                
-                try:
-                    distance = 1 - np.dot(secondary_emb, user_embedding)
-                    secondary_best_dist = min(secondary_best_dist, distance)
-                except:
-                    continue
-            
-            # Both models must pass their thresholds
-            primary_confidence = 1 - primary_best_dist
-            secondary_confidence = 1 - secondary_best_dist
+
+            primary_best_dist = 1.0 - float(primary_confidence)
+            secondary_best_dist = 1.0 - float(secondary_confidence)
             
             primary_pass = primary_confidence >= CONFIG.primary_threshold
             secondary_pass = secondary_confidence >= CONFIG.secondary_threshold
@@ -981,9 +1296,8 @@ class FaceRecognitionSystem:
                 avg_confidence = (primary_confidence + secondary_confidence) / 2
                 avg_distance = (primary_best_dist + secondary_best_dist) / 2
                 
-                if avg_confidence > (1 - best_primary_dist + 1 - best_secondary_dist) / 2:
-                    best_primary_dist = primary_best_dist
-                    best_secondary_dist = secondary_best_dist
+                if avg_confidence > best_avg_confidence:
+                    best_avg_confidence = avg_confidence
                     best_user_idx = user_idx
                     
                     best_match = {
@@ -995,10 +1309,10 @@ class FaceRecognitionSystem:
                         'primary_distance': primary_best_dist,
                         'secondary_distance': secondary_best_dist,
                         'threshold': (CONFIG.primary_threshold + CONFIG.secondary_threshold) / 2,
-                        'user_info': user_info[user_idx]
+                        'user_info': info
                     }
                     
-                    print(f"  ✓ 2-Factor Verified: {user_info[user_idx]['name']}")
+                    print(f"  ✓ 2-Factor Verified: {info['name']}")
                     print(f"      ArcFace: {primary_confidence:.2%}, Facenet: {secondary_confidence:.2%}")
 
         if best_match and best_user_idx != -1:
@@ -1072,8 +1386,18 @@ def register_or_recognize_face(
         user_idx = best_match['user_idx']
         user_id = best_match['user_info']['id']
 
-        STATE.all_user_embeddings[user_idx].setdefault(CONFIG.primary_model, []).append(embeddings[CONFIG.primary_model])
-        STATE.all_user_embeddings[user_idx].setdefault(CONFIG.secondary_model, []).append(embeddings[CONFIG.secondary_model])
+        new_embeddings_by_model = normalize_embeddings_by_model(embeddings)
+        existing_counts = {
+            model_name: len(
+                normalize_embeddings_by_model(STATE.all_user_embeddings[user_idx]).get(model_name, [])
+            )
+            for model_name in CONFIG.models
+        }
+
+        for model_name in CONFIG.models:
+            STATE.all_user_embeddings[user_idx].setdefault(model_name, []).extend(
+                new_embeddings_by_model.get(model_name, [])
+            )
 
         timestamp = int(time.time() * 1000)
         user_folder = os.path.join(CONFIG.base_save_dir, best_match['user_info']['sr_code'])
@@ -1106,6 +1430,12 @@ def register_or_recognize_face(
         total_emb = count_embeddings(STATE.all_user_embeddings[user_idx])
         print(f"✓ Learned new embedding for {best_match['user_info']['name']} "
               f"(total: {total_emb} embeddings across models)")
+
+        add_embeddings_incremental(
+            user_id=user_id,
+            embeddings_by_model=new_embeddings_by_model,
+            start_offsets=existing_counts,
+        )
 
         STATE.recognized_user = {
             'name': best_match['user_info']['name'],
@@ -1653,6 +1983,7 @@ def handle_registration():
             all_embeddings = merge_embeddings_by_model(all_embeddings, face_data['embeddings'])
     
     if all_embeddings:
+        all_embeddings = normalize_embeddings_by_model(all_embeddings)
         user_id = save_user_with_multiple_embeddings(all_embeddings, image_paths, name, sr_code, course)
         
         STATE.all_user_embeddings.append(all_embeddings)
@@ -1662,6 +1993,12 @@ def handle_registration():
             'sr_code': sr_code
         })
         STATE.user_count = len(STATE.user_info)
+
+        add_embeddings_incremental(
+            user_id=user_id,
+            embeddings_by_model=all_embeddings,
+            start_offsets={model_name: 0 for model_name in CONFIG.models},
+        )
         
         total_emb = count_embeddings(all_embeddings)
         print(f"✓ Registered {name} with {total_emb} embeddings across models")
@@ -1713,6 +2050,7 @@ def main_menu():
             # Reload embeddings after registration
             STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
             STATE.user_count = len(STATE.user_info)
+            refresh_faiss()
             
         elif choice == '3':
             print("\n" + "="*50)
@@ -1748,10 +2086,16 @@ def main_menu():
                     c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
                     conn.commit()
                     print("User deleted")
-                    
-                    # Reload embeddings
-                    STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
+
+                    removed = remove_user_incremental(user_id)
+                    user_idx = _get_user_index_by_id(user_id)
+                    if user_idx != -1:
+                        STATE.all_user_embeddings.pop(user_idx)
+                        STATE.user_info.pop(user_idx)
                     STATE.user_count = len(STATE.user_info)
+
+                    if not removed:
+                        refresh_faiss()
                     
                 conn.close()
             except ValueError:
@@ -1873,6 +2217,7 @@ def main_menu():
                 STATE.all_user_embeddings = []
                 STATE.user_info = []
                 STATE.user_count = 0
+                refresh_faiss()
                 print("Database reset complete")
             else:
                 print("Reset cancelled")
