@@ -21,3 +21,4 @@ lz4
 keras-facenet
 deepface
 tf-keras
+faiss-cpu
