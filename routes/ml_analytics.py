@@ -2,8 +2,9 @@
 import math
 import warnings
 import struct
-from datetime import date, timedelta
-
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+from routes.forecasting import run_all_forecasts
 
 def _coerce_confidence(value):
     """Mirror of the one in routes.py — needed here for standalone use."""
@@ -240,7 +241,7 @@ def run_ml_analytics(db_path):
         else:
             dow_averages.append(0)
 
-    today     = date.today()
+    today     = datetime.now(ZoneInfo("Asia/Manila")).date()
     start_30d = today - timedelta(days=29)
     date_map  = dict(zip(daily_df["date"].dt.date.astype(str),
                          daily_df["count"].astype(int)))
@@ -265,74 +266,54 @@ def run_ml_analytics(db_path):
     hour_counts = df.groupby("hour").size()
     peak_hours  = [int(hour_counts.get(h, 0)) for h in range(24)]
 
-    # ══════════════════════════════════════════════════════════
-    # STAGE 5a — ARIMA FORECASTING
-    # ══════════════════════════════════════════════════════════
-    forecast = {"labels":[],"values":[],"lower":[],"upper":[],
-                "method":"","aic":None,"bic":None,"model_order":None}
-    arima_interpretation = ""
-
+    # ══════════════════════════════════════════════════════
+    # STAGE 5a — MULTI-MODEL FORECASTING
+    # ARIMA · SARIMA · Prophet · Holt-Winters
+    # ══════════════════════════════════════════════════════
+    forecast_result = {}
     try:
-        from statsmodels.tsa.arima.model import ARIMA
-
-        ts_series = daily_df.set_index("date")["count"].asfreq("D", fill_value=0)
-
-        best_aic   = float("inf")
-        best_order = (1, 1, 1)
-        for p in range(3):
-            for d in range(2):
-                for q in range(3):
-                    try:
-                        m = ARIMA(ts_series, order=(p, d, q)).fit()
-                        if m.aic < best_aic:
-                            best_aic, best_order = m.aic, (p, d, q)
-                    except Exception:
-                        continue
-
-        model  = ARIMA(ts_series, order=best_order).fit()
-        fc_res = model.get_forecast(steps=7)
-        fc_mean= fc_res.predicted_mean
-        fc_ci  = fc_res.conf_int(alpha=0.05)
-
-        fc_labels, fc_vals, fc_lower, fc_upper = [], [], [], []
-        for i in range(7):
-            fd = today + timedelta(days=i + 1)
-            fc_labels.append(fd.strftime("%a %m/%d"))
-            fc_vals.append(max(0, round(float(fc_mean.iloc[i]))))
-            fc_lower.append(max(0, round(float(fc_ci.iloc[i, 0]))))
-            fc_upper.append(max(0, round(float(fc_ci.iloc[i, 1]))))
-
-        forecast = {
-            "labels":      fc_labels,
-            "values":      fc_vals,
-            "lower":       fc_lower,
-            "upper":       fc_upper,
-            "method":      f"ARIMA{best_order} — auto-selected by minimum AIC",
-            "aic":         round(model.aic, 2),
-            "bic":         round(model.bic, 2),
-            "model_order": list(best_order),
-        }
-        avg_range = np.mean([u - l for u, l in zip(fc_upper, fc_lower)])
-        peak_day  = fc_labels[fc_vals.index(max(fc_vals))] if fc_vals else "—"
-        arima_interpretation = (
-            f"The ARIMA{tuple(best_order)} model was auto-selected from all "
-            f"ARIMA(p,d,q) combinations by lowest AIC ({round(best_aic, 2)}). "
-            f"Total forecasted visits next 7 days: {sum(fc_vals)}, "
-            f"peaking on {peak_day}. "
-            f"Average 95% confidence interval width: ±{round(avg_range / 2)} visits/day."
-        )
+        forecast_result = run_all_forecasts(daily_df, today)
     except Exception as e:
-        arima_interpretation = f"ARIMA could not be fitted ({e}). Using weighted moving average fallback."
-        last_28 = [date_map.get((today - timedelta(days=i)).isoformat(), 0) for i in range(27, -1, -1)]
-        base    = float(np.mean(last_28[-7:])) if any(last_28) else mean_v
-        sd_f    = float(np.std(last_28[-7:]))  if any(last_28) else std_v
+        # Full fallback to weighted moving average so the UI still has 7 days to render.
+        last_28 = [
+            date_map.get((today - timedelta(days=i)).isoformat(), 0)
+            for i in range(27, -1, -1)
+        ]
+        recent_7 = last_28[-7:] if len(last_28) >= 7 else last_28
+        base = float(np.mean(recent_7)) if recent_7 and any(recent_7) else mean_v
+        sd_f = float(np.std(recent_7)) if recent_7 and any(recent_7) else std_v
+
+        fc_labels = []
+        fc_values = []
+        fc_lower = []
+        fc_upper = []
         for i in range(1, 8):
             fd = today + timedelta(days=i)
-            forecast["labels"].append(fd.strftime("%a %m/%d"))
-            forecast["values"].append(max(0, round(base)))
-            forecast["lower"].append(max(0, round(base - sd_f)))
-            forecast["upper"].append(max(0, round(base + sd_f)))
-        forecast["method"] = "7-day weighted moving average (ARIMA fallback)"
+            fc_labels.append(fd.strftime("%a %m/%d"))
+            fc_values.append(max(0, round(base)))
+            fc_lower.append(max(0, round(base - sd_f)))
+            fc_upper.append(max(0, round(base + sd_f)))
+
+        forecast_result = {
+            "primary_forecast": {
+                "model": "Moving Average",
+                "labels": fc_labels,
+                "values": fc_values,
+                "lower": fc_lower,
+                "upper": fc_upper,
+                "method": "7-day weighted moving average (all models failed)",
+                "metrics": {"mae": None, "rmse": None, "mape": None},
+                "interpretation": (
+                    f"Advanced forecasting models were unavailable, so a "
+                    f"moving-average fallback was used. Error: {e}"
+                ),
+            },
+            "all_forecasts": [],
+            "comparison":    [],
+            "best_model":    "Moving Average",
+            "errors":        {"all": str(e)},
+            "comparison_interpretation": "Models could not be evaluated.",
+        }
 
     # ══════════════════════════════════════════════════════════
     # STAGE 5b — LINEAR REGRESSION
@@ -628,8 +609,12 @@ def run_ml_analytics(db_path):
         "gender_data":          gender_data,
         "year_level_data":      year_level_data,
         # ML models
-        "forecast":             forecast,
-        "arima_interpretation": arima_interpretation,
+        "forecast":              forecast_result.get("primary_forecast", {}),
+        "all_forecasts":         forecast_result.get("all_forecasts", []),
+        "forecast_comparison":   forecast_result.get("comparison", []),
+        "best_forecast_model":   forecast_result.get("best_model", ""),
+        "forecast_errors":       forecast_result.get("errors", {}),
+        "forecast_comparison_interpretation": forecast_result.get("comparison_interpretation", ""),
         "regression":           regression,
         "regression_interpretation": regression_interpretation,
         "clustering":           clustering,

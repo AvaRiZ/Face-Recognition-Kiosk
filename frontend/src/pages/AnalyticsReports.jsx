@@ -1097,30 +1097,56 @@ function TrendChart({ labels, counts }) {
 }
 
 // ── Forecast Section ──────────────────────────────────────────
-function ForecastSection({ forecast }) {
+function ForecastSection({
+  forecast,
+  allForecasts,
+  comparison,
+  bestModel,
+  comparisonInterp,
+}) {
   const canvasRef = React.useRef(null);
   const chartRef = React.useRef(null);
+  const [activeModel, setActiveModel] = React.useState(null);
+
+  // Use active model's data or fall back to primary forecast
+  const displayForecast = React.useMemo(() => {
+    if (activeModel && allForecasts?.length) {
+      return allForecasts.find((f) => f.model === activeModel) || forecast;
+    }
+    return forecast;
+  }, [activeModel, allForecasts, forecast]);
+
+  const MODEL_COLORS = {
+    ARIMA: "#0d6efd",
+    SARIMA: "#6f42c1",
+    Prophet: "#198754",
+    "Holt-Winters": "#fd7e14",
+    "Moving Average": "#6c757d",
+  };
 
   React.useEffect(() => {
-    if (!canvasRef.current || !window.Chart || !forecast?.values?.length)
+    if (!canvasRef.current || !window.Chart || !displayForecast?.values?.length)
       return;
     if (chartRef.current) chartRef.current.destroy();
+
+    const color = MODEL_COLORS[displayForecast.model] || "#0d6efd";
+
     chartRef.current = new window.Chart(canvasRef.current, {
       type: "bar",
       data: {
-        labels: forecast.labels,
+        labels: displayForecast.labels,
         datasets: [
           {
-            label: "Predicted",
-            data: forecast.values,
-            backgroundColor: "rgba(13,110,253,0.75)",
+            label: `${displayForecast.model} — Predicted`,
+            data: displayForecast.values,
+            backgroundColor: color + "bb",
             borderRadius: 8,
             borderWidth: 0,
             order: 2,
           },
           {
-            label: "Upper",
-            data: forecast.upper,
+            label: "Upper (95%)",
+            data: displayForecast.upper,
             type: "line",
             borderColor: "rgba(220,53,69,0.45)",
             borderWidth: 1.5,
@@ -1130,8 +1156,8 @@ function ForecastSection({ forecast }) {
             order: 1,
           },
           {
-            label: "Lower",
-            data: forecast.lower,
+            label: "Lower (95%)",
+            data: displayForecast.lower,
             type: "line",
             borderColor: "rgba(25,135,84,0.45)",
             borderWidth: 1.5,
@@ -1159,7 +1185,7 @@ function ForecastSection({ forecast }) {
       },
     });
     return () => chartRef.current?.destroy();
-  }, [forecast]);
+  }, [displayForecast]);
 
   if (!forecast?.values?.length)
     return (
@@ -1180,49 +1206,128 @@ function ForecastSection({ forecast }) {
     );
 
   const peakDay =
-    forecast.labels[forecast.values.indexOf(Math.max(...forecast.values))];
+    displayForecast.labels?.[
+      displayForecast.values?.indexOf(
+        Math.max(...(displayForecast.values || [0])),
+      )
+    ] ?? "—";
   const quietDay =
-    forecast.labels[forecast.values.indexOf(Math.min(...forecast.values))];
-  const totalWeek = forecast.values.reduce((a, b) => a + b, 0);
-  const avgRange =
-    forecast.values
-      .map((v, i) => forecast.upper[i] - forecast.lower[i])
-      .reduce((a, b) => a + b, 0) / forecast.values.length;
+    displayForecast.labels?.[
+      displayForecast.values?.indexOf(
+        Math.min(...(displayForecast.values || [0])),
+      )
+    ] ?? "—";
+  const totalWeek = (displayForecast.values || []).reduce((a, b) => a + b, 0);
 
   return (
     <div>
+      {/* ── Best model banner ── */}
+      {bestModel && (
+        <div
+          style={{
+            background: "rgba(25,135,84,0.07)",
+            border: "1px solid rgba(25,135,84,0.2)",
+            borderRadius: 8,
+            padding: "8px 14px",
+            marginBottom: 14,
+            fontSize: 12.5,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <i className="bi bi-trophy-fill" style={{ color: "#198754" }}></i>
+          <span>
+            Best performing model:{" "}
+            <strong style={{ color: "#198754" }}>{bestModel}</strong> — selected
+            by lowest RMSE on back-test
+          </span>
+        </div>
+      )}
+
+      {/* ── Model selector tabs ── */}
+      {allForecasts?.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 6,
+            marginBottom: 14,
+            flexWrap: "wrap",
+          }}
+        >
+          {allForecasts.map((f) => {
+            const isActive = (activeModel || bestModel) === f.model;
+            const color = MODEL_COLORS[f.model] || "#0d6efd";
+            return (
+              <button
+                key={f.model}
+                onClick={() => setActiveModel(f.model)}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 20,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  border: `1px solid ${isActive ? color : color + "40"}`,
+                  background: isActive ? color + "15" : "#f8f9fa",
+                  color: isActive ? color : "#666",
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                }}
+              >
+                {f.model === bestModel && (
+                  <i
+                    className="bi bi-trophy-fill me-1"
+                    style={{ fontSize: 10 }}
+                  ></i>
+                )}
+                {f.model}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Active model method label ── */}
       <div
         style={{
           background: "rgba(255,193,7,0.08)",
           border: "1px solid rgba(255,193,7,0.2)",
           borderRadius: 8,
           padding: "8px 14px",
-          marginBottom: 16,
+          marginBottom: 14,
           fontSize: 12,
         }}
       >
         <i className="bi bi-cpu text-warning me-1"></i>
-        <strong>Method:</strong> {forecast.method}
-        {forecast.aic && (
+        <strong>Method:</strong> {displayForecast.method}
+        {displayForecast.aic && (
           <span style={{ marginLeft: 12, color: "#888" }}>
-            AIC: <strong>{forecast.aic}</strong> · BIC:{" "}
-            <strong>{forecast.bic}</strong> · Order:{" "}
-            <code style={{ fontSize: 11 }}>
-              ARIMA({forecast.model_order?.join(",")})
-            </code>
+            AIC: <strong>{displayForecast.aic}</strong> · BIC:{" "}
+            <strong>{displayForecast.bic}</strong>
           </span>
         )}
+        {displayForecast.params &&
+          Object.keys(displayForecast.params).length > 0 && (
+            <span style={{ marginLeft: 12, color: "#888" }}>
+              α={displayForecast.params.alpha} · β={displayForecast.params.beta}{" "}
+              · γ={displayForecast.params.gamma}
+            </span>
+          )}
       </div>
+
+      {/* ── Chart ── */}
       <div style={{ height: 220, position: "relative", marginBottom: 16 }}>
         <canvas ref={canvasRef}></canvas>
       </div>
-      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+
+      {/* ── Forecast table ── */}
+      <div style={{ overflowX: "auto", marginBottom: 16 }}>
         <table
           style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}
         >
           <thead>
             <tr style={{ background: "#f8f9fa" }}>
-              {["Day", "Predicted", "95% Range"].map((h, i) => (
+              {["Day", "Predicted", "95% CI Range"].map((h, i) => (
                 <th
                   key={i}
                   style={{
@@ -1239,7 +1344,7 @@ function ForecastSection({ forecast }) {
             </tr>
           </thead>
           <tbody>
-            {forecast.labels.map((l, i) => (
+            {displayForecast.labels?.map((l, i) => (
               <tr key={i}>
                 <td
                   style={{
@@ -1257,10 +1362,10 @@ function ForecastSection({ forecast }) {
                     textAlign: "center",
                     border: "1px solid #e9ecef",
                     fontWeight: 700,
-                    color: "#0d6efd",
+                    color: MODEL_COLORS[displayForecast.model] || "#0d6efd",
                   }}
                 >
-                  {forecast.values[i]}
+                  {displayForecast.values?.[i]}
                 </td>
                 <td
                   style={{
@@ -1270,29 +1375,205 @@ function ForecastSection({ forecast }) {
                     color: "#aaa",
                   }}
                 >
-                  {forecast.lower[i]}–{forecast.upper[i]}
+                  {displayForecast.lower?.[i]} – {displayForecast.upper?.[i]}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* ── Model comparison table ── */}
+      {comparison?.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#555",
+              marginBottom: 8,
+            }}
+          >
+            Model Comparison — Back-test on Last 7 Days
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 12.5,
+              }}
+            >
+              <thead>
+                <tr style={{ background: "#f8f9fa" }}>
+                  {[
+                    "Model",
+                    "MAE",
+                    "RMSE",
+                    "MAPE (%)",
+                    "7-Day Total",
+                    "AIC",
+                  ].map((h, i) => (
+                    <th
+                      key={i}
+                      style={{
+                        padding: "8px 12px",
+                        textAlign: i === 0 ? "left" : "center",
+                        fontWeight: 600,
+                        color: "#555",
+                        border: "1px solid #e9ecef",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {comparison.map((row, i) => {
+                  const isBest = row.model === bestModel;
+                  const color = MODEL_COLORS[row.model] || "#0d6efd";
+                  return (
+                    <tr
+                      key={i}
+                      style={{
+                        background: isBest
+                          ? color + "08"
+                          : i % 2 === 0
+                            ? "#fff"
+                            : "#fafafa",
+                        border: isBest ? `1px solid ${color}30` : "none",
+                      }}
+                    >
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          border: "1px solid #f0f0f0",
+                          fontWeight: isBest ? 700 : 500,
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              background: color,
+                              display: "inline-block",
+                              flexShrink: 0,
+                            }}
+                          ></span>
+                          {row.model}
+                          {isBest && (
+                            <span
+                              style={{
+                                background: color + "20",
+                                color,
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 10,
+                                fontWeight: 600,
+                              }}
+                            >
+                              Best
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                          color: isBest ? "#198754" : "#555",
+                          fontWeight: isBest ? 700 : 400,
+                        }}
+                      >
+                        {row.mae ?? "—"}
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                          color: isBest ? "#198754" : "#555",
+                          fontWeight: isBest ? 700 : 400,
+                        }}
+                      >
+                        {row.rmse ?? "—"}
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                          color: isBest ? "#198754" : "#555",
+                          fontWeight: isBest ? 700 : 400,
+                        }}
+                      >
+                        {row.mape != null ? `${row.mape}%` : "—"}
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                        }}
+                      >
+                        <span
+                          style={{
+                            background: color + "15",
+                            color,
+                            padding: "2px 8px",
+                            borderRadius: 20,
+                            fontWeight: 700,
+                            fontSize: 12,
+                          }}
+                        >
+                          {row.total_7d}
+                        </span>
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                          color: "#aaa",
+                        }}
+                      >
+                        {row.aic ?? "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Interpretation ── */}
       <Interpretation icon="bi-graph-up-arrow" color="#ffc107">
-        <strong>Forecast Interpretation:</strong>{" "}
-        {forecast.aic
-          ? `The ARIMA(${forecast.model_order?.join(",")}) model was auto-selected by lowest AIC (${forecast.aic}). `
-          : ""}
-        The model predicts approximately <strong>{totalWeek}</strong> visits
-        over the next 7 days, peaking on{" "}
-        <strong style={{ color: "#dc3545" }}>{peakDay}</strong> and lowest on{" "}
-        <strong style={{ color: "#198754" }}>{quietDay}</strong>. Average 95%
-        confidence interval: ±{Math.round(avgRange / 2)} visits/day
-        {avgRange < 10
-          ? " — high forecast precision."
-          : " — moderate uncertainty, verify against academic calendar."}{" "}
-        Forecasted Saturday/Sunday values should be treated as closed-library
-        days.
+        <strong>Forecast Interpretation ({displayForecast.model}):</strong>{" "}
+        {displayForecast.interpretation} Peak forecasted day:{" "}
+        <strong style={{ color: "#dc3545" }}>{peakDay}</strong> ({totalWeek}{" "}
+        total visits predicted). Forecasted Saturday/Sunday values reflect
+        expected lower traffic on non-operating days.
       </Interpretation>
+
+      {comparisonInterp && (
+        <Interpretation icon="bi-bar-chart-steps" color="#0d6efd">
+          <strong>Model Comparison Interpretation:</strong>{" "}
+          <span dangerouslySetInnerHTML={{ __html: comparisonInterp }} />
+        </Interpretation>
+      )}
     </div>
   );
 }
@@ -1319,8 +1600,7 @@ function LinearRegressionSection({
     chartLabels.length === regression.fitted.length;
 
   React.useEffect(() => {
-    if (!canvasRef.current || !window.Chart || !hasRegressionData)
-      return;
+    if (!canvasRef.current || !window.Chart || !hasRegressionData) return;
     if (chartRef.current) chartRef.current.destroy();
     chartRef.current = new window.Chart(canvasRef.current, {
       type: "line",
@@ -3051,10 +3331,16 @@ export default function AnalyticsReports() {
             stepNum="5a"
             title="7-Day Forecast"
             color="#ffc107"
-            subtitle={`${data?.forecast?.method?.includes("ARIMA") ? "ARIMA model" : "Moving average"} · Predicted visits next 7 days`}
+            subtitle={`Best model: ${data?.best_forecast_model ?? "—"} · Predicted visits next 7 days`}
             defaultOpen={false}
           >
-            <ForecastSection forecast={data?.forecast} />
+            <ForecastSection
+              forecast={data?.forecast}
+              allForecasts={data?.all_forecasts}
+              comparison={data?.forecast_comparison}
+              bestModel={data?.best_forecast_model}
+              comparisonInterp={data?.forecast_comparison_interpretation}
+            />
           </Section>
 
           {/* Stage 5b — Linear Regression (NEW) */}
