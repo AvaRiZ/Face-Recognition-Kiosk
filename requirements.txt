@@ -26,3 +26,4 @@ lz4
 keras-facenet
 deepface
 tf-keras
+psycopg[binary]

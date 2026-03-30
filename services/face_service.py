@@ -1,12 +1,12 @@
 import pickle
-import sqlite3
 from html import escape
 from pathlib import Path
 import re
+from db import connect as db_connect, table_columns
 
 
 def init_db(db_path):
-    conn = sqlite3.connect(db_path)
+    conn = db_connect(db_path)
     c = conn.cursor()
     c.execute(
         """
@@ -36,8 +36,7 @@ def init_db(db_path):
         """
     )
 
-    c.execute("PRAGMA table_info(users)")
-    existing_cols = {row[1] for row in c.fetchall()}
+    existing_cols = table_columns(conn, "users")
     if "archived_at" not in existing_cols:
         c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
     conn.commit()
@@ -45,7 +44,7 @@ def init_db(db_path):
 
 
 def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, name, sr_code, course):
-    conn = sqlite3.connect(db_path)
+    conn = db_connect(db_path)
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE sr_code = ?", (sr_code,))
     existing = c.fetchone()
@@ -73,14 +72,25 @@ def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, na
     else:
         embeddings_blob = pickle.dumps(embeddings_list)
         embedding_dim = len(embeddings_list[0])
-        c.execute(
-            """
-            INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (name, sr_code, course, embeddings_blob, ";".join(image_paths), embedding_dim),
-        )
-        user_id = c.lastrowid
+        if getattr(conn, "dialect", "sqlite") == "postgres":
+            c.execute(
+                """
+                INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
+                VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING user_id
+                """,
+                (name, sr_code, course, embeddings_blob, ";".join(image_paths), embedding_dim),
+            )
+            user_id = c.fetchone()[0]
+        else:
+            c.execute(
+                """
+                INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (name, sr_code, course, embeddings_blob, ";".join(image_paths), embedding_dim),
+            )
+            user_id = c.lastrowid
 
     conn.commit()
     conn.close()
@@ -88,7 +98,7 @@ def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, na
 
 
 def load_all_embeddings(db_path):
-    conn = sqlite3.connect(db_path)
+    conn = db_connect(db_path)
     c = conn.cursor()
     c.execute("SELECT user_id, name, sr_code, embeddings FROM users")
     rows = c.fetchall()
@@ -105,7 +115,7 @@ def load_all_embeddings(db_path):
 
 
 def log_recognition(db_path, user_id, confidence):
-    conn = sqlite3.connect(db_path)
+    conn = db_connect(db_path)
     c = conn.cursor()
     c.execute("INSERT INTO recognition_log (user_id, confidence) VALUES (?, ?)", (user_id, confidence))
     conn.commit()

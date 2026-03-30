@@ -3,7 +3,6 @@ import sys
 import subprocess
 import cv2
 import numpy as np
-import sqlite3
 import os
 import sys
 import time
@@ -28,6 +27,7 @@ from services.staff_service import ensure_profile_upload_dir, save_profile_image
 import torch
 import tensorflow as tf
 from ultralytics import YOLO
+from db import connect as db_connect, table_columns
 
 def log_header(title):
     print("\n" + "=" * 60)
@@ -113,7 +113,7 @@ class AppConfig:
     min_face_size: int = 50
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 2
-    recognition_cooldown_seconds: int = 2
+    recognition_cooldown_seconds: int = 1
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
@@ -222,7 +222,7 @@ log_step(f"Two-Factor Verification: {CONFIG.primary_model} + {CONFIG.secondary_m
 # Database setup (SQLite) with improved schema
 # -------------------------------
 def init_db():
-    conn = sqlite3.connect(CONFIG.db_path)
+    conn = db_connect(CONFIG.db_path)
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -250,8 +250,7 @@ def init_db():
     ''')
 
     # Backward-compatible schema upgrades for richer recognition diagnostics.
-    c.execute("PRAGMA table_info(recognition_log)")
-    existing_columns = {row[1] for row in c.fetchall()}
+    existing_columns = table_columns(conn, "recognition_log")
     extra_columns = {
         "primary_confidence": "REAL",
         "secondary_confidence": "REAL",
@@ -264,8 +263,7 @@ def init_db():
         if col_name not in existing_columns:
             c.execute(f"ALTER TABLE recognition_log ADD COLUMN {col_name} {col_type}")
     
-    c.execute("PRAGMA table_info(users)")
-    existing_columns = {row[1] for row in c.fetchall()}
+    existing_columns = table_columns(conn, "users")
     if "archived_at" not in existing_columns:
         c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
 
@@ -273,7 +271,7 @@ def init_db():
     conn.close()
 
 def save_user_with_multiple_embeddings(embeddings_by_model, image_paths, name, sr_code, course):
-    conn = sqlite3.connect(CONFIG.db_path)
+    conn = db_connect(CONFIG.db_path)
     c = conn.cursor()
     
     c.execute("SELECT user_id FROM users WHERE sr_code = ?", (sr_code,))
@@ -302,11 +300,19 @@ def save_user_with_multiple_embeddings(embeddings_by_model, image_paths, name, s
         embeddings_by_model = normalize_embeddings_by_model(embeddings_by_model)
         embeddings_blob = pickle.dumps(embeddings_by_model)
         embedding_dim = infer_embedding_dim(embeddings_by_model)
-        c.execute("""
-            INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim) 
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (name, sr_code, course, embeddings_blob, ';'.join(image_paths), embedding_dim))
-        user_id = c.lastrowid
+        if getattr(conn, "dialect", "sqlite") == "postgres":
+            c.execute("""
+                INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim) 
+                VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING user_id
+            """, (name, sr_code, course, embeddings_blob, ';'.join(image_paths), embedding_dim))
+            user_id = c.fetchone()[0]
+        else:
+            c.execute("""
+                INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim) 
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (name, sr_code, course, embeddings_blob, ';'.join(image_paths), embedding_dim))
+            user_id = c.lastrowid
     
     conn.commit()
     conn.close()
@@ -431,7 +437,7 @@ def _coerce_float(value):
 
 def load_all_embeddings():
     """Load all embeddings for all users"""
-    conn = sqlite3.connect(CONFIG.db_path)
+    conn = db_connect(CONFIG.db_path)
     c = conn.cursor()
     c.execute(
         """
@@ -479,7 +485,7 @@ def log_recognition(
     secondary_distance = _coerce_float(secondary_distance)
     face_quality = _coerce_float(face_quality)
 
-    conn = sqlite3.connect(CONFIG.db_path)
+    conn = db_connect(CONFIG.db_path)
     c = conn.cursor()
     c.execute(
         """
@@ -1235,7 +1241,7 @@ def register_or_recognize_face(
         filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
         cv2.imwrite(filename, face_crop)
 
-        conn = sqlite3.connect(CONFIG.db_path)
+        conn = db_connect(CONFIG.db_path)
         c = conn.cursor()
 
         c.execute("SELECT embeddings, image_paths FROM users WHERE user_id = ?", (user_id,))
@@ -1744,7 +1750,7 @@ def handle_registration():
         return
 
     # Check if SR code exists
-    conn = sqlite3.connect(CONFIG.db_path)
+    conn = db_connect(CONFIG.db_path)
     c = conn.cursor()
     c.execute("SELECT name FROM users WHERE sr_code = ?", (sr_code,))
     existing = c.fetchone()
@@ -1850,7 +1856,7 @@ def main_menu():
                 if user_id == 0:
                     continue
                     
-                conn = sqlite3.connect(CONFIG.db_path)
+                conn = db_connect(CONFIG.db_path)
                 c = conn.cursor()
                 c.execute("SELECT name, sr_code FROM users WHERE user_id = ?", (user_id,))
                 user = c.fetchone()
@@ -1877,7 +1883,7 @@ def main_menu():
                 print("Invalid input")
                 
         elif choice == '5':
-            conn = sqlite3.connect(CONFIG.db_path)
+            conn = db_connect(CONFIG.db_path)
             c = conn.cursor()
             c.execute("""
                 SELECT u.user_id, u.name, u.sr_code, u.embedding_dim, u.embeddings,
@@ -1978,7 +1984,7 @@ def main_menu():
             print("\n⚠️  WARNING: This will delete ALL users and data!")
             confirm = input("Type 'YES' to confirm: ")
             if confirm == 'YES':
-                conn = sqlite3.connect(CONFIG.db_path)
+                conn = db_connect(CONFIG.db_path)
                 c = conn.cursor()
                 c.execute("DELETE FROM users")
                 c.execute("DELETE FROM recognition_log")
@@ -2008,7 +2014,12 @@ def parse_args():
     parser.add_argument(
         "--web",
         action="store_true",
-        help="Start the Flask web interface instead of the interactive CLI menu.",
+        help="Run the Flask web interface alongside the interactive CLI menu.",
+    )
+    parser.add_argument(
+        "--web-only",
+        action="store_true",
+        help="Run only the Flask web interface.",
     )
     parser.add_argument(
         "--host",
@@ -2029,6 +2040,24 @@ def parse_args():
     return parser.parse_args()
 
 
+def start_web_server(host, port, debug):
+    """Run the Flask site in a background thread when CLI mode is also active."""
+    app = create_app()
+    server_thread = threading.Thread(
+        target=app.run,
+        kwargs={
+            "host": host,
+            "port": port,
+            "debug": debug,
+            "use_reloader": False,
+        },
+        daemon=True,
+        name="flask-web-server",
+    )
+    server_thread.start()
+    return server_thread
+
+
 # -------------------------------
 # Run the system
 # -------------------------------
@@ -2040,9 +2069,12 @@ if __name__ == "__main__":
     log_step(f"Base threshold: {CONFIG.base_threshold}")
     log_step(f"Users in database: {STATE.user_count}")
 
-    if args.web:
+    if args.web_only:
         log_step(f"Starting web server at http://{args.host}:{args.port}")
         create_app().run(host=args.host, port=args.port, debug=args.debug)
     else:
+        if args.web:
+            log_step(f"Starting web server at http://{args.host}:{args.port}")
+            start_web_server(args.host, args.port, args.debug)
         main_menu()
 

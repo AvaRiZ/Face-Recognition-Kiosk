@@ -1,6 +1,5 @@
 import os
 import shutil
-import sqlite3
 import struct
 import csv
 import io
@@ -18,11 +17,12 @@ from auth import (
     role_required,
     toggle_staff_status,
 )
+from db import connect as db_connect
 from routes.ml_analytics import run_ml_analytics
 
 
 def init_imported_logs_table(db_path):
-    conn = sqlite3.connect(db_path)
+    conn = db_connect(db_path)
     c = conn.cursor()
     c.execute(
         """
@@ -87,7 +87,7 @@ def create_routes_blueprint(deps):
         return None
 
     def _ensure_settings_table(db_path):
-        conn = sqlite3.connect(db_path)
+        conn = db_connect(db_path)
         c = conn.cursor()
         c.execute(
             """
@@ -102,7 +102,7 @@ def create_routes_blueprint(deps):
 
     def _get_setting(db_path, key, default=None):
         _ensure_settings_table(db_path)
-        conn = sqlite3.connect(db_path)
+        conn = db_connect(db_path)
         c = conn.cursor()
         c.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
         row = c.fetchone()
@@ -111,7 +111,7 @@ def create_routes_blueprint(deps):
 
     def _set_setting(db_path, key, value):
         _ensure_settings_table(db_path)
-        conn = sqlite3.connect(db_path)
+        conn = db_connect(db_path)
         c = conn.cursor()
         c.execute(
             """
@@ -127,7 +127,7 @@ def create_routes_blueprint(deps):
     def _dashboard_data():
         from datetime import date, timedelta
 
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
 
         # ── Existing queries (kept exactly as before) ──────────────
@@ -416,7 +416,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin")
     def get_stats():
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             """
@@ -469,7 +469,7 @@ def create_routes_blueprint(deps):
             flash("No profiles selected for archiving.", "error")
             return redirect(url_for("routes.registered_profiles_archive"))
 
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             f"""
@@ -501,7 +501,7 @@ def create_routes_blueprint(deps):
             flash("No profiles selected for restore.", "error")
             return redirect(url_for("routes.archived_profiles"))
 
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             f"""
@@ -531,7 +531,7 @@ def create_routes_blueprint(deps):
         }
         range_days = range_map.get(range_key, 14)
 
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
 
         c.execute("SELECT COUNT(*) FROM recognition_log")
@@ -639,7 +639,7 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin")
     def reset_database():
         try:
-            conn = sqlite3.connect(deps["db_path"])
+            conn = db_connect(deps["db_path"])
             c = conn.cursor()
             c.execute("DELETE FROM users")
             c.execute("DELETE FROM recognition_log")
@@ -659,7 +659,7 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin")
     def clear_log():
         try:
-            conn = sqlite3.connect(deps["db_path"])
+            conn = db_connect(deps["db_path"])
             c = conn.cursor()
             c.execute("DELETE FROM recognition_log")
             conn.commit()
@@ -680,7 +680,7 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin")
     def delete_profile(user_id):
         try:
-            conn = sqlite3.connect(deps["db_path"])
+            conn = db_connect(deps["db_path"])
             c = conn.cursor()
  
             # Get student info before deleting
@@ -717,7 +717,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def entry_exit_logs():
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
  
         # All logs latest first
@@ -746,7 +746,7 @@ def create_routes_blueprint(deps):
         from datetime import date, datetime
         from flask import make_response
 
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         selected_date = request.args.get("date", "").strip()
         date_for_name = date.today()
@@ -833,7 +833,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin")
     def api_registered_profiles():
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             """
@@ -860,7 +860,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin")
     def api_archive_profiles():
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             """
@@ -893,7 +893,7 @@ def create_routes_blueprint(deps):
         if not user_ids:
             return jsonify({"success": False, "message": "No profiles selected for archiving."}), 400
 
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             f"""
@@ -913,7 +913,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin")
     def api_archived_profiles():
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             """
@@ -947,7 +947,7 @@ def create_routes_blueprint(deps):
         if not user_ids:
             return jsonify({"success": False, "message": "No profiles selected for restore."}), 400
 
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             f"""
@@ -1068,7 +1068,7 @@ def create_routes_blueprint(deps):
                 }
             ), 400
 
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.executemany(
             """
@@ -1105,7 +1105,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin")
     def api_import_logs_summary():
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
 
         c.execute("SELECT COUNT(*) FROM imported_logs")
@@ -1150,7 +1150,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin")
     def api_import_logs_delete(batch_id):
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute("DELETE FROM imported_logs WHERE import_batch = ?", (batch_id,))
         deleted = c.rowcount
@@ -1179,7 +1179,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def api_entry_exit_logs():
-        conn = sqlite3.connect(deps["db_path"])
+        conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             """

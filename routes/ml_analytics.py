@@ -4,6 +4,7 @@ import warnings
 import struct
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+from db import connect as db_connect
 from routes.forecasting import run_all_forecasts
 
 def _coerce_confidence(value):
@@ -55,7 +56,6 @@ def run_ml_analytics(db_path):
     Pearson Correlation, and ANOVA.
     Returns a dict ready to be passed to jsonify().
     """
-    import sqlite3
     import numpy as np
     import pandas as pd
     from scipy import stats as scipy_stats
@@ -66,7 +66,7 @@ def run_ml_analytics(db_path):
 
     warnings.filterwarnings("ignore")
 
-    conn = sqlite3.connect(db_path)
+    conn = db_connect(db_path)
     c    = conn.cursor()
 
     # ── Ensure imported_logs exists ────────────────────────────

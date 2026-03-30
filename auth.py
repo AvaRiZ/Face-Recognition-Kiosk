@@ -1,10 +1,10 @@
-import sqlite3
 import hashlib
 import os
 from functools import wraps
 from flask import session, redirect, url_for, jsonify, request
+from db import connect, resolve_database_target, table_columns
 
-DB_PATH = "database/faces_improved.db"
+DB_PATH = resolve_database_target("database/faces_improved.db")
 
 # -------------------------------
 # Password hashing (no bcrypt needed)
@@ -31,7 +31,7 @@ def verify_password(stored_password, provided_password):
 # -------------------------------
 def init_auth_db():
     """Create staff_accounts and audit_log tables"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
 
     # Staff accounts table
@@ -50,8 +50,7 @@ def init_auth_db():
     ''')
 
     # Backward-compatible migration for existing databases
-    c.execute("PRAGMA table_info(staff_accounts)")
-    existing_columns = {row[1] for row in c.fetchall()}
+    existing_columns = table_columns(conn, "staff_accounts")
     if "profile_image" not in existing_columns:
         c.execute("ALTER TABLE staff_accounts ADD COLUMN profile_image TEXT")
 
@@ -91,7 +90,7 @@ def init_auth_db():
 # -------------------------------
 def login_user(username, password):
     """Authenticate user and return staff info or None"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         SELECT staff_id, username, password_hash, full_name, role, is_active, profile_image
@@ -137,7 +136,7 @@ def login_user(username, password):
 def logout_user():
     """Log the logout action and clear session"""
     if 'staff_id' in session:
-        conn = sqlite3.connect(DB_PATH)
+        conn = connect(DB_PATH)
         c = conn.cursor()
         ip = request.remote_addr if request else "unknown"
         c.execute("""
@@ -152,7 +151,7 @@ def log_action(action, target=None):
     """Log an admin/staff action to the audit log"""
     if 'staff_id' not in session:
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     ip = request.remote_addr if request else "unknown"
     c.execute("""
@@ -191,7 +190,7 @@ def role_required(*roles):
 # Staff management functions
 # -------------------------------
 def get_all_staff():
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         SELECT staff_id, username, full_name, role, is_active, created_at, last_login
@@ -202,7 +201,7 @@ def get_all_staff():
     return rows
 
 def create_staff(username, password, full_name, role):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     try:
         password_hash = hash_password(password)
@@ -213,19 +212,19 @@ def create_staff(username, password, full_name, role):
         conn.commit()
         conn.close()
         return True, "Staff account created successfully"
-    except sqlite3.IntegrityError:
+    except Exception:
         conn.close()
         return False, "Username already exists"
 
 def toggle_staff_status(staff_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     c.execute("UPDATE staff_accounts SET is_active = NOT is_active WHERE staff_id = ?", (staff_id,))
     conn.commit()
     conn.close()
 
 def change_password(staff_id, new_password):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     password_hash = hash_password(new_password)
     c.execute("UPDATE staff_accounts SET password_hash = ? WHERE staff_id = ?", (password_hash, staff_id))
@@ -233,7 +232,7 @@ def change_password(staff_id, new_password):
     conn.close()
 
 def get_staff_by_id(staff_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         SELECT staff_id, username, full_name, role, profile_image
@@ -253,7 +252,7 @@ def get_staff_by_id(staff_id):
     }
 
 def verify_staff_password(staff_id, password):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT password_hash FROM staff_accounts WHERE staff_id = ?", (staff_id,))
     row = c.fetchone()
@@ -263,7 +262,7 @@ def verify_staff_password(staff_id, password):
     return verify_password(row[0], password)
 
 def update_staff_profile(staff_id, full_name, username, profile_image=None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect(DB_PATH)
     c = conn.cursor()
     try:
         if profile_image is None:
@@ -281,6 +280,6 @@ def update_staff_profile(staff_id, full_name, username, profile_image=None):
         conn.commit()
         conn.close()
         return True, "Profile updated successfully"
-    except sqlite3.IntegrityError:
+    except Exception:
         conn.close()
         return False, "Username already exists"
