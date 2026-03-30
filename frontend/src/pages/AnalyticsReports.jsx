@@ -98,7 +98,7 @@ function ImportModal({ onImportSuccess }) {
   return (
     <>
       <button
-        className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1"
+        className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
         onClick={() => {
           setResult(null);
           setShowModal(true);
@@ -417,7 +417,7 @@ function ImportModal({ onImportSuccess }) {
 }
 
 // ── Pipeline Stepper ──────────────────────────────────────────
-function PipelineStepper({ activeStep }) {
+function PipelineStepper({ activeStep, isLoading = false }) {
   const steps = [
     { n: 1, label: "Merge Sources", icon: "bi-layers" },
     { n: 2, label: "Clean Data", icon: "bi-funnel" },
@@ -427,86 +427,105 @@ function PipelineStepper({ activeStep }) {
     { n: 6, label: "Report", icon: "bi-file-earmark-bar-graph" },
   ];
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 0,
-        overflowX: "auto",
-        padding: "4px 0",
-      }}
-    >
-      {steps.map((s, i) => {
-        const done = s.n < activeStep,
-          current = s.n === activeStep;
-        return (
-          <React.Fragment key={s.n}>
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                minWidth: 90,
-                flex: 1,
-              }}
-            >
+    <>
+      <style>{`
+        @keyframes pipelineSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes pipelinePulse { 0% { box-shadow: 0 0 0 0 rgba(13,110,253,0.18); } 70% { box-shadow: 0 0 0 10px rgba(13,110,253,0); } 100% { box-shadow: 0 0 0 0 rgba(13,110,253,0); } }
+      `}</style>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 0,
+          overflowX: "auto",
+          padding: "4px 0",
+        }}
+      >
+        {steps.map((s, i) => {
+          const done = s.n < activeStep,
+            current = s.n === activeStep;
+          return (
+            <React.Fragment key={s.n}>
               <div
                 style={{
-                  width: 38,
-                  height: 38,
-                  borderRadius: "50%",
-                  background: done
-                    ? "#198754"
-                    : current
-                      ? "#0d6efd"
-                      : "#e9ecef",
-                  color: done || current ? "#fff" : "#adb5bd",
                   display: "flex",
+                  flexDirection: "column",
                   alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 15,
-                  fontWeight: 700,
-                  boxShadow: current
-                    ? "0 0 0 4px rgba(13,110,253,0.15)"
-                    : "none",
-                  transition: "all 0.3s",
-                }}
-              >
-                {done ? (
-                  <i className="bi bi-check-lg"></i>
-                ) : (
-                  <i className={s.icon}></i>
-                )}
-              </div>
-              <div
-                style={{
-                  fontSize: 10.5,
-                  fontWeight: current ? 700 : 400,
-                  color: done ? "#198754" : current ? "#0d6efd" : "#adb5bd",
-                  marginTop: 5,
-                  textAlign: "center",
-                  lineHeight: 1.2,
-                }}
-              >
-                {s.label}
-              </div>
-            </div>
-            {i < steps.length - 1 && (
-              <div
-                style={{
+                  minWidth: 90,
                   flex: 1,
-                  height: 2,
-                  minWidth: 16,
-                  background: done ? "#198754" : "#e9ecef",
-                  marginBottom: 20,
-                  transition: "background 0.3s",
                 }}
-              ></div>
-            )}
-          </React.Fragment>
-        );
-      })}
-    </div>
+              >
+                <div
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: "50%",
+                    background: done
+                      ? "#198754"
+                      : current
+                        ? "#0d6efd"
+                        : "#e9ecef",
+                    color: done || current ? "#fff" : "#adb5bd",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 15,
+                    fontWeight: 700,
+                    boxShadow: current
+                      ? "0 0 0 4px rgba(13,110,253,0.15)"
+                      : "none",
+                    animation:
+                      isLoading && current
+                        ? "pipelinePulse 1.2s ease-out infinite"
+                        : "none",
+                    transition: "all 0.3s",
+                  }}
+                >
+                  {done ? (
+                    <i className="bi bi-check-lg"></i>
+                  ) : isLoading && current ? (
+                    <i
+                      className="bi bi-arrow-repeat"
+                      style={{ animation: "pipelineSpin 1s linear infinite" }}
+                    ></i>
+                  ) : (
+                    <i className={s.icon}></i>
+                  )}
+                </div>
+                <div
+                  style={{
+                    fontSize: 10.5,
+                    fontWeight: current ? 700 : 400,
+                    color: done ? "#198754" : current ? "#0d6efd" : "#adb5bd",
+                    marginTop: 5,
+                    textAlign: "center",
+                    lineHeight: 1.2,
+                  }}
+                >
+                  {s.label}
+                </div>
+              </div>
+              {i < steps.length - 1 && (
+                <div
+                  style={{
+                    flex: 1,
+                    height: 2,
+                    minWidth: 16,
+                    background: done
+                      ? "#198754"
+                      : isLoading && current
+                        ? "linear-gradient(90deg, #0d6efd 0%, #86b7fe 100%)"
+                        : "#e9ecef",
+                    marginBottom: 20,
+                    transition: "background 0.3s",
+                  }}
+                ></div>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
@@ -625,8 +644,6 @@ function DataQualitySection({ dq }) {
       sub: "Ready for analysis",
     },
   ];
-
-  // Auto interpretation
   const dominant =
     dq.removed_duplicates > dq.removed_outside_hrs
       ? "duplicate scans"
@@ -786,16 +803,13 @@ function DataQualitySection({ dq }) {
           </div>
         ))}
       </div>
-
-      {/* ── Interpretation ── */}
       <Interpretation icon="bi-lightbulb" color="#ffc107">
         <strong>Data Quality Interpretation:</strong> Out of{" "}
         <strong>{fmt(dq.total_raw)}</strong> total raw records,{" "}
         <strong>{fmt(dq.total_cleaned)}</strong> ({pct}%) were retained after
         cleaning. The most significant source of removal was{" "}
         <strong>{dominant}</strong> ({fmt(dominantCount)} records), which is
-        expected in a continuous face recognition system where the same student
-        may be scanned multiple times. A quality score of{" "}
+        expected in a continuous face recognition system. A quality score of{" "}
         <strong style={{ color }}>{pct}%</strong>{" "}
         {pct >= 90
           ? "indicates high data integrity and reliable analytics results."
@@ -859,8 +873,6 @@ function EDASection({ stats, dowLabels, dowAverages }) {
   }, [dowAverages]);
 
   if (!stats) return null;
-
-  // Derive insights
   const busiestDayIdx = dowAverages
     ? dowAverages.indexOf(Math.max(...dowAverages))
     : -1;
@@ -928,8 +940,6 @@ function EDASection({ stats, dowLabels, dowAverages }) {
               </div>
             ))}
           </div>
-
-          {/* Interpretation for stats */}
           <Interpretation icon="bi-bar-chart-line" color="#0dcaf0">
             <strong>Descriptive Statistics Interpretation:</strong> The library
             receives an average of <strong>{stats.mean_daily_visits}</strong>{" "}
@@ -944,7 +954,6 @@ function EDASection({ stats, dowLabels, dowAverages }) {
             <strong>{stats.min_daily_visits}</strong>.
           </Interpretation>
         </div>
-
         <div>
           <div
             style={{
@@ -959,19 +968,15 @@ function EDASection({ stats, dowLabels, dowAverages }) {
           <div style={{ height: 200, position: "relative", marginBottom: 4 }}>
             <canvas ref={canvasRef}></canvas>
           </div>
-
-          {/* Interpretation for day-of-week chart */}
           <Interpretation icon="bi-calendar-week" color="#6f42c1">
             <strong>Day-of-Week Chart Interpretation:</strong>{" "}
             <strong style={{ color: "#dc3545" }}>{busiestDay}</strong> is
             consistently the busiest day while{" "}
             <strong style={{ color: "#198754" }}>{quietestDay}</strong> records
             the lowest average attendance. Library management can use this to
-            optimize staff scheduling — deploying more personnel on{" "}
-            <strong>{busiestDay}</strong> and reducing staffing on{" "}
-            <strong>{quietestDay}</strong>. Saturday and Sunday should be read
-            as non-operating or closed-library days, so low weekend averages
-            are expected and should not be interpreted as weak demand.
+            optimize staff scheduling. Saturday and Sunday should be read as
+            non-operating or closed-library days, so low weekend averages are
+            expected.
           </Interpretation>
         </div>
       </div>
@@ -985,8 +990,9 @@ function TrendChart({ labels, counts }) {
   const chartRef = React.useRef(null);
   const recentMean = React.useMemo(() => {
     if (!counts?.length) return 0;
-    const total = counts.reduce((sum, value) => sum + value, 0);
-    return Number((total / counts.length).toFixed(1));
+    return Number(
+      (counts.reduce((s, v) => s + v, 0) / counts.length).toFixed(1),
+    );
   }, [counts]);
 
   React.useEffect(() => {
@@ -1045,8 +1051,6 @@ function TrendChart({ labels, counts }) {
   }, [labels, counts, recentMean]);
 
   if (!counts?.length) return null;
-
-  // Insights
   const aboveMean = counts.filter((v) => v > recentMean).length;
   const belowMean = counts.filter((v) => v < recentMean).length;
   const trend =
@@ -1080,8 +1084,8 @@ function TrendChart({ labels, counts }) {
         in daily visits. <strong>{aboveMean}</strong> days recorded
         above-average attendance while <strong>{belowMean}</strong> days fell
         below the 30-day mean of <strong>{recentMean}</strong> visits/day.{" "}
-        Weekend dips should be interpreted carefully because Saturday and
-        Sunday are not regular library-open days.{" "}
+        Weekend dips should be interpreted carefully — Saturday and Sunday are
+        not regular library-open days.{" "}
         {trend === "upward"
           ? "This suggests growing student engagement with the library over time."
           : trend === "downward"
@@ -1093,30 +1097,56 @@ function TrendChart({ labels, counts }) {
 }
 
 // ── Forecast Section ──────────────────────────────────────────
-function ForecastSection({ forecast }) {
+function ForecastSection({
+  forecast,
+  allForecasts,
+  comparison,
+  bestModel,
+  comparisonInterp,
+}) {
   const canvasRef = React.useRef(null);
   const chartRef = React.useRef(null);
+  const [activeModel, setActiveModel] = React.useState(null);
+
+  // Use active model's data or fall back to primary forecast
+  const displayForecast = React.useMemo(() => {
+    if (activeModel && allForecasts?.length) {
+      return allForecasts.find((f) => f.model === activeModel) || forecast;
+    }
+    return forecast;
+  }, [activeModel, allForecasts, forecast]);
+
+  const MODEL_COLORS = {
+    ARIMA: "#0d6efd",
+    SARIMA: "#6f42c1",
+    Prophet: "#198754",
+    "Holt-Winters": "#fd7e14",
+    "Moving Average": "#6c757d",
+  };
 
   React.useEffect(() => {
-    if (!canvasRef.current || !window.Chart || !forecast?.values?.length)
+    if (!canvasRef.current || !window.Chart || !displayForecast?.values?.length)
       return;
     if (chartRef.current) chartRef.current.destroy();
+
+    const color = MODEL_COLORS[displayForecast.model] || "#0d6efd";
+
     chartRef.current = new window.Chart(canvasRef.current, {
       type: "bar",
       data: {
-        labels: forecast.labels,
+        labels: displayForecast.labels,
         datasets: [
           {
-            label: "Predicted",
-            data: forecast.values,
-            backgroundColor: "rgba(13,110,253,0.75)",
+            label: `${displayForecast.model} — Predicted`,
+            data: displayForecast.values,
+            backgroundColor: color + "bb",
             borderRadius: 8,
             borderWidth: 0,
             order: 2,
           },
           {
-            label: "Upper",
-            data: forecast.upper,
+            label: "Upper (95%)",
+            data: displayForecast.upper,
             type: "line",
             borderColor: "rgba(220,53,69,0.45)",
             borderWidth: 1.5,
@@ -1126,8 +1156,8 @@ function ForecastSection({ forecast }) {
             order: 1,
           },
           {
-            label: "Lower",
-            data: forecast.lower,
+            label: "Lower (95%)",
+            data: displayForecast.lower,
             type: "line",
             borderColor: "rgba(25,135,84,0.45)",
             borderWidth: 1.5,
@@ -1155,7 +1185,7 @@ function ForecastSection({ forecast }) {
       },
     });
     return () => chartRef.current?.destroy();
-  }, [forecast]);
+  }, [displayForecast]);
 
   if (!forecast?.values?.length)
     return (
@@ -1176,40 +1206,128 @@ function ForecastSection({ forecast }) {
     );
 
   const peakDay =
-    forecast.labels[forecast.values.indexOf(Math.max(...forecast.values))];
+    displayForecast.labels?.[
+      displayForecast.values?.indexOf(
+        Math.max(...(displayForecast.values || [0])),
+      )
+    ] ?? "—";
   const quietDay =
-    forecast.labels[forecast.values.indexOf(Math.min(...forecast.values))];
-  const totalWeek = forecast.values.reduce((a, b) => a + b, 0);
-  const avgRange =
-    forecast.values
-      .map((v, i) => forecast.upper[i] - forecast.lower[i])
-      .reduce((a, b) => a + b, 0) / forecast.values.length;
+    displayForecast.labels?.[
+      displayForecast.values?.indexOf(
+        Math.min(...(displayForecast.values || [0])),
+      )
+    ] ?? "—";
+  const totalWeek = (displayForecast.values || []).reduce((a, b) => a + b, 0);
 
   return (
     <div>
+      {/* ── Best model banner ── */}
+      {bestModel && (
+        <div
+          style={{
+            background: "rgba(25,135,84,0.07)",
+            border: "1px solid rgba(25,135,84,0.2)",
+            borderRadius: 8,
+            padding: "8px 14px",
+            marginBottom: 14,
+            fontSize: 12.5,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <i className="bi bi-trophy-fill" style={{ color: "#198754" }}></i>
+          <span>
+            Best performing model:{" "}
+            <strong style={{ color: "#198754" }}>{bestModel}</strong> — selected
+            by lowest RMSE on back-test
+          </span>
+        </div>
+      )}
+
+      {/* ── Model selector tabs ── */}
+      {allForecasts?.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 6,
+            marginBottom: 14,
+            flexWrap: "wrap",
+          }}
+        >
+          {allForecasts.map((f) => {
+            const isActive = (activeModel || bestModel) === f.model;
+            const color = MODEL_COLORS[f.model] || "#0d6efd";
+            return (
+              <button
+                key={f.model}
+                onClick={() => setActiveModel(f.model)}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 20,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  border: `1px solid ${isActive ? color : color + "40"}`,
+                  background: isActive ? color + "15" : "#f8f9fa",
+                  color: isActive ? color : "#666",
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                }}
+              >
+                {f.model === bestModel && (
+                  <i
+                    className="bi bi-trophy-fill me-1"
+                    style={{ fontSize: 10 }}
+                  ></i>
+                )}
+                {f.model}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Active model method label ── */}
       <div
         style={{
           background: "rgba(255,193,7,0.08)",
           border: "1px solid rgba(255,193,7,0.2)",
           borderRadius: 8,
           padding: "8px 14px",
-          marginBottom: 16,
+          marginBottom: 14,
           fontSize: 12,
         }}
       >
         <i className="bi bi-cpu text-warning me-1"></i>
-        <strong>Method:</strong> {forecast.method}
+        <strong>Method:</strong> {displayForecast.method}
+        {displayForecast.aic && (
+          <span style={{ marginLeft: 12, color: "#888" }}>
+            AIC: <strong>{displayForecast.aic}</strong> · BIC:{" "}
+            <strong>{displayForecast.bic}</strong>
+          </span>
+        )}
+        {displayForecast.params &&
+          Object.keys(displayForecast.params).length > 0 && (
+            <span style={{ marginLeft: 12, color: "#888" }}>
+              α={displayForecast.params.alpha} · β={displayForecast.params.beta}{" "}
+              · γ={displayForecast.params.gamma}
+            </span>
+          )}
       </div>
+
+      {/* ── Chart ── */}
       <div style={{ height: 220, position: "relative", marginBottom: 16 }}>
         <canvas ref={canvasRef}></canvas>
       </div>
-      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+
+      {/* ── Forecast table ── */}
+      <div style={{ overflowX: "auto", marginBottom: 16 }}>
         <table
           style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}
         >
           <thead>
             <tr style={{ background: "#f8f9fa" }}>
-              {["Day", "Predicted", "Range"].map((h, i) => (
+              {["Day", "Predicted", "95% CI Range"].map((h, i) => (
                 <th
                   key={i}
                   style={{
@@ -1226,7 +1344,7 @@ function ForecastSection({ forecast }) {
             </tr>
           </thead>
           <tbody>
-            {forecast.labels.map((l, i) => (
+            {displayForecast.labels?.map((l, i) => (
               <tr key={i}>
                 <td
                   style={{
@@ -1244,10 +1362,10 @@ function ForecastSection({ forecast }) {
                     textAlign: "center",
                     border: "1px solid #e9ecef",
                     fontWeight: 700,
-                    color: "#0d6efd",
+                    color: MODEL_COLORS[displayForecast.model] || "#0d6efd",
                   }}
                 >
-                  {forecast.values[i]}
+                  {displayForecast.values?.[i]}
                 </td>
                 <td
                   style={{
@@ -1257,7 +1375,7 @@ function ForecastSection({ forecast }) {
                     color: "#aaa",
                   }}
                 >
-                  {forecast.lower[i]}–{forecast.upper[i]}
+                  {displayForecast.lower?.[i]} – {displayForecast.upper?.[i]}
                 </td>
               </tr>
             ))}
@@ -1265,22 +1383,1010 @@ function ForecastSection({ forecast }) {
         </table>
       </div>
 
-      {/* Interpretation */}
+      {/* ── Model comparison table ── */}
+      {comparison?.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#555",
+              marginBottom: 8,
+            }}
+          >
+            Model Comparison — Back-test on Last 7 Days
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 12.5,
+              }}
+            >
+              <thead>
+                <tr style={{ background: "#f8f9fa" }}>
+                  {[
+                    "Model",
+                    "MAE",
+                    "RMSE",
+                    "MAPE (%)",
+                    "7-Day Total",
+                    "AIC",
+                  ].map((h, i) => (
+                    <th
+                      key={i}
+                      style={{
+                        padding: "8px 12px",
+                        textAlign: i === 0 ? "left" : "center",
+                        fontWeight: 600,
+                        color: "#555",
+                        border: "1px solid #e9ecef",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {comparison.map((row, i) => {
+                  const isBest = row.model === bestModel;
+                  const color = MODEL_COLORS[row.model] || "#0d6efd";
+                  return (
+                    <tr
+                      key={i}
+                      style={{
+                        background: isBest
+                          ? color + "08"
+                          : i % 2 === 0
+                            ? "#fff"
+                            : "#fafafa",
+                        border: isBest ? `1px solid ${color}30` : "none",
+                      }}
+                    >
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          border: "1px solid #f0f0f0",
+                          fontWeight: isBest ? 700 : 500,
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              background: color,
+                              display: "inline-block",
+                              flexShrink: 0,
+                            }}
+                          ></span>
+                          {row.model}
+                          {isBest && (
+                            <span
+                              style={{
+                                background: color + "20",
+                                color,
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 10,
+                                fontWeight: 600,
+                              }}
+                            >
+                              Best
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                          color: isBest ? "#198754" : "#555",
+                          fontWeight: isBest ? 700 : 400,
+                        }}
+                      >
+                        {row.mae ?? "—"}
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                          color: isBest ? "#198754" : "#555",
+                          fontWeight: isBest ? 700 : 400,
+                        }}
+                      >
+                        {row.rmse ?? "—"}
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                          color: isBest ? "#198754" : "#555",
+                          fontWeight: isBest ? 700 : 400,
+                        }}
+                      >
+                        {row.mape != null ? `${row.mape}%` : "—"}
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                        }}
+                      >
+                        <span
+                          style={{
+                            background: color + "15",
+                            color,
+                            padding: "2px 8px",
+                            borderRadius: 20,
+                            fontWeight: 700,
+                            fontSize: 12,
+                          }}
+                        >
+                          {row.total_7d}
+                        </span>
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "center",
+                          border: "1px solid #f0f0f0",
+                          color: "#aaa",
+                        }}
+                      >
+                        {row.aic ?? "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Interpretation ── */}
       <Interpretation icon="bi-graph-up-arrow" color="#ffc107">
-        <strong>Forecast Interpretation:</strong> The model predicts a total of
-        approximately <strong>{totalWeek}</strong> visits over the next 7 days.
-        The busiest forecasted day is{" "}
-        <strong style={{ color: "#dc3545" }}>{peakDay}</strong> and the quietest
-        is <strong style={{ color: "#198754" }}>{quietDay}</strong>. The average
-        confidence interval width is ±{Math.round(avgRange / 2)} visits,
-        {avgRange < 10
-          ? " indicating high forecast reliability."
-          : " suggesting moderate uncertainty — actual visits may vary based on academic events."}{" "}
-        Forecast values that fall on Saturday or Sunday should be treated as
-        closed-library or non-operating day behavior rather than normal low-demand days.{" "}
-        Library management can use this forecast to plan staffing and resource
-        allocation for the coming week.
+        <strong>Forecast Interpretation ({displayForecast.model}):</strong>{" "}
+        {displayForecast.interpretation} Peak forecasted day:{" "}
+        <strong style={{ color: "#dc3545" }}>{peakDay}</strong> ({totalWeek}{" "}
+        total visits predicted). Forecasted Saturday/Sunday values reflect
+        expected lower traffic on non-operating days.
       </Interpretation>
+
+      {comparisonInterp && (
+        <Interpretation icon="bi-bar-chart-steps" color="#0d6efd">
+          <strong>Model Comparison Interpretation:</strong>{" "}
+          <span dangerouslySetInnerHTML={{ __html: comparisonInterp }} />
+        </Interpretation>
+      )}
+    </div>
+  );
+}
+
+// ── Linear Regression Section ─────────────────────────────────
+function LinearRegressionSection({
+  regression,
+  interpretation,
+  counts,
+  labels,
+}) {
+  const canvasRef = React.useRef(null);
+  const chartRef = React.useRef(null);
+  const chartLabels = labels || regression?.labels || [];
+  const actualCounts =
+    counts?.length === chartLabels.length
+      ? counts
+      : regression?.counts?.length === chartLabels.length
+        ? regression.counts
+        : [];
+  const hasRegressionData =
+    Array.isArray(regression?.fitted) &&
+    regression.fitted.length >= 2 &&
+    chartLabels.length === regression.fitted.length;
+
+  React.useEffect(() => {
+    if (!canvasRef.current || !window.Chart || !hasRegressionData) return;
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new window.Chart(canvasRef.current, {
+      type: "line",
+      data: {
+        labels: chartLabels,
+        datasets: [
+          {
+            label: "Actual visits",
+            data: actualCounts,
+            borderColor: "#0d6efd",
+            backgroundColor: "rgba(13,110,253,0.06)",
+            borderWidth: 2,
+            pointRadius: 2,
+            fill: true,
+            tension: 0.3,
+          },
+          {
+            label: `Trend line (R²=${regression.r2 ?? "—"})`,
+            data: regression.fitted,
+            borderColor: "#dc3545",
+            borderWidth: 2,
+            borderDash: [5, 3],
+            pointRadius: 0,
+            fill: false,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "top",
+            labels: { font: { size: 11 }, boxWidth: 12, padding: 14 },
+          },
+          tooltip: { callbacks: { label: (ctx) => ` ${ctx.parsed.y} visits` } },
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            ticks: { maxTicksLimit: 10, font: { size: 10 } },
+          },
+          y: { beginAtZero: true, grid: { color: "rgba(0,0,0,0.04)" } },
+        },
+      },
+    });
+    return () => chartRef.current?.destroy();
+  }, [actualCounts, chartLabels, hasRegressionData, regression]);
+
+  if (!hasRegressionData || regression?.r2 == null)
+    return (
+      <div
+        style={{
+          textAlign: "center",
+          color: "#aaa",
+          padding: "24px 0",
+          fontSize: 13,
+        }}
+      >
+        <i
+          className="bi bi-hourglass"
+          style={{ fontSize: 24, display: "block", marginBottom: 8 }}
+        ></i>
+        Not enough data for regression analysis.
+      </div>
+    );
+
+  const trendColor =
+    regression.trend === "increasing"
+      ? "#198754"
+      : regression.trend === "decreasing"
+        ? "#dc3545"
+        : "#ffc107";
+
+  return (
+    <div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4,minmax(0,1fr))",
+          gap: 10,
+          marginBottom: 16,
+        }}
+      >
+        {[
+          {
+            label: "R² Score",
+            value: regression.r2,
+            color: "#0d6efd",
+            note: "Variance explained",
+          },
+          {
+            label: "R² (%)",
+            value: `${regression.r2_pct}%`,
+            color: "#6f42c1",
+            note: "Model fit",
+          },
+          {
+            label: "Slope",
+            value: regression.slope,
+            color: trendColor,
+            note: "Visits/day change",
+          },
+          {
+            label: "Trend",
+            value: regression.trend,
+            color: trendColor,
+            note: "Overall direction",
+          },
+        ].map((m, i) => (
+          <div
+            key={i}
+            style={{
+              background: "#f8f9fa",
+              borderRadius: 10,
+              padding: "12px 14px",
+              border: "1px solid #e9ecef",
+            }}
+          >
+            <div style={{ fontSize: 10, color: "#aaa", marginBottom: 2 }}>
+              {m.label}
+            </div>
+            <div
+              style={{
+                fontSize: 17,
+                fontWeight: 700,
+                color: m.color,
+                textTransform: "capitalize",
+              }}
+            >
+              {m.value}
+            </div>
+            <div style={{ fontSize: 10, color: "#bbb", marginTop: 1 }}>
+              {m.note}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ height: 200, position: "relative", marginBottom: 14 }}>
+        <canvas ref={canvasRef}></canvas>
+      </div>
+      <Interpretation icon="bi-graph-up" color="#dc3545">
+        <strong>Linear Regression Interpretation:</strong>{" "}
+        {interpretation || "No interpretation available."}
+      </Interpretation>
+    </div>
+  );
+}
+
+// ── K-Means Clustering Section ────────────────────────────────
+function ClusteringSection({ clustering, interpretation }) {
+  const canvasRef = React.useRef(null);
+  const chartRef = React.useRef(null);
+  const [activeIdx, setActiveIdx] = React.useState(0);
+  const COLORS = ["#0d6efd", "#198754", "#dc3545", "#ffc107", "#6f42c1"];
+
+  React.useEffect(() => {
+    if (!canvasRef.current || !window.Chart || !clustering?.inertia?.length)
+      return;
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new window.Chart(canvasRef.current, {
+      type: "line",
+      data: {
+        labels: (clustering.k_range || []).map((k) => `k=${k}`),
+        datasets: [
+          {
+            label: "Inertia",
+            data: clustering.inertia,
+            borderColor: "#0d6efd",
+            backgroundColor: "rgba(13,110,253,0.08)",
+            borderWidth: 2,
+            pointRadius: 5,
+            pointBackgroundColor: "#0d6efd",
+            fill: true,
+            tension: 0.3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => ` Inertia: ${Math.round(ctx.parsed.y)}`,
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 11 } } },
+          y: {
+            grid: { color: "rgba(0,0,0,0.04)" },
+            ticks: { font: { size: 11 } },
+          },
+        },
+      },
+    });
+    return () => chartRef.current?.destroy();
+  }, [clustering]);
+
+  if (!clustering?.cluster_summary?.length)
+    return (
+      <div
+        style={{
+          textAlign: "center",
+          color: "#aaa",
+          padding: "24px 0",
+          fontSize: 13,
+        }}
+      >
+        <i
+          className="bi bi-diagram-3"
+          style={{ fontSize: 24, display: "block", marginBottom: 8 }}
+        ></i>
+        Not enough data for clustering (need at least 3 students).
+      </div>
+    );
+
+  const summary = clustering.cluster_summary;
+
+  return (
+    <div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 20,
+          marginBottom: 20,
+        }}
+      >
+        <div>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#555",
+              marginBottom: 8,
+            }}
+          >
+            Elbow Method — Optimal k Selection
+          </div>
+          <div style={{ height: 180, position: "relative" }}>
+            <canvas ref={canvasRef}></canvas>
+          </div>
+          <div style={{ fontSize: 11, color: "#aaa", marginTop: 6 }}>
+            Selected k ={" "}
+            <strong style={{ color: "#0d6efd" }}>{clustering.k}</strong>{" "}
+            clusters
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {summary.map((cl, i) => (
+            <div
+              key={i}
+              onClick={() => setActiveIdx(i)}
+              style={{
+                padding: "12px 14px",
+                borderRadius: 8,
+                cursor: "pointer",
+                background: activeIdx === i ? COLORS[i] + "12" : "#f8f9fa",
+                border: `1px solid ${activeIdx === i ? COLORS[i] + "60" : "#e9ecef"}`,
+                transition: "all 0.15s",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#333" }}>
+                    {cl.label}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#aaa" }}>
+                    Avg {cl.avg_visits} visits · {cl.avg_weekly}×/week · peak{" "}
+                    {Math.round(cl.avg_hour)}:00
+                  </div>
+                </div>
+                <div
+                  style={{ fontSize: 20, fontWeight: 700, color: COLORS[i] }}
+                >
+                  {cl.count}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      {summary[activeIdx] && (
+        <div style={{ marginBottom: 14 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#555",
+              marginBottom: 8,
+            }}
+          >
+            {summary[activeIdx].label} — top members
+            <span style={{ color: "#aaa", fontWeight: 400, marginLeft: 8 }}>
+              Programs: {summary[activeIdx].top_programs?.join(", ")}
+            </span>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 12.5,
+              }}
+            >
+              <thead>
+                <tr style={{ background: "#f8f9fa" }}>
+                  {[
+                    "#",
+                    "Name",
+                    "SR Code",
+                    "Program",
+                    "Total Visits",
+                    "Weekly Avg",
+                  ].map((h, i) => (
+                    <th
+                      key={i}
+                      style={{
+                        padding: "8px 12px",
+                        textAlign: "left",
+                        fontWeight: 600,
+                        color: "#555",
+                        border: "1px solid #e9ecef",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {summary[activeIdx].members?.map((m, i) => (
+                  <tr
+                    key={i}
+                    style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}
+                  >
+                    <td
+                      style={{
+                        padding: "7px 12px",
+                        color: "#bbb",
+                        border: "1px solid #f0f0f0",
+                      }}
+                    >
+                      {i + 1}
+                    </td>
+                    <td
+                      style={{
+                        padding: "7px 12px",
+                        fontWeight: 500,
+                        border: "1px solid #f0f0f0",
+                      }}
+                    >
+                      {m.name}
+                    </td>
+                    <td
+                      style={{
+                        padding: "7px 12px",
+                        border: "1px solid #f0f0f0",
+                      }}
+                    >
+                      <code style={{ fontSize: 11 }}>{m.sr_code}</code>
+                    </td>
+                    <td
+                      style={{
+                        padding: "7px 12px",
+                        border: "1px solid #f0f0f0",
+                      }}
+                    >
+                      {m.program}
+                    </td>
+                    <td
+                      style={{
+                        padding: "7px 12px",
+                        border: "1px solid #f0f0f0",
+                      }}
+                    >
+                      <span
+                        style={{
+                          background: COLORS[activeIdx] + "18",
+                          color: COLORS[activeIdx],
+                          padding: "2px 8px",
+                          borderRadius: 20,
+                          fontWeight: 700,
+                          fontSize: 12,
+                        }}
+                      >
+                        {m.total_visits}
+                      </span>
+                    </td>
+                    <td
+                      style={{
+                        padding: "7px 12px",
+                        color: "#888",
+                        border: "1px solid #f0f0f0",
+                      }}
+                    >
+                      {typeof m.weekly_avg === "number"
+                        ? m.weekly_avg.toFixed(2)
+                        : m.weekly_avg}
+                      ×/wk
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      <Interpretation icon="bi-diagram-3" color="#6f42c1">
+        <strong>K-Means Clustering Interpretation:</strong>{" "}
+        {interpretation || "No interpretation available."}
+      </Interpretation>
+    </div>
+  );
+}
+
+// ── Statistical Tests Section ─────────────────────────────────
+function StatisticalTestsSection({
+  chiSquare,
+  chiInterp,
+  correlation,
+  corrInterp,
+  anova,
+  anovaInterp,
+}) {
+  const [activeTest, setActiveTest] = React.useState("chi");
+
+  const tabs = [
+    { key: "chi", label: "Chi-square", icon: "bi-grid-3x3" },
+    { key: "corr", label: "Pearson Correlation", icon: "bi-graph-up-arrow" },
+    { key: "anova", label: "ANOVA", icon: "bi-bar-chart-steps" },
+  ];
+
+  function StatBadge({ significant }) {
+    return (
+      <span
+        style={{
+          background: significant
+            ? "rgba(25,135,84,0.1)"
+            : "rgba(220,53,69,0.1)",
+          color: significant ? "#198754" : "#dc3545",
+          border: `1px solid ${significant ? "rgba(25,135,84,0.3)" : "rgba(220,53,69,0.3)"}`,
+          padding: "3px 12px",
+          borderRadius: 20,
+          fontSize: 12,
+          fontWeight: 500,
+        }}
+      >
+        {significant
+          ? "✓ Significant (p < 0.05)"
+          : "✗ Not significant (p ≥ 0.05)"}
+      </span>
+    );
+  }
+
+  function MetricCards({ items }) {
+    return (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4,minmax(0,1fr))",
+          gap: 10,
+          marginBottom: 14,
+        }}
+      >
+        {items.map((m, i) => (
+          <div
+            key={i}
+            style={{
+              background: "#f8f9fa",
+              borderRadius: 10,
+              padding: "12px 14px",
+              border: "1px solid #e9ecef",
+            }}
+          >
+            <div style={{ fontSize: 10, color: "#aaa", marginBottom: 2 }}>
+              {m.label}
+            </div>
+            <div
+              style={{
+                fontSize: 16,
+                fontWeight: 700,
+                color: m.color,
+                textTransform: "capitalize",
+              }}
+            >
+              {m.value}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTest(t.key)}
+            style={{
+              padding: "7px 16px",
+              borderRadius: 20,
+              fontSize: 12.5,
+              fontWeight: 500,
+              border: `1px solid ${activeTest === t.key ? "#0d6efd" : "#e9ecef"}`,
+              background:
+                activeTest === t.key ? "rgba(13,110,253,0.08)" : "#f8f9fa",
+              color: activeTest === t.key ? "#0d6efd" : "#666",
+              cursor: "pointer",
+            }}
+          >
+            <i className={`bi ${t.icon} me-1`} style={{ fontSize: 12 }}></i>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTest === "chi" &&
+        (chiSquare?.chi2 ? (
+          <div>
+            <MetricCards
+              items={[
+                {
+                  label: "χ² Statistic",
+                  value: chiSquare.chi2,
+                  color: "#0d6efd",
+                },
+                {
+                  label: "p-value",
+                  value: chiSquare.p_value,
+                  color: chiSquare.significant ? "#198754" : "#dc3545",
+                },
+                {
+                  label: "Degrees of freedom",
+                  value: chiSquare.dof,
+                  color: "#6f42c1",
+                },
+                {
+                  label: "Result",
+                  value: chiSquare.significant
+                    ? "Significant"
+                    : "Not significant",
+                  color: chiSquare.significant ? "#198754" : "#dc3545",
+                },
+              ]}
+            />
+            <div style={{ marginBottom: 14 }}>
+              <StatBadge significant={chiSquare.significant} />
+            </div>
+            <Interpretation icon="bi-grid-3x3" color="#0d6efd">
+              <strong>Chi-square Interpretation:</strong>{" "}
+              {chiInterp || "No interpretation available."}
+            </Interpretation>
+          </div>
+        ) : (
+          <div style={{ color: "#aaa", fontSize: 13, padding: "16px 0" }}>
+            Chi-square test could not be computed — need at least 2 programs
+            with 2+ students each.
+          </div>
+        ))}
+
+      {activeTest === "corr" &&
+        (correlation?.dow_vs_count ? (
+          <div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 14,
+                marginBottom: 14,
+              }}
+            >
+              {[
+                {
+                  title: "Day of Week vs Visit Count",
+                  data: correlation.dow_vs_count,
+                  desc: "Tests if visit counts vary by day of week",
+                },
+                {
+                  title: "Time Trend vs Visit Count",
+                  data: correlation.trend_vs_count,
+                  desc: "Tests if visits are growing or declining over time",
+                },
+              ].map((item, i) => (
+                <div
+                  key={i}
+                  style={{
+                    background: "#f8f9fa",
+                    borderRadius: 10,
+                    padding: "14px 16px",
+                    border: "1px solid #e9ecef",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "#333",
+                      marginBottom: 4,
+                    }}
+                  >
+                    {item.title}
+                  </div>
+                  <div
+                    style={{ fontSize: 11, color: "#aaa", marginBottom: 12 }}
+                  >
+                    {item.desc}
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr 1fr",
+                      gap: 8,
+                      marginBottom: 10,
+                    }}
+                  >
+                    {[
+                      { label: "r", value: item.data.r },
+                      { label: "p-value", value: item.data.p },
+                      { label: "Strength", value: item.data.strength },
+                    ].map((m, j) => (
+                      <div key={j}>
+                        <div style={{ fontSize: 10, color: "#aaa" }}>
+                          {m.label}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 15,
+                            fontWeight: 600,
+                            textTransform: "capitalize",
+                            color:
+                              m.label === "r"
+                                ? item.data.r > 0
+                                  ? "#198754"
+                                  : "#dc3545"
+                                : "#333",
+                          }}
+                        >
+                          {m.value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <StatBadge significant={item.data.significant} />
+                </div>
+              ))}
+            </div>
+            <Interpretation icon="bi-graph-up-arrow" color="#198754">
+              <strong>Pearson Correlation Interpretation:</strong>{" "}
+              {corrInterp || "No interpretation available."}
+            </Interpretation>
+          </div>
+        ) : (
+          <div style={{ color: "#aaa", fontSize: 13, padding: "16px 0" }}>
+            Pearson correlation could not be computed — not enough data points.
+          </div>
+        ))}
+
+      {activeTest === "anova" &&
+        (anova?.f_stat ? (
+          <div>
+            <MetricCards
+              items={[
+                { label: "F-statistic", value: anova.f_stat, color: "#0d6efd" },
+                {
+                  label: "p-value",
+                  value: anova.p_value,
+                  color: anova.significant ? "#198754" : "#dc3545",
+                },
+                { label: "Groups", value: anova.n_groups, color: "#6f42c1" },
+                {
+                  label: "Result",
+                  value: anova.significant ? "Significant" : "Not significant",
+                  color: anova.significant ? "#198754" : "#dc3545",
+                },
+              ]}
+            />
+            <div style={{ marginBottom: 14 }}>
+              <StatBadge significant={anova.significant} />
+            </div>
+            <div style={{ overflowX: "auto", marginBottom: 14 }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 12.5,
+                }}
+              >
+                <thead>
+                  <tr style={{ background: "#f8f9fa" }}>
+                    {["Program", "n", "Mean visits", "Std dev"].map((h, i) => (
+                      <th
+                        key={i}
+                        style={{
+                          padding: "8px 12px",
+                          textAlign: "left",
+                          fontWeight: 600,
+                          color: "#555",
+                          border: "1px solid #e9ecef",
+                        }}
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {anova.group_means?.map((g, i) => (
+                    <tr
+                      key={i}
+                      style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}
+                    >
+                      <td
+                        style={{
+                          padding: "7px 12px",
+                          fontWeight: 500,
+                          border: "1px solid #f0f0f0",
+                        }}
+                      >
+                        {g.program}
+                      </td>
+                      <td
+                        style={{
+                          padding: "7px 12px",
+                          color: "#888",
+                          border: "1px solid #f0f0f0",
+                        }}
+                      >
+                        {g.n}
+                      </td>
+                      <td
+                        style={{
+                          padding: "7px 12px",
+                          border: "1px solid #f0f0f0",
+                        }}
+                      >
+                        <span
+                          style={{
+                            background: "rgba(13,110,253,0.08)",
+                            color: "#0d6efd",
+                            padding: "2px 8px",
+                            borderRadius: 20,
+                            fontWeight: 700,
+                            fontSize: 12,
+                          }}
+                        >
+                          {g.mean_visits}
+                        </span>
+                      </td>
+                      <td
+                        style={{
+                          padding: "7px 12px",
+                          color: "#888",
+                          border: "1px solid #f0f0f0",
+                        }}
+                      >
+                        ±{g.std_visits}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Interpretation icon="bi-bar-chart-steps" color="#6f42c1">
+              <strong>ANOVA Interpretation:</strong>{" "}
+              {anovaInterp || "No interpretation available."}
+            </Interpretation>
+          </div>
+        ) : (
+          <div style={{ color: "#aaa", fontSize: 13, padding: "16px 0" }}>
+            ANOVA could not be computed — need at least 2 programs with 2+
+            students each.
+          </div>
+        ))}
     </div>
   );
 }
@@ -1357,8 +2463,6 @@ function SegmentationSection({ seg }) {
         Segmented by average weekly visits over{" "}
         <strong>{seg.total_weeks} weeks</strong> of cleaned data.
       </div>
-
-      {/* Donut + bars */}
       <div
         style={{
           display: "grid",
@@ -1431,31 +2535,27 @@ function SegmentationSection({ seg }) {
           ))}
         </div>
       </div>
-
-      {/* Interpretation for segmentation chart */}
       <Interpretation icon="bi-people" color="#198754">
         <strong>Segmentation Interpretation:</strong> Out of{" "}
         <strong>{total}</strong> total students analyzed,{" "}
         <strong style={{ color: "#198754" }}>
           {seg.regular_count} ({regularPct}%)
         </strong>{" "}
-        are regular library users visiting 3 or more times per week,{" "}
+        are regular library users (3+/week),{" "}
         <strong style={{ color: "#ffc107" }}>
           {seg.occasional_count} ({occasionalPct}%)
         </strong>{" "}
-        visit occasionally (1–2 times/week), and{" "}
+        visit occasionally (1–2/week), and{" "}
         <strong style={{ color: "#dc3545" }}>
           {seg.rare_count} ({rarePct}%)
         </strong>{" "}
-        rarely use the library (less than once a week).{" "}
+        rarely visit (&lt;once/week).{" "}
         {regularPct >= 30
-          ? "The library enjoys a strong base of regular users, indicating it is well-integrated into students' academic routines."
+          ? "The library enjoys a strong base of regular users."
           : rarePct >= 50
-            ? "A majority of students are rare visitors. The library may benefit from outreach programs to encourage more frequent usage."
+            ? "A majority of students are rare visitors — outreach programs may help increase usage."
             : "The student population shows a balanced distribution across segments."}
       </Interpretation>
-
-      {/* Tab list + table */}
       <div style={{ marginTop: 20 }}>
         <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
           {Object.entries(tabs).map(([key, s]) => (
@@ -1609,16 +2709,14 @@ function SegmentationSection({ seg }) {
             </tbody>
           </table>
         </div>
-
-        {/* Table interpretation */}
         {tabs[tab].list.length > 0 && (
           <Interpretation icon="bi-table" color="#6c757d">
             <strong>{tabs[tab].label} Students Table:</strong>{" "}
             {tab === "regular"
-              ? `These ${seg.regular_count} students consistently use the library 3 or more times per week. The top visitor is ${tabs[tab].list[0]?.name} with ${tabs[tab].list[0]?.total_visits} total visits. These students represent the library's most engaged users and may benefit from loyalty recognition or dedicated study spaces.`
+              ? `These ${seg.regular_count} students consistently use the library 3+ times/week. Top visitor: ${tabs[tab].list[0]?.name} with ${tabs[tab].list[0]?.total_visits} total visits.`
               : tab === "occasional"
-                ? `These ${seg.occasional_count} students visit the library 1–2 times per week. With targeted engagement programs, a portion of this group could be converted into regular visitors.`
-                : `These ${seg.rare_count} students visit less than once per week on average. Understanding the barriers to library usage for this group — such as schedule conflicts or lack of awareness of resources — could help increase overall engagement.`}
+                ? `These ${seg.occasional_count} students visit 1–2 times/week. Targeted engagement could convert some into regular visitors.`
+                : `These ${seg.rare_count} students visit less than once per week. Understanding barriers to library usage could help increase engagement.`}
           </Interpretation>
         )}
       </div>
@@ -1650,30 +2748,22 @@ function AnomalySection({ anomalies, mean, stdDev }) {
             marginBottom: 4,
           }}
         >
-          <i className="bi bi-check-circle-fill me-2"></i>
-          No anomalies detected — visit patterns are consistent across the
-          dataset.
+          <i className="bi bi-check-circle-fill me-2"></i>No anomalies detected
+          — visit patterns are consistent across the dataset.
         </div>
       ) : (
-        <>
-          <div style={{ overflowX: "auto", marginBottom: 4 }}>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: 12.5,
-              }}
-            >
-              <thead>
-                <tr style={{ background: "#f8f9fa" }}>
-                  {[
-                    "Date",
-                    "Day",
-                    "Visits",
-                    "Type",
-                    "Z-Score",
-                    "Deviation",
-                  ].map((h, i) => (
+        <div style={{ overflowX: "auto", marginBottom: 4 }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: 12.5,
+            }}
+          >
+            <thead>
+              <tr style={{ background: "#f8f9fa" }}>
+                {["Date", "Day", "Visits", "Type", "Z-Score", "Deviation"].map(
+                  (h, i) => (
                     <th
                       key={i}
                       style={{
@@ -1686,102 +2776,91 @@ function AnomalySection({ anomalies, mean, stdDev }) {
                     >
                       {h}
                     </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {anomalies.map((a, i) => (
-                  <tr
-                    key={i}
-                    style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}
+                  ),
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {anomalies.map((a, i) => (
+                <tr
+                  key={i}
+                  style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}
+                >
+                  <td
+                    style={{
+                      padding: "8px 12px",
+                      fontWeight: 500,
+                      border: "1px solid #f0f0f0",
+                    }}
                   >
-                    <td
+                    {a.date}
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px 12px",
+                      color: "#888",
+                      border: "1px solid #f0f0f0",
+                    }}
+                  >
+                    {a.day}
+                  </td>
+                  <td
+                    style={{ padding: "8px 12px", border: "1px solid #f0f0f0" }}
+                  >
+                    <span
                       style={{
-                        padding: "8px 12px",
-                        fontWeight: 500,
-                        border: "1px solid #f0f0f0",
-                      }}
-                    >
-                      {a.date}
-                    </td>
-                    <td
-                      style={{
-                        padding: "8px 12px",
-                        color: "#888",
-                        border: "1px solid #f0f0f0",
-                      }}
-                    >
-                      {a.day}
-                    </td>
-                    <td
-                      style={{
-                        padding: "8px 12px",
-                        border: "1px solid #f0f0f0",
-                      }}
-                    >
-                      <span
-                        style={{
-                          background:
-                            a.type === "spike"
-                              ? "rgba(220,53,69,0.12)"
-                              : "rgba(108,117,125,0.12)",
-                          color: a.type === "spike" ? "#dc3545" : "#6c757d",
-                          padding: "2px 8px",
-                          borderRadius: 20,
-                          fontWeight: 700,
-                          fontSize: 12,
-                        }}
-                      >
-                        {a.count}
-                      </span>
-                    </td>
-                    <td
-                      style={{
-                        padding: "8px 12px",
-                        border: "1px solid #f0f0f0",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: a.type === "spike" ? "#dc3545" : "#6c757d",
-                        }}
-                      >
-                        {a.type === "spike" ? "↑ Spike" : "↓ Drop"}
-                      </span>
-                    </td>
-                    <td
-                      style={{
-                        padding: "8px 12px",
-                        border: "1px solid #f0f0f0",
-                      }}
-                    >
-                      <code style={{ fontSize: 11 }}>{a.z_score}</code>
-                    </td>
-                    <td
-                      style={{
-                        padding: "8px 12px",
-                        color: "#888",
+                        background:
+                          a.type === "spike"
+                            ? "rgba(220,53,69,0.12)"
+                            : "rgba(108,117,125,0.12)",
+                        color: a.type === "spike" ? "#dc3545" : "#6c757d",
+                        padding: "2px 8px",
+                        borderRadius: 20,
+                        fontWeight: 700,
                         fontSize: 12,
-                        border: "1px solid #f0f0f0",
                       }}
                     >
-                      {a.deviation}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+                      {a.count}
+                    </span>
+                  </td>
+                  <td
+                    style={{ padding: "8px 12px", border: "1px solid #f0f0f0" }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: a.type === "spike" ? "#dc3545" : "#6c757d",
+                      }}
+                    >
+                      {a.type === "spike" ? "↑ Spike" : "↓ Drop"}
+                    </span>
+                  </td>
+                  <td
+                    style={{ padding: "8px 12px", border: "1px solid #f0f0f0" }}
+                  >
+                    <code style={{ fontSize: 11 }}>{a.z_score}</code>
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px 12px",
+                      color: "#888",
+                      fontSize: 12,
+                      border: "1px solid #f0f0f0",
+                    }}
+                  >
+                    {a.deviation}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
-
-      {/* Interpretation */}
       <Interpretation icon="bi-exclamation-triangle" color="#dc3545">
         <strong>Anomaly Detection Interpretation:</strong>{" "}
         {anomalies.length === 0 ? (
-          "No statistically significant anomalies were found in the dataset. Daily visit counts remain within normal bounds (±2 standard deviations), suggesting consistent and predictable library usage patterns throughout the observed period. Lower Saturday and Sunday activity is expected because those are not regular library-open days."
+          "No statistically significant anomalies were found. Daily visit counts remain within normal bounds (±2 std dev). Lower Saturday/Sunday activity is expected — those are not regular library-open days."
         ) : (
           <>
             The Z-score analysis identified <strong>{anomalies.length}</strong>{" "}
@@ -1796,21 +2875,17 @@ function AnomalySection({ anomalies, mean, stdDev }) {
             .{" "}
             {spikes.length > 0 && (
               <>
-                Spikes (unusually high visits) may correspond to exam periods,
-                special library events, or academic deadlines.{" "}
+                Spikes may correspond to exam periods, special events, or
+                deadlines.{" "}
               </>
             )}
             {drops.length > 0 && (
               <>
-                Drops (unusually low visits) may indicate holidays, system
-                downtime, or campus-wide events that reduced student
-                presence.{" "}
+                Drops may indicate holidays, system downtime, or campus-wide
+                events.{" "}
               </>
             )}
-            Weekend lows should also be interpreted in the context that
-            Saturday and Sunday are not regular library-open days.{" "}
-            Library administrators should cross-reference these dates with the
-            academic calendar to validate findings.
+            Cross-reference with the academic calendar to validate findings.
           </>
         )}
       </Interpretation>
@@ -1821,23 +2896,40 @@ function AnomalySection({ anomalies, mean, stdDev }) {
 // ── Main Page ─────────────────────────────────────────────────
 export default function AnalyticsReports() {
   const [data, setData] = React.useState(null);
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState(false);
-  const [refreshKey, setRefresh] = React.useState(0);
+  const [hasRun, setHasRun] = React.useState(false);
   const [activeStep, setActive] = React.useState(1);
   const headerRef = React.useRef(null);
 
   React.useEffect(() => {
+    if (!loading) return undefined;
+    setActive(1);
+    let step = 1;
+    const timer = window.setInterval(() => {
+      step = step >= 6 ? 6 : step + 1;
+      setActive(step);
+      if (step >= 6) window.clearInterval(timer);
+    }, 550);
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
+  async function runAnalyticsPipeline() {
     setLoading(true);
     setError(false);
-    fetchJson("/api/analytics-reports")
-      .then((d) => {
-        setData(d);
-        setActive(6);
-      })
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
-  }, [refreshKey]);
+    setActive(1);
+    try {
+      const d = await fetchJson("/api/analytics-reports");
+      setData(d);
+      setActive(6);
+      setHasRun(true);
+    } catch {
+      setError(true);
+      setActive(1);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   React.useEffect(() => {
     const el = headerRef.current;
@@ -1852,33 +2944,28 @@ export default function AnalyticsReports() {
     return () => obs.disconnect();
   }, []);
 
-  if (loading)
-    return (
-      <div
-        className="d-flex justify-content-center align-items-center"
-        style={{ minHeight: "50vh" }}
-      >
-        <div style={{ textAlign: "center" }}>
-          <div className="spinner-border text-primary mb-3" role="status"></div>
-          <div style={{ fontSize: 13, color: "#aaa" }}>
-            Running analytics pipeline...
-          </div>
-        </div>
-      </div>
-    );
-  if (error)
-    return (
-      <div className="alert alert-danger m-4">
-        <i className="bi bi-exclamation-triangle me-2"></i>Failed to load
-        analytics. Please refresh.
-      </div>
-    );
-
   const dq = data?.data_quality;
   const stats = data?.descriptive_stats;
+  const regression = data?.regression ?? {};
+  const clustering = data?.clustering ?? {};
+  const chiSquare = data?.chi_square ?? {};
+  const correlation = data?.correlation ?? {};
+  const anova = data?.anova ?? {};
 
   return (
-    <section className="section" style={{ maxWidth: 1100 }}>
+    <section className="section">
+      <div className="pagetitle">
+        <h1>Analytics &amp; Reports</h1>
+        <nav>
+          <ol className="breadcrumb mb-0">
+            <li className="breadcrumb-item">
+              <a href="/dashboard">Home</a>
+            </li>
+            <li className="breadcrumb-item active">Analytics &amp; Reports</li>
+          </ol>
+        </nav>
+      </div>
+
       {/* Sticky header */}
       <div
         ref={headerRef}
@@ -1894,34 +2981,6 @@ export default function AnalyticsReports() {
       >
         <div
           style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            flexWrap: "wrap",
-            gap: 12,
-            marginBottom: 14,
-          }}
-        >
-          <div>
-            <h4
-              style={{
-                fontWeight: 800,
-                fontSize: 20,
-                color: "#1a1a2e",
-                margin: 0,
-              }}
-            >
-              Analytics &amp; Reports
-            </h4>
-            <div style={{ fontSize: 12, color: "#aaa", marginTop: 2 }}>
-              Merged live + imported records · Full cleaning &amp; modeling
-              pipeline
-            </div>
-          </div>
-          <ImportModal onImportSuccess={() => setRefresh((k) => k + 1)} />
-        </div>
-        <div
-          style={{
             background: "#fff",
             borderRadius: 12,
             padding: "14px 20px",
@@ -1929,291 +2988,466 @@ export default function AnalyticsReports() {
             boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
           }}
         >
-          <PipelineStepper activeStep={activeStep} />
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              flexWrap: "wrap",
+              marginBottom: 14,
+            }}
+          >
+            <h5 className="card-title" style={{ padding: 0, margin: 0 }}>
+              Data Pipeline
+            </h5>
+            <div className="d-flex align-items-center gap-2 flex-wrap">
+              <button
+                className="btn btn-sm btn-primary d-flex align-items-center gap-1 px-2 py-1"
+                onClick={runAnalyticsPipeline}
+                disabled={loading}
+              >
+                {loading ? (
+                  <>
+                    <span
+                      className="spinner-border spinner-border-sm"
+                      role="status"
+                      aria-hidden="true"
+                    ></span>
+                    Running...
+                  </>
+                ) : (
+                  <>
+                    <i className="bi bi-play-circle"></i>
+                    {hasRun ? "Run Again" : "Run Pipeline"}
+                  </>
+                )}
+              </button>
+              <ImportModal
+                onImportSuccess={() => {
+                  if (hasRun) runAnalyticsPipeline();
+                }}
+              />
+            </div>
+          </div>
+          <PipelineStepper activeStep={activeStep} isLoading={loading} />
         </div>
       </div>
 
-      {/* Stage 1 */}
-      <Section
-        stepNum="1"
-        title="Data Collection"
-        color="#0d6efd"
-        subtitle={`${fmt(dq?.total_live || 0)} live · ${fmt(dq?.total_imported || 0)} imported · ${fmt(data?.total_students || 0)} students`}
-      >
+      {error && (
+        <div className="alert alert-danger">
+          <i className="bi bi-exclamation-triangle me-2"></i>
+          Failed to load analytics. Please try running the pipeline again.
+        </div>
+      )}
+
+      {!hasRun && !loading && !error && (
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4,1fr)",
-            gap: 12,
-            marginBottom: 4,
+            background: "#fff",
+            borderRadius: 12,
+            border: "1px solid #e9ecef",
+            padding: "32px 24px",
+            textAlign: "center",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+            marginBottom: 16,
           }}
         >
-          {[
-            {
-              label: "Registered Students",
-              value: fmt(data?.total_students || 0),
+          <div
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 16,
+              background: "rgba(13,110,253,0.08)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
               color: "#0d6efd",
-              icon: "bi-people",
-            },
-            {
-              label: "Live Logs",
-              value: fmt(dq?.total_live || 0),
-              color: "#198754",
-              icon: "bi-camera-video",
-            },
-            {
-              label: "Imported Records",
-              value: fmt(dq?.total_imported || 0),
-              color: "#6f42c1",
-              icon: "bi-cloud-upload",
-            },
-            {
-              label: "Combined Total",
-              value: fmt((dq?.total_live || 0) + (dq?.total_imported || 0)),
-              color: "#fd7e14",
-              icon: "bi-layers",
-            },
-          ].map((m, i) => (
+              fontSize: 24,
+              marginBottom: 12,
+            }}
+          >
+            <i className="bi bi-cpu"></i>
+          </div>
+          <h5 style={{ color: "#1a1a2e", marginBottom: 8 }}>
+            Analytics pipeline is ready
+          </h5>
+          <p style={{ color: "#6c757d", marginBottom: 16 }}>
+            Run the pipeline when you want to generate the latest analytics and
+            report sections.
+          </p>
+          <button className="btn btn-primary" onClick={runAnalyticsPipeline}>
+            <i className="bi bi-play-circle me-1"></i>Run Analytics Pipeline
+          </button>
+        </div>
+      )}
+
+      {loading && !hasRun && (
+        <div
+          className="d-flex justify-content-center align-items-center"
+          style={{ minHeight: "30vh", marginBottom: 16 }}
+        >
+          <div style={{ textAlign: "center" }}>
             <div
-              key={i}
+              className="spinner-border text-primary mb-3"
+              role="status"
+            ></div>
+            <div style={{ fontSize: 13, color: "#aaa" }}>
+              Running analytics pipeline...
+            </div>
+          </div>
+        </div>
+      )}
+
+      {data && (
+        <>
+          {/* Stage 1 */}
+          <Section
+            stepNum="1"
+            title="Data Collection"
+            color="#0d6efd"
+            subtitle={`${fmt(dq?.total_live || 0)} live · ${fmt(dq?.total_imported || 0)} imported · ${fmt(data?.total_students || 0)} students`}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4,1fr)",
+                gap: 12,
+                marginBottom: 4,
+              }}
+            >
+              {[
+                {
+                  label: "Registered Students",
+                  value: fmt(data?.total_students || 0),
+                  color: "#0d6efd",
+                  icon: "bi-people",
+                },
+                {
+                  label: "Live Logs",
+                  value: fmt(dq?.total_live || 0),
+                  color: "#198754",
+                  icon: "bi-camera-video",
+                },
+                {
+                  label: "Imported Records",
+                  value: fmt(dq?.total_imported || 0),
+                  color: "#6f42c1",
+                  icon: "bi-cloud-upload",
+                },
+                {
+                  label: "Combined Total",
+                  value: fmt((dq?.total_live || 0) + (dq?.total_imported || 0)),
+                  color: "#fd7e14",
+                  icon: "bi-layers",
+                },
+              ].map((m, i) => (
+                <div
+                  key={i}
+                  style={{
+                    background: "#f8f9fa",
+                    borderRadius: 10,
+                    padding: "14px 16px",
+                    border: "1px solid #e9ecef",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 10,
+                      background: m.color + "15",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <i
+                      className={`bi ${m.icon}`}
+                      style={{ color: m.color, fontSize: 16 }}
+                    ></i>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10.5, color: "#aaa" }}>
+                      {m.label}
+                    </div>
+                    <div
+                      style={{ fontSize: 18, fontWeight: 800, color: m.color }}
+                    >
+                      {m.value}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Interpretation icon="bi-database" color="#0d6efd">
+              <strong>Data Collection Summary:</strong> The analytics pipeline
+              combines <strong>{fmt(dq?.total_live || 0)}</strong> live face
+              recognition logs with{" "}
+              <strong>{fmt(dq?.total_imported || 0)}</strong> historically
+              imported records, resulting in{" "}
+              <strong>
+                {fmt((dq?.total_live || 0) + (dq?.total_imported || 0))}
+              </strong>{" "}
+              total entries spanning{" "}
+              <strong>{data?.total_students || 0}</strong> registered students.
+              This merged dataset serves as the foundation for all downstream
+              analysis.
+            </Interpretation>
+          </Section>
+
+          {/* Stage 2 */}
+          <Section
+            stepNum="2"
+            title="Data Cleaning"
+            color="#dc3545"
+            subtitle={`${fmt(dq?.total_removed || 0)} records removed · ${dq?.quality_score || 0}% retained`}
+          >
+            <DataQualitySection dq={dq} />
+          </Section>
+
+          {/* Stage 3 */}
+          <Section
+            stepNum="3"
+            title="Data Transformation"
+            color="#6c757d"
+            subtitle="Deduplication · Time feature extraction · Visit frequency computation"
+          >
+            <div
               style={{
                 background: "#f8f9fa",
                 borderRadius: 10,
                 padding: "14px 16px",
                 border: "1px solid #e9ecef",
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
+                marginBottom: 4,
               }}
             >
               <div
                 style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 10,
-                  background: m.color + "15",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 12,
                 }}
               >
-                <i
-                  className={`bi ${m.icon}`}
-                  style={{ color: m.color, fontSize: 16 }}
-                ></i>
-              </div>
-              <div>
-                <div style={{ fontSize: 10.5, color: "#aaa" }}>{m.label}</div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: m.color }}>
-                  {m.value}
-                </div>
+                {[
+                  {
+                    icon: "bi-calendar-check",
+                    color: "#0d6efd",
+                    text: "Each raw log transformed into one unique daily visit per student (first scan per day kept)",
+                  },
+                  {
+                    icon: "bi-clock",
+                    color: "#6f42c1",
+                    text: "Time features extracted: hour of day, day of week, week number, month, year",
+                  },
+                  {
+                    icon: "bi-person-check",
+                    color: "#198754",
+                    text: "Visit frequency computed per student across the full data range",
+                  },
+                  {
+                    icon: "bi-union",
+                    color: "#fd7e14",
+                    text: "Live and imported records merged into a single unified dataset before analysis",
+                  },
+                ].map((t, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      alignItems: "flex-start",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 7,
+                        background: t.color + "15",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <i
+                        className={`bi ${t.icon}`}
+                        style={{ color: t.color, fontSize: 13 }}
+                      ></i>
+                    </div>
+                    <span
+                      style={{ fontSize: 12.5, color: "#555", lineHeight: 1.6 }}
+                    >
+                      {t.text}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
-        </div>
-        <Interpretation icon="bi-database" color="#0d6efd">
-          <strong>Data Collection Summary:</strong> The analytics pipeline
-          combines <strong>{fmt(dq?.total_live || 0)}</strong> live face
-          recognition logs from the kiosk with{" "}
-          <strong>{fmt(dq?.total_imported || 0)}</strong> historically imported
-          records, resulting in a combined dataset of{" "}
-          <strong>
-            {fmt((dq?.total_live || 0) + (dq?.total_imported || 0))}
-          </strong>{" "}
-          total entries spanning <strong>{data?.total_students || 0}</strong>{" "}
-          registered students. This merged dataset serves as the foundation for
-          all downstream analysis.
-        </Interpretation>
-      </Section>
+            <Interpretation icon="bi-arrow-repeat" color="#6c757d">
+              <strong>Transformation Interpretation:</strong> Raw recognition
+              events were consolidated so each student counts as exactly{" "}
+              <strong>one visit per day</strong>. Additional time-based features
+              were derived from each timestamp to enable day-of-week, hourly,
+              and monthly pattern analysis.
+            </Interpretation>
+          </Section>
 
-      {/* Stage 2 */}
-      <Section
-        stepNum="2"
-        title="Data Cleaning"
-        color="#dc3545"
-        subtitle={`${fmt(dq?.total_removed || 0)} records removed · ${dq?.quality_score || 0}% retained`}
-      >
-        <DataQualitySection dq={dq} />
-      </Section>
+          {/* Stage 4 */}
+          <Section
+            stepNum="4"
+            title="Exploratory Data Analysis"
+            color="#0dcaf0"
+            subtitle={`Mean: ${stats?.mean_daily_visits || 0} visits/day · Std Dev: ${stats?.std_dev || 0}`}
+          >
+            <EDASection
+              stats={stats}
+              dowLabels={data?.dow_labels}
+              dowAverages={data?.dow_averages}
+            />
+          </Section>
 
-      {/* Stage 3 */}
-      <Section
-        stepNum="3"
-        title="Data Transformation"
-        color="#6c757d"
-        subtitle="Deduplication · Time feature extraction · Visit frequency computation"
-      >
-        <div
-          style={{
-            background: "#f8f9fa",
-            borderRadius: 10,
-            padding: "14px 16px",
-            border: "1px solid #e9ecef",
-            marginBottom: 4,
-          }}
-        >
+          {/* Stage 4b */}
+          <Section
+            stepNum="4b"
+            title="30-Day Visitor Trend"
+            color="#0d6efd"
+            subtitle="Cleaned daily visits over last 30 days with mean reference line"
+            defaultOpen={false}
+          >
+            <TrendChart
+              labels={data?.last_30_labels}
+              counts={data?.last_30_counts}
+            />
+          </Section>
+
+          {/* Stage 5a — Forecast */}
+          <Section
+            stepNum="5a"
+            title="7-Day Forecast"
+            color="#ffc107"
+            subtitle={`Best model: ${data?.best_forecast_model ?? "—"} · Predicted visits next 7 days`}
+            defaultOpen={false}
+          >
+            <ForecastSection
+              forecast={data?.forecast}
+              allForecasts={data?.all_forecasts}
+              comparison={data?.forecast_comparison}
+              bestModel={data?.best_forecast_model}
+              comparisonInterp={data?.forecast_comparison_interpretation}
+            />
+          </Section>
+
+          {/* Stage 5b — Linear Regression (NEW) */}
+          <Section
+            stepNum="5b"
+            title="Linear Regression — Trend Analysis"
+            color="#dc3545"
+            subtitle={`R²=${data?.regression?.r2 ?? "—"} · Trend: ${data?.regression?.trend ?? "—"}`}
+            defaultOpen={false}
+          >
+            <LinearRegressionSection
+              regression={regression}
+              interpretation={data?.regression_interpretation}
+              counts={data?.last_30_counts}
+              labels={data?.last_30_labels}
+            />
+          </Section>
+
+          {/* Stage 5c — K-Means Clustering (NEW) */}
+          <Section
+            stepNum="5c"
+            title="K-Means Clustering — Student Behavior Groups"
+            color="#6f42c1"
+            subtitle={`k=${data?.clustering?.k ?? "—"} clusters · ${data?.clustering?.cluster_summary?.length ?? 0} groups identified`}
+            defaultOpen={false}
+          >
+            <ClusteringSection
+              clustering={clustering}
+              interpretation={data?.clustering_interpretation}
+            />
+          </Section>
+
+          {/* Stage 5d — Statistical Tests (NEW) */}
+          <Section
+            stepNum="5d"
+            title="Statistical Tests — Chi-square · Pearson · ANOVA"
+            color="#0dcaf0"
+            subtitle="Hypothesis testing across program, gender, and time variables"
+            defaultOpen={false}
+          >
+            <StatisticalTestsSection
+              chiSquare={chiSquare}
+              chiInterp={data?.chi_square_interpretation}
+              correlation={correlation}
+              corrInterp={data?.correlation_interpretation}
+              anova={anova}
+              anovaInterp={data?.anova_interpretation}
+            />
+          </Section>
+
+          {/* Stage 5e — Segmentation (renumbered from 5b) */}
+          <Section
+            stepNum="5e"
+            title="Student Segmentation"
+            color="#198754"
+            subtitle={`${data?.segmentation?.regular_count || 0} regular · ${data?.segmentation?.occasional_count || 0} occasional · ${data?.segmentation?.rare_count || 0} rare`}
+            defaultOpen={false}
+          >
+            <SegmentationSection seg={data?.segmentation} />
+          </Section>
+
+          {/* Stage 5f — Anomaly Detection (renumbered from 5c) */}
+          <Section
+            stepNum="5f"
+            title="Anomaly Detection"
+            color="#dc3545"
+            subtitle={`${data?.anomalies?.length || 0} anomalies detected via Z-score`}
+            defaultOpen={false}
+          >
+            <AnomalySection
+              anomalies={data?.anomalies}
+              mean={stats?.mean_daily_visits || 0}
+              stdDev={stats?.std_dev || 0}
+            />
+          </Section>
+
+          {/* Stage 6 */}
           <div
-            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
+            style={{
+              background: "rgba(25,135,84,0.06)",
+              border: "1px solid rgba(25,135,84,0.2)",
+              borderRadius: 12,
+              padding: "14px 20px",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              fontSize: 13,
+            }}
           >
-            {[
-              {
-                icon: "bi-calendar-check",
-                color: "#0d6efd",
-                text: "Each raw log transformed into one unique daily visit per student (first scan per day kept)",
-              },
-              {
-                icon: "bi-clock",
-                color: "#6f42c1",
-                text: "Time features extracted: hour of day, day of week, week number, month, year",
-              },
-              {
-                icon: "bi-person-check",
-                color: "#198754",
-                text: "Visit frequency computed per student across the full data range",
-              },
-              {
-                icon: "bi-union",
-                color: "#fd7e14",
-                text: "Live and imported records merged into a single unified dataset before analysis",
-              },
-            ].map((t, i) => (
-              <div
-                key={i}
-                style={{ display: "flex", gap: 10, alignItems: "flex-start" }}
+            <i className="bi bi-check-circle-fill text-success fs-5"></i>
+            <span>
+              <strong>Stage 6 — Visualization &amp; Reporting complete.</strong>{" "}
+              Pipeline processed <strong>{fmt(dq?.total_raw || 0)}</strong> raw
+              records into <strong>{fmt(data?.total_cleaned_logs || 0)}</strong>{" "}
+              clean unique daily visits, achieving a quality score of{" "}
+              <strong
+                style={{
+                  color: dq?.quality_score >= 90 ? "#198754" : "#ffc107",
+                }}
               >
-                <div
-                  style={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: 7,
-                    background: t.color + "15",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                  }}
-                >
-                  <i
-                    className={`bi ${t.icon}`}
-                    style={{ color: t.color, fontSize: 13 }}
-                  ></i>
-                </div>
-                <span
-                  style={{ fontSize: 12.5, color: "#555", lineHeight: 1.6 }}
-                >
-                  {t.text}
-                </span>
-              </div>
-            ))}
+                {dq?.quality_score || 0}%
+              </strong>
+              .
+            </span>
           </div>
-        </div>
-        <Interpretation icon="bi-arrow-repeat" color="#6c757d">
-          <strong>Transformation Interpretation:</strong> Raw recognition events
-          were consolidated so that each student counts as exactly{" "}
-          <strong>one visit per day</strong>, regardless of how many times the
-          kiosk detected them. This prevents inflated visit counts and ensures
-          the analytics reflect true unique daily attendance. Additional
-          time-based features were derived from each timestamp to enable
-          day-of-week, hourly, and monthly pattern analysis in subsequent
-          stages.
-        </Interpretation>
-      </Section>
-
-      {/* Stage 4 */}
-      <Section
-        stepNum="4"
-        title="Exploratory Data Analysis"
-        color="#0dcaf0"
-        subtitle={`Mean: ${stats?.mean_daily_visits || 0} visits/day · Std Dev: ${stats?.std_dev || 0}`}
-      >
-        <EDASection
-          stats={stats}
-          dowLabels={data?.dow_labels}
-          dowAverages={data?.dow_averages}
-        />
-      </Section>
-
-      {/* Stage 4b */}
-      <Section
-        stepNum="4b"
-        title="30-Day Visitor Trend"
-        color="#0d6efd"
-        subtitle="Cleaned daily visits over last 30 days with mean reference line"
-        defaultOpen={false}
-      >
-        <TrendChart
-          labels={data?.last_30_labels}
-          counts={data?.last_30_counts}
-        />
-      </Section>
-
-      {/* Stage 5a */}
-      <Section
-        stepNum="5a"
-        title="7-Day Forecast"
-        color="#ffc107"
-        subtitle="Predicted visits for next 7 days with confidence range"
-        defaultOpen={false}
-      >
-        <ForecastSection forecast={data?.forecast} />
-      </Section>
-
-      {/* Stage 5b */}
-      <Section
-        stepNum="5b"
-        title="Student Segmentation"
-        color="#198754"
-        subtitle={`${data?.segmentation?.regular_count || 0} regular · ${data?.segmentation?.occasional_count || 0} occasional · ${data?.segmentation?.rare_count || 0} rare`}
-        defaultOpen={false}
-      >
-        <SegmentationSection seg={data?.segmentation} />
-      </Section>
-
-      {/* Stage 5c */}
-      <Section
-        stepNum="5c"
-        title="Anomaly Detection"
-        color="#dc3545"
-        subtitle={`${data?.anomalies?.length || 0} anomalies detected via Z-score`}
-        defaultOpen={false}
-      >
-        <AnomalySection
-          anomalies={data?.anomalies}
-          mean={stats?.mean_daily_visits || 0}
-          stdDev={stats?.std_dev || 0}
-        />
-      </Section>
-
-      {/* Stage 6 */}
-      <div
-        style={{
-          background: "rgba(25,135,84,0.06)",
-          border: "1px solid rgba(25,135,84,0.2)",
-          borderRadius: 12,
-          padding: "14px 20px",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          fontSize: 13,
-        }}
-      >
-        <i className="bi bi-check-circle-fill text-success fs-5"></i>
-        <span>
-          <strong>Stage 6 — Visualization &amp; Reporting complete.</strong> All
-          charts and tables above were rendered from fully cleaned and
-          transformed data. The pipeline processed{" "}
-          <strong>{fmt(dq?.total_raw || 0)}</strong> raw records into{" "}
-          <strong>{fmt(data?.total_cleaned_logs || 0)}</strong> clean unique
-          daily visits, achieving a data quality score of{" "}
-          <strong
-            style={{ color: dq?.quality_score >= 90 ? "#198754" : "#ffc107" }}
-          >
-            {dq?.quality_score || 0}%
-          </strong>
-          .
-        </span>
-      </div>
+        </>
+      )}
     </section>
   );
 }

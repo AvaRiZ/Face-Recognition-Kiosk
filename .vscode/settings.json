@@ -12,5 +12,6 @@
   "python.analysis.ignorePatterns": [
     "cv2"
   ],
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
   "python.pythonPath": ".venv\\Scripts\\python.exe"
 }
