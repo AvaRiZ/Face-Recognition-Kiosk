@@ -228,7 +228,6 @@ export default function SettingsPage() {
 
                 <div className="col-12 d-flex gap-2 flex-wrap">
                   <button type="submit" className="btn btn-primary">Save Settings</button>
-                  <a href="/kiosk" className="btn btn-outline-secondary">Back to Kiosk</a>
                   <a href="/api/stats" className="btn btn-outline-secondary" target="_blank" rel="noreferrer">
                     View Detailed Stats
                   </a>

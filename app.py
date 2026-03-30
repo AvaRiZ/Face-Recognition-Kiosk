@@ -1178,10 +1178,15 @@ def create_app():
         return redirect(url_for("auth_routes.auth_login"))
 
     @app.route("/register")
-    @app.route("/kiosk")
-    @app.route("/kiosk-improved")
     def spa_public_routes():
         return app.send_static_file("react/index.html")
+
+    @app.route("/kiosk-improved")
+    @app.route("/kiosk")
+    def kiosk_redirect():
+        if "staff_id" in session:
+            return redirect(url_for("routes.dashboard_page"))
+        return redirect(url_for("auth_routes.auth_login"))
 
     return app
 

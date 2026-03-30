@@ -36,13 +36,6 @@ export default function Sidebar() {
         {isStaff ? <NavItem to="/entry-exit-logs" icon="bi bi-people-fill" label="Entry/Exit Logs" /> : null}
 
         {role === 'super_admin' ? <NavItem to="/settings" icon="bi bi-gear" label="Settings" /> : null}
-
-        <li className="nav-item">
-          <a className="nav-link collapsed" href="/kiosk">
-            <i className="bi bi-camera-video"></i>
-            <span>Public Kiosk</span>
-          </a>
-        </li>
       </ul>
     </aside>
   );
