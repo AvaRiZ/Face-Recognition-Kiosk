@@ -724,21 +724,25 @@ def _get_quality_gamma_lut():
     return QUALITY_GAMMA_LUT
 
 
-def _normalize_quality_gray(gray):
-    """Apply CLAHE + light gamma correction for quality scoring only."""
-    if gray is None or gray.size == 0:
-        return gray
+def _preprocess_face_for_embedding(face_crop):
+    """Apply CLAHE + gamma correction only after quality scoring has already passed."""
+    if face_crop is None or face_crop.size == 0:
+        return face_crop
 
-    if CONFIG.quality_use_clahe:
-        clahe = _get_quality_clahe()
-        gray = clahe.apply(gray)
+    processed = face_crop.copy()
+    if len(processed.shape) == 2:
+        processed = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
 
-    gamma = float(CONFIG.quality_gamma)
-    if abs(gamma - 1.0) > 1e-6:
-        lut = _get_quality_gamma_lut()
-        gray = cv2.LUT(gray, lut)
+    clahe = _get_quality_clahe()
+    lab = cv2.cvtColor(processed, cv2.COLOR_BGR2LAB)
+    l_chan, a_chan, b_chan = cv2.split(lab)
+    l_chan = clahe.apply(l_chan)
+    processed = cv2.cvtColor(cv2.merge((l_chan, a_chan, b_chan)), cv2.COLOR_LAB2BGR)
 
-    return gray
+    lut = _get_quality_gamma_lut()
+    processed = cv2.LUT(processed, lut)
+
+    return processed
 
 
 def _get_face_mesh():
@@ -1046,189 +1050,133 @@ def _approximate_alignment_pose(edges):
     return _clamp01(alignment_score), _clamp01(pose_score)
 
 
-def _compute_exposure_metrics(gray):
+def _compute_raw_quality_metrics(gray):
     gray_f = gray.astype(np.float32, copy=False)
-    brightness = float(np.mean(gray_f))
-
+    # Laplacian variance measures edge-energy spread: blur suppresses edges, so variance drops.
+    laplacian = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    mean_intensity = float(np.mean(gray_f))
+    contrast = float(np.std(gray_f))
     dark_ratio = float(np.mean(gray_f <= CONFIG.quality_dark_intensity_threshold))
     bright_ratio = float(np.mean(gray_f >= CONFIG.quality_bright_intensity_threshold))
-
-    p5, p95 = np.percentile(gray_f, [5, 95])
-    dynamic_range = float(p95 - p5)
-
-    underexposed_score = _score_lower_better(
-        dark_ratio,
-        CONFIG.quality_dark_ratio_good,
-        CONFIG.quality_dark_ratio_bad,
-    )
-    overexposed_score = _score_lower_better(
-        bright_ratio,
-        CONFIG.quality_bright_ratio_good,
-        CONFIG.quality_bright_ratio_bad,
-    )
-    range_score = _score_higher_better(
-        dynamic_range,
-        CONFIG.quality_dynamic_range_low,
-        CONFIG.quality_dynamic_range_high,
-    )
-
-    exposure_score = _clamp01(0.35 * underexposed_score + 0.35 * overexposed_score + 0.30 * range_score)
     return {
-        "brightness": brightness,
+        "laplacian": laplacian,
+        "mean_intensity": mean_intensity,
+        "contrast": contrast,
         "dark_ratio": dark_ratio,
         "bright_ratio": bright_ratio,
-        "dynamic_range": dynamic_range,
-        "exposure_score": exposure_score,
     }
+
+
+def _quality_hard_gate_reason(metrics):
+    if metrics["laplacian"] < CONFIG.quality_hard_gate_laplacian:
+        return (
+            f"laplacian {metrics['laplacian']:.1f} < "
+            f"{CONFIG.quality_hard_gate_laplacian:.1f}"
+        )
+    if metrics["contrast"] < CONFIG.quality_hard_gate_contrast:
+        return (
+            f"contrast {metrics['contrast']:.1f} < "
+            f"{CONFIG.quality_hard_gate_contrast:.1f}"
+        )
+    if metrics["mean_intensity"] < CONFIG.quality_hard_gate_mean_intensity:
+        return (
+            f"mean_intensity {metrics['mean_intensity']:.1f} < "
+            f"{CONFIG.quality_hard_gate_mean_intensity:.1f}"
+        )
+    return None
+
+
+def _build_quality_debug_output(final_score, status, metrics, component_scores, reason, extra=None):
+    debug_info = {
+        "final_score": float(final_score),
+        "status": status,
+        "metrics": {
+            "laplacian": float(metrics.get("laplacian", 0.0)),
+            "contrast": float(metrics.get("contrast", 0.0)),
+            "mean_intensity": float(metrics.get("mean_intensity", 0.0)),
+            "dark_ratio": float(metrics.get("dark_ratio", 0.0)),
+            "bright_ratio": float(metrics.get("bright_ratio", 0.0)),
+        },
+        "component_scores": {
+            "sharpness": float(component_scores.get("sharpness", 0.0)),
+            "contrast": float(component_scores.get("contrast", 0.0)),
+            "exposure": float(component_scores.get("exposure", 0.0)),
+            "detection": float(component_scores.get("detection", 0.0)),
+            "alignment": float(component_scores.get("alignment", 0.0)),
+            "pose": float(component_scores.get("pose", 0.0)),
+        },
+        "reason": str(reason or ""),
+    }
+    if extra:
+        debug_info.update(extra)
+    return debug_info
+
+
+def _format_factor_values(debug_info):
+    factor_values = debug_info.get("factor_values", {})
+    if not isinstance(factor_values, dict) or not factor_values:
+        return ""
+
+    ordered = ("sharpness", "exposure", "contrast", "detection", "alignment", "pose")
+    parts = []
+    for name in ordered:
+        item = factor_values.get(name)
+        if not isinstance(item, dict):
+            continue
+        score = float(item.get("score", 0.0))
+        weighted = float(item.get("weighted", 0.0))
+        parts.append(f"{name}={score:.2f} (w={weighted:.2f})")
+    return ", ".join(parts)
 
 def _quality_component_factors(debug_info):
     """Return component scores + human-readable details for CLI diagnostics."""
-    factors = []
+    metrics = debug_info.get("metrics", {})
+    component_scores = debug_info.get("component_scores", {})
 
-    area = debug_info.get("area")
-    height = debug_info.get("height")
-    width = debug_info.get("width")
-    if area is not None:
-        area = float(area)
-        if area < CONFIG.quality_face_area_low:
-            detail = f"area {area:.0f} < {CONFIG.quality_face_area_low} (too small)"
-        elif area < CONFIG.quality_face_area_high:
-            detail = f"area {area:.0f} < {CONFIG.quality_face_area_high} (below ideal)"
-        else:
-            detail = f"area {area:.0f} (ok)"
-        if height is not None and width is not None:
-            detail = f"{detail}, size {int(height)}x{int(width)}"
-        factors.append(
-            {
-                "name": "size",
-                "score": debug_info.get("size_score"),
-                "detail": detail,
-            }
-        )
-
-    sharpness = debug_info.get("sharpness")
-    if sharpness is not None:
-        sharpness = float(sharpness)
-        if sharpness < CONFIG.quality_sharpness_low:
-            detail = f"laplacian {sharpness:.1f} < {CONFIG.quality_sharpness_low} (blurry)"
-        elif sharpness < CONFIG.quality_sharpness_high:
-            detail = f"laplacian {sharpness:.1f} < {CONFIG.quality_sharpness_high} (not sharp enough)"
-        else:
-            detail = f"laplacian {sharpness:.1f} (sharp)"
-        factors.append(
-            {
-                "name": "sharpness",
-                "score": debug_info.get("sharpness_score"),
-                "detail": detail,
-            }
-        )
-
-    detection_conf = debug_info.get("detection_confidence")
-    if detection_conf is not None:
-        detection_conf = float(detection_conf)
-        if detection_conf < CONFIG.quality_detection_confidence_low:
-            detail = f"det {detection_conf:.2f} < {CONFIG.quality_detection_confidence_low:.2f} (weak detection)"
-        elif detection_conf < CONFIG.quality_detection_confidence_high:
-            detail = f"det {detection_conf:.2f} < {CONFIG.quality_detection_confidence_high:.2f} (below ideal)"
-        else:
-            detail = f"det {detection_conf:.2f} (strong)"
-        factors.append(
-            {
-                "name": "detection",
-                "score": debug_info.get("detection_score"),
-                "detail": detail,
-            }
-        )
-
-    alignment_score = debug_info.get("alignment_score")
-    if alignment_score is not None:
-        detail = f"alignment_score {float(alignment_score):.2f}"
-        factors.append(
-            {
-                "name": "alignment",
-                "score": alignment_score,
-                "detail": detail,
-            }
-        )
-
-    pose_score = debug_info.get("pose_score")
-    if pose_score is not None:
-        detail = f"pose_score {float(pose_score):.2f}"
-        factors.append(
-            {
-                "name": "pose",
-                "score": pose_score,
-                "detail": detail,
-            }
-        )
-
-    dark_ratio = debug_info.get("dark_ratio")
-    bright_ratio = debug_info.get("bright_ratio")
-    dynamic_range = debug_info.get("dynamic_range")
-    if dark_ratio is not None and bright_ratio is not None and dynamic_range is not None:
-        dark_ratio = float(dark_ratio)
-        bright_ratio = float(bright_ratio)
-        dynamic_range = float(dynamic_range)
-        if dark_ratio >= CONFIG.quality_dark_ratio_bad:
-            detail = f"dark_ratio {dark_ratio:.2f} >= {CONFIG.quality_dark_ratio_bad:.2f} (underexposed)"
-        elif bright_ratio >= CONFIG.quality_bright_ratio_bad:
-            detail = f"bright_ratio {bright_ratio:.2f} >= {CONFIG.quality_bright_ratio_bad:.2f} (overexposed)"
-        elif dynamic_range < CONFIG.quality_dynamic_range_low:
-            detail = f"dynamic_range {dynamic_range:.1f} < {CONFIG.quality_dynamic_range_low:.1f} (flat lighting)"
-        elif (dark_ratio > CONFIG.quality_dark_ratio_good
-              or bright_ratio > CONFIG.quality_bright_ratio_good
-              or dynamic_range < CONFIG.quality_dynamic_range_high):
-            detail = (
-                f"exposure not ideal (dark {dark_ratio:.2f}, bright {bright_ratio:.2f}, "
-                f"range {dynamic_range:.1f})"
-            )
-        else:
-            detail = f"exposure ok (dark {dark_ratio:.2f}, bright {bright_ratio:.2f}, range {dynamic_range:.1f})"
-        factors.append(
-            {
-                "name": "exposure",
-                "score": debug_info.get("exposure_score"),
-                "detail": detail,
-            }
-        )
-
-    contrast = debug_info.get("contrast")
-    if contrast is not None:
-        contrast = float(contrast)
-        if contrast < CONFIG.quality_contrast_low:
-            detail = f"contrast {contrast:.1f} < {CONFIG.quality_contrast_low:.1f} (low)"
-        elif contrast < CONFIG.quality_contrast_high:
-            detail = f"contrast {contrast:.1f} < {CONFIG.quality_contrast_high:.1f} (below ideal)"
-        else:
-            detail = f"contrast {contrast:.1f} (ok)"
-        factors.append(
-            {
-                "name": "contrast",
-                "score": debug_info.get("contrast_score"),
-                "detail": detail,
-            }
-        )
-
-    aspect_ratio = debug_info.get("aspect_ratio")
-    if aspect_ratio is not None:
-        aspect_ratio = float(aspect_ratio)
-        if aspect_ratio >= CONFIG.quality_aspect_ratio_bad:
-            detail = f"aspect {aspect_ratio:.2f} >= {CONFIG.quality_aspect_ratio_bad:.2f} (crop too tall/wide)"
-        elif aspect_ratio >= CONFIG.quality_aspect_ratio_good:
-            detail = f"aspect {aspect_ratio:.2f} >= {CONFIG.quality_aspect_ratio_good:.2f} (not ideal)"
-        else:
-            detail = f"aspect {aspect_ratio:.2f} (ok)"
-        factors.append(
-            {
-                "name": "aspect",
-                "score": debug_info.get("aspect_ratio_score"),
-                "detail": detail,
-            }
-        )
-
-    return factors
+    return [
+        {
+            "name": "sharpness",
+            "score": component_scores.get("sharpness"),
+            "detail": f"laplacian={float(metrics.get('laplacian', 0.0)):.1f}",
+        },
+        {
+            "name": "contrast",
+            "score": component_scores.get("contrast"),
+            "detail": f"contrast={float(metrics.get('contrast', 0.0)):.1f}",
+        },
+        {
+            "name": "exposure",
+            "score": component_scores.get("exposure"),
+            "detail": (
+                f"mean={float(metrics.get('mean_intensity', 0.0)):.1f}, "
+                f"dark={float(metrics.get('dark_ratio', 0.0)):.2f}, "
+                f"bright={float(metrics.get('bright_ratio', 0.0)):.2f}"
+            ),
+        },
+        {
+            "name": "detection",
+            "score": component_scores.get("detection"),
+            "detail": f"det={float(debug_info.get('detection_confidence', 0.0)):.2f}",
+        },
+        {
+            "name": "alignment",
+            "score": component_scores.get("alignment"),
+            "detail": f"source={debug_info.get('alignment_source', 'unknown')}",
+        },
+        {
+            "name": "pose",
+            "score": component_scores.get("pose"),
+            "detail": "pose consistency",
+        },
+    ]
 
 def _quality_reason_summary(debug_info, limit=3):
+    reason = str(debug_info.get("reason", "")).strip()
+    factor_values_text = _format_factor_values(debug_info)
+    if reason:
+        if factor_values_text:
+            return f"{reason}; factors: {factor_values_text}"
+        return reason
     factors = [f for f in _quality_component_factors(debug_info) if f.get("score") is not None]
     if not factors:
         return ""
@@ -1237,61 +1185,85 @@ def _quality_reason_summary(debug_info, limit=3):
     parts = []
     for item in worst:
         parts.append(f"{item['name']}={float(item['score']):.2f} ({item['detail']})")
-    return "; ".join(parts)
+    summary = "; ".join(parts)
+    if factor_values_text:
+        summary = f"{summary}; factors: {factor_values_text}"
+    return summary
 
 
 def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
-    """Recognition-oriented face quality scoring.
-
-    Returns:
-        (quality_score, quality_status, debug_info)
-    """
+    """Three-stage face quality scoring: raw metrics, hard gating, normalized weighted scoring."""
     if face_crop is None or face_crop.size == 0:
-        debug_info = {
-            "sharpness": 0.0,
-            "brightness": 0.0,
+        metrics = {
+            "laplacian": 0.0,
             "contrast": 0.0,
-            "alignment_score": 0.0,
-            "aspect_ratio_score": 0.0,
-            "detection_confidence": float(detection_confidence) if detection_confidence is not None else 0.0,
+            "mean_intensity": 0.0,
+            "dark_ratio": 1.0,
+            "bright_ratio": 0.0,
         }
-        return 0.0, "Poor", debug_info
+        component_scores = {
+            "sharpness": 0.0,
+            "contrast": 0.0,
+            "exposure": 0.0,
+            "detection": 0.0,
+            "alignment": 0.0,
+            "pose": 0.0,
+        }
+        debug_info = _build_quality_debug_output(
+            final_score=0.0,
+            status="Rejected",
+            metrics=metrics,
+            component_scores=component_scores,
+            reason="empty face crop",
+            extra={
+                "detection_confidence": float(detection_confidence) if detection_confidence is not None else 0.0,
+                "alignment_source": "none",
+            },
+        )
+        return 0.0, "Rejected: empty face crop", debug_info
 
-    h, w = face_crop.shape[:2]
-    area = h * w
+    # Stage 1: RAW metrics from the original crop only (no resize, no CLAHE, no gamma).
     gray = _to_grayscale(face_crop)
-    gray = _normalize_quality_gray(gray)
-    aspect_ratio = float(max(h, w)) / max(float(min(h, w)), 1.0)
+    metrics = _compute_raw_quality_metrics(gray)
 
-    size_score = _score_higher_better(area, CONFIG.quality_face_area_low, CONFIG.quality_face_area_high)
-
-    laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    sharpness_score = _score_higher_better(
-        laplacian_var,
-        CONFIG.quality_sharpness_low,
-        CONFIG.quality_sharpness_high,
-    )
+    # Stage 2: Hard gating protects the embedding model from clearly bad frames.
+    rejection_reason = _quality_hard_gate_reason(metrics)
 
     confidence_value = float(detection_confidence) if detection_confidence is not None else 0.5
     confidence_value = _clamp01(confidence_value)
-    detection_score = _three_level_score(
+    detection_score = _score_higher_better(
         confidence_value,
         CONFIG.quality_detection_confidence_low,
         CONFIG.quality_detection_confidence_high,
     )
 
-    exposure_metrics = _compute_exposure_metrics(gray)
-    contrast = float(np.std(gray.astype(np.float32, copy=False)))
+    # Stage 3: Normalize each metric with linear interpolation and clamp to [0, 1].
+    sharpness_score = _score_higher_better(
+        metrics["laplacian"],
+        CONFIG.quality_sharpness_low,
+        CONFIG.quality_sharpness_high,
+    )
     contrast_score = _score_higher_better(
-        contrast,
+        metrics["contrast"],
         CONFIG.quality_contrast_low,
         CONFIG.quality_contrast_high,
     )
-    aspect_ratio_score = _score_lower_better(
-        aspect_ratio,
-        CONFIG.quality_aspect_ratio_good,
-        CONFIG.quality_aspect_ratio_bad,
+    brightness_score = _score_higher_better(
+        metrics["mean_intensity"],
+        CONFIG.quality_mean_intensity_low,
+        CONFIG.quality_mean_intensity_high,
     )
+    dark_score = _score_lower_better(
+        metrics["dark_ratio"],
+        CONFIG.quality_dark_ratio_good,
+        CONFIG.quality_dark_ratio_bad,
+    )
+    bright_score = _score_lower_better(
+        metrics["bright_ratio"],
+        CONFIG.quality_bright_ratio_good,
+        CONFIG.quality_bright_ratio_bad,
+    )
+    exposure_score = _clamp01(0.50 * brightness_score + 0.25 * dark_score + 0.25 * bright_score)
 
     edges = cv2.Canny(gray, CONFIG.quality_canny_low, CONFIG.quality_canny_high)
     normalized_landmarks = _normalize_landmarks(landmarks)
@@ -1314,58 +1286,109 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
         ALIGNMENT_SOURCE_LAST_PRINT_VALUE = alignment_source
 
     weighted_sum = (
-        CONFIG.quality_weight_size * size_score
-        + CONFIG.quality_weight_sharpness * sharpness_score
+        CONFIG.quality_weight_sharpness * sharpness_score
+        + CONFIG.quality_weight_exposure * exposure_score
+        + CONFIG.quality_weight_contrast * contrast_score
         + CONFIG.quality_weight_detection_confidence * detection_score
         + CONFIG.quality_weight_alignment * alignment_score
         + CONFIG.quality_weight_pose * pose_score
-        + CONFIG.quality_weight_exposure * exposure_metrics["exposure_score"]
-        + CONFIG.quality_weight_contrast * contrast_score
-        + CONFIG.quality_weight_aspect_ratio * aspect_ratio_score
     )
+    quality_score = _clamp01(weighted_sum)
 
-    weights_total = (
-        CONFIG.quality_weight_size
-        + CONFIG.quality_weight_sharpness
-        + CONFIG.quality_weight_detection_confidence
-        + CONFIG.quality_weight_alignment
-        + CONFIG.quality_weight_pose
-        + CONFIG.quality_weight_exposure
-        + CONFIG.quality_weight_contrast
-        + CONFIG.quality_weight_aspect_ratio
-    )
-    quality_score = _clamp01(weighted_sum / max(weights_total, 1e-6))
+    component_scores = {
+        "sharpness": sharpness_score,
+        "contrast": contrast_score,
+        "exposure": exposure_score,
+        "detection": detection_score,
+        "alignment": alignment_score,
+        "pose": pose_score,
+    }
+
+    factor_values = {
+        "sharpness": {
+            "raw": float(metrics["laplacian"]),
+            "score": float(sharpness_score),
+            "weight": float(CONFIG.quality_weight_sharpness),
+            "weighted": float(CONFIG.quality_weight_sharpness * sharpness_score),
+        },
+        "exposure": {
+            "raw": {
+                "mean_intensity": float(metrics["mean_intensity"]),
+                "dark_ratio": float(metrics["dark_ratio"]),
+                "bright_ratio": float(metrics["bright_ratio"]),
+            },
+            "subscores": {
+                "brightness": float(brightness_score),
+                "dark": float(dark_score),
+                "bright": float(bright_score),
+            },
+            "score": float(exposure_score),
+            "weight": float(CONFIG.quality_weight_exposure),
+            "weighted": float(CONFIG.quality_weight_exposure * exposure_score),
+        },
+        "contrast": {
+            "raw": float(metrics["contrast"]),
+            "score": float(contrast_score),
+            "weight": float(CONFIG.quality_weight_contrast),
+            "weighted": float(CONFIG.quality_weight_contrast * contrast_score),
+        },
+        "detection": {
+            "raw": float(confidence_value),
+            "score": float(detection_score),
+            "weight": float(CONFIG.quality_weight_detection_confidence),
+            "weighted": float(CONFIG.quality_weight_detection_confidence * detection_score),
+        },
+        "alignment": {
+            "raw": str(alignment_source),
+            "score": float(alignment_score),
+            "weight": float(CONFIG.quality_weight_alignment),
+            "weighted": float(CONFIG.quality_weight_alignment * alignment_score),
+        },
+        "pose": {
+            "raw": float(pose_score),
+            "score": float(pose_score),
+            "weight": float(CONFIG.quality_weight_pose),
+            "weighted": float(CONFIG.quality_weight_pose * pose_score),
+        },
+    }
+
+    if rejection_reason:
+        debug_info = _build_quality_debug_output(
+            final_score=0.0,
+            status="Rejected",
+            metrics=metrics,
+            component_scores=component_scores,
+            reason=rejection_reason,
+            extra={
+                "detection_confidence": confidence_value,
+                "alignment_source": alignment_source,
+                "factor_values": factor_values,
+            },
+        )
+        return 0.0, f"Rejected: {rejection_reason}", debug_info
 
     if quality_score >= CONFIG.face_quality_good_threshold:
         quality_status = "Good"
+        reason = "meets high-quality target"
     elif quality_score >= CONFIG.face_quality_threshold:
         quality_status = "Acceptable"
+        reason = "usable but not ideal"
     else:
         quality_status = "Poor"
+        reason = "below configured pass threshold"
 
-    debug_info = {
-        "height": h,
-        "width": w,
-        "area": area,
-        "sharpness": laplacian_var,
-        "brightness": exposure_metrics["brightness"],
-        "dynamic_range": exposure_metrics["dynamic_range"],
-        "contrast": contrast,
-        "alignment_score": alignment_score,
-        "detection_confidence": confidence_value,
-        "detection_score": detection_score,
-        "pose_score": pose_score,
-        "size_score": size_score,
-        "sharpness_score": sharpness_score,
-        "exposure_score": exposure_metrics["exposure_score"],
-        "contrast_score": contrast_score,
-        "aspect_ratio": aspect_ratio,
-        "aspect_ratio_score": aspect_ratio_score,
-        "dark_ratio": exposure_metrics["dark_ratio"],
-        "bright_ratio": exposure_metrics["bright_ratio"],
-        "alignment_source": alignment_source,
-    }
-
+    debug_info = _build_quality_debug_output(
+        final_score=quality_score,
+        status=quality_status,
+        metrics=metrics,
+        component_scores=component_scores,
+        reason=reason,
+        extra={
+            "detection_confidence": confidence_value,
+            "alignment_source": alignment_source,
+            "factor_values": factor_values,
+        },
+    )
     return quality_score, quality_status, debug_info
 
 # -------------------------------
@@ -1992,18 +2015,26 @@ def register_or_recognize_face(
             if reason:
                 print(f"  Low quality factors: {reason}")
         return None
+
+    metrics = quality_debug.get("metrics", {}) if quality_debug else {}
+    det_conf = float(quality_debug.get("detection_confidence", 0.0)) if quality_debug else 0.0
     
     print(
         f"  Face quality: {quality_score:.2f} ({quality_status}) "
-        f"| sharpness={quality_debug.get('sharpness', 0.0):.1f} "
-        f"| det={quality_debug.get('detection_confidence', 0.0):.2f}"
+        f"| lap={float(metrics.get('laplacian', 0.0)):.1f} "
+        f"| det={det_conf:.2f}"
     )
+    factor_values_text = _format_factor_values(quality_debug) if quality_debug else ""
+    if factor_values_text:
+        print(f"  Factor values: {factor_values_text}")
     if quality_status != "Good" and quality_debug:
         reason = _quality_reason_summary(quality_debug)
         if reason:
             print(f"  Not 'Good' yet because: {reason}")
-    
-    embeddings = extract_embedding_ensemble(face_crop)
+
+    # Quality is computed on raw pixels; enhancement is applied only after passing quality gates.
+    face_for_embedding = _preprocess_face_for_embedding(face_crop)
+    embeddings = extract_embedding_ensemble(face_for_embedding)
     if not embeddings:
         print("  Failed to extract embeddings")
         return None
