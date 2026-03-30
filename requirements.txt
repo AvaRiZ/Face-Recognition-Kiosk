@@ -10,7 +10,6 @@
 torch==2.5.0
 torchvision==0.20.0
 torchaudio==2.5.0
-flask
 ultralytics
 numpy<2
 opencv-python<4.13
@@ -22,3 +21,5 @@ keras-facenet
 deepface
 tf-keras
 faiss-cpu
+mediapipe
+protobuf==3.19.6

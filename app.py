@@ -7,6 +7,7 @@ import os
 import time
 import pickle
 import faiss  # pyright: ignore[reportMissingImports]
+import mediapipe as mp
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -14,6 +15,7 @@ import statistics
 import torch
 import tensorflow as tf
 from ultralytics import YOLO
+from config import AppConfig
 
 def log_header(title):
     print("\n" + "=" * 60)
@@ -49,10 +51,7 @@ def configure_devices(torch_device_index=1, tf_use_gpu=False):
     except Exception as e:
         print(f"GPU configuration warning (TensorFlow): {e}")
 
-configure_devices(torch_device_index=0, tf_use_gpu=True)
-
-# Import DeepFace only after TensorFlow GPU configuration
-from deepface import DeepFace
+DeepFace = None
 
 def log_gpu_info():
     """Log GPU name for Torch and TensorFlow."""
@@ -77,112 +76,6 @@ def log_gpu_info():
     except Exception as e:
         log_step(f"TensorFlow GPU info unavailable: {e}", status="WARN")
         log_step("TensorFlow GPU check failed. DeepFace may run on CPU.", status="WARN")
-
-log_gpu_info()
-
-# -------------------------------
-# Configuration - Two-Factor Verification
-# -------------------------------
-@dataclass
-class AppConfig:
-    model_path: str = "models/yolov8n-face.pt"
-    db_path: str = "database/faces_improved.db"
-    base_save_dir: str = "faces_improved"
-    primary_model: str = "ArcFace"
-    secondary_model: str = "Facenet"
-    primary_threshold: float = 0.7
-    secondary_threshold: float = 0.6
-    base_threshold: float = 0.5
-    adaptive_threshold_enabled: bool = True
-    face_quality_threshold: float = 0.56
-    face_quality_good_threshold: float = 0.70
-    min_face_size: int = 50
-    confidence_smoothing_window: int = 3
-    detection_every_n_frames: int = 3
-    recognition_cooldown_seconds: int = 4
-    revalidation_interval_seconds: float = 6.0
-    identity_lock_confidence_threshold: float = 0.7
-    stability_time_required: float = 0.3
-    position_tolerance: int = 200
-    track_stale_seconds: float = 10.0
-    candidate_min_confidence: float = 0.85
-    candidate_consistent_frames: int = 2
-    candidate_min_time_gap_seconds: float = 0.35
-    candidate_static_motion_threshold_px: float = 4.0
-    candidate_batch_min_size: int = 3
-    candidate_max_spread: float = 0.20
-    candidate_duplicate_similarity: float = 0.98
-    max_embeddings_per_user_per_model: int = 30
-    embedding_commit_interval_seconds: float = 3.0
-
-    # Face quality scoring thresholds
-    # Size: pixel area of the face crop (h*w). Too small faces lose identity detail.
-    quality_face_area_low: int = 56 * 56
-    quality_face_area_high: int = 170 * 170
-
-    # Detector confidence gates used by the 3-level detector score mapping.
-    quality_detection_confidence_low: float = 0.40
-    quality_detection_confidence_high: float = 0.82
-
-    # Sharpness from Laplacian variance on grayscale crop.
-    # < low: blurry, > high: reliably sharp for embedding extraction.
-    quality_sharpness_low: float = 28.0
-    quality_sharpness_high: float = 100.0
-
-    # Exposure clipping thresholds in grayscale intensity (0..255).
-    quality_dark_intensity_threshold: int = 45
-    quality_bright_intensity_threshold: int = 215
-
-    # Ratios of over-dark / over-bright pixels in the face crop.
-    # "good" is near-ideal, "bad" is heavily clipped.
-    quality_dark_ratio_good: float = 0.10
-    quality_dark_ratio_bad: float = 0.60
-    quality_bright_ratio_good: float = 0.08
-    quality_bright_ratio_bad: float = 0.35
-
-    # Contrast span proxy (P95 - P5 intensity). Low range means flat/washed detail.
-    quality_dynamic_range_low: float = 28.0
-    quality_dynamic_range_high: float = 95.0
-
-    # Canny edge thresholds used by landmark-free alignment/pose approximation.
-    quality_canny_low: int = 50
-    quality_canny_high: int = 150
-
-    # Landmark-based alignment/pose tolerances, expressed as normalized ratios.
-    quality_eye_tilt_good_ratio: float = 0.11
-    quality_eye_tilt_bad_ratio: float = 0.29
-    quality_pose_good_ratio: float = 0.15
-    quality_pose_bad_ratio: float = 0.80
-
-    # Landmark-free alignment/pose proxies from horizontal feature consistency.
-    quality_band_alignment_good_ratio: float = 0.09
-    quality_band_alignment_bad_ratio: float = 0.24
-    quality_pose_balance_good: float = 0.22
-    quality_pose_balance_bad: float = 0.80
-
-    # Additional robustness dimensions:
-    # - Contrast: std-dev of grayscale intensity.
-    # - Aspect ratio: penalizes extreme crop distortions/partial faces.
-    quality_contrast_low: float = 20.0
-    quality_contrast_high: float = 58.0
-    quality_aspect_ratio_good: float = 1.25
-    quality_aspect_ratio_bad: float = 1.95
-
-    # Face quality scoring weights (sum to 1.0).
-    # Higher weight means stronger impact on overall quality gate/lock decisions.
-    quality_weight_size: float = 0.10
-    quality_weight_sharpness: float = 0.26
-    quality_weight_detection_confidence: float = 0.14
-    quality_weight_alignment: float = 0.14
-    quality_weight_pose: float = 0.10
-    quality_weight_exposure: float = 0.15
-    quality_weight_contrast: float = 0.15
-    quality_weight_aspect_ratio: float = 0.05
-
-    @property
-    def models(self):
-        return [self.primary_model, self.secondary_model]
-
 
 @dataclass
 class AppState:
@@ -212,29 +105,54 @@ class AppState:
 
 CONFIG = AppConfig()
 STATE = AppState()
-
-# -------------------------------
-# YOLOv8 model
-# -------------------------------
-log_step("Loading YOLOv8 face detection model...")
+MP_FACE_MESH = None
+MEDIAPIPE_FACEMESH_UNAVAILABLE = False
+QUALITY_CLAHE = None
+QUALITY_GAMMA_LUT = None
+ALIGNMENT_SOURCE_LAST_PRINT_TS = 0.0
+ALIGNMENT_SOURCE_LAST_PRINT_VALUE = None
+APP_INITIALIZED = False
 yolo_device = "cpu"
-if torch.cuda.is_available():
-    if torch.cuda.device_count() > 1:
-        yolo_device = "cuda:1"
-    else:
-        yolo_device = "cuda:0"
+model = None
 
-model = YOLO(CONFIG.model_path)
-try:
-    model.to(yolo_device)
-except Exception as e:
-    log_step(f"YOLO GPU warning: {e}", status="WARN")
-log_step(f"YOLOv8 model loaded on {yolo_device}")
 
-# -------------------------------
-# DeepFace configuration - Two-Factor Verification
-# -------------------------------
-log_step(f"Two-Factor Verification: {CONFIG.primary_model} + {CONFIG.secondary_model}")
+def initialize_runtime():
+    """Initialize GPU config, models, storage, and indexes once."""
+    global APP_INITIALIZED, DeepFace, model, yolo_device
+    if APP_INITIALIZED:
+        return
+
+    configure_devices(torch_device_index=0, tf_use_gpu=True)
+
+    from deepface import DeepFace as _DeepFace
+    DeepFace = _DeepFace
+
+    log_gpu_info()
+
+    log_step("Loading YOLOv8 face detection model...")
+    yolo_device = "cpu"
+    if torch.cuda.is_available():
+        if torch.cuda.device_count() > 1:
+            yolo_device = "cuda:1"
+        else:
+            yolo_device = "cuda:0"
+
+    model = YOLO(CONFIG.model_path)
+    try:
+        model.to(yolo_device)
+    except Exception as e:
+        log_step(f"YOLO GPU warning: {e}", status="WARN")
+    log_step(f"YOLOv8 model loaded on {yolo_device}")
+    log_step(f"Two-Factor Verification: {CONFIG.primary_model} + {CONFIG.secondary_model}")
+
+    os.makedirs(CONFIG.base_save_dir, exist_ok=True)
+
+    init_db()
+    STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
+    STATE.user_count = len(STATE.user_info)
+    refresh_faiss()
+
+    APP_INITIALIZED = True
 
 # -------------------------------
 # Database setup (SQLite) with improved schema
@@ -749,21 +667,6 @@ def log_recognition(
     conn.close()
 
 # -------------------------------
-# Setup directories
-# -------------------------------
-os.makedirs(CONFIG.base_save_dir, exist_ok=True)
-
-# -------------------------------
-# Initialize database
-# -------------------------------
-init_db()
-
-# Load existing embeddings
-STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
-STATE.user_count = len(STATE.user_info)
-refresh_faiss()
-
-# -------------------------------
 # Improved thresholds and parameters
 # -------------------------------
 # Values now centralized under CONFIG
@@ -795,6 +698,195 @@ def _score_lower_better(value, good_threshold, bad_threshold):
     if bad_threshold <= good_threshold:
         return 1.0 if value <= good_threshold else 0.0
     return _clamp01(1.0 - ((float(value) - good_threshold) / (bad_threshold - good_threshold)))
+
+
+def _get_quality_clahe():
+    global QUALITY_CLAHE
+    if QUALITY_CLAHE is None:
+        tile = max(int(CONFIG.quality_clahe_tile_grid), 2)
+        QUALITY_CLAHE = cv2.createCLAHE(
+            clipLimit=float(CONFIG.quality_clahe_clip_limit),
+            tileGridSize=(tile, tile),
+        )
+    return QUALITY_CLAHE
+
+
+def _get_quality_gamma_lut():
+    global QUALITY_GAMMA_LUT
+    gamma = float(CONFIG.quality_gamma)
+    if QUALITY_GAMMA_LUT is None or abs(gamma - 1.0) > 1e-6:
+        inv_gamma = 1.0 / max(gamma, 1e-6)
+        table = np.array(
+            [(i / 255.0) ** inv_gamma * 255 for i in range(256)],
+            dtype=np.uint8,
+        )
+        QUALITY_GAMMA_LUT = table
+    return QUALITY_GAMMA_LUT
+
+
+def _normalize_quality_gray(gray):
+    """Apply CLAHE + light gamma correction for quality scoring only."""
+    if gray is None or gray.size == 0:
+        return gray
+
+    if CONFIG.quality_use_clahe:
+        clahe = _get_quality_clahe()
+        gray = clahe.apply(gray)
+
+    gamma = float(CONFIG.quality_gamma)
+    if abs(gamma - 1.0) > 1e-6:
+        lut = _get_quality_gamma_lut()
+        gray = cv2.LUT(gray, lut)
+
+    return gray
+
+
+def _get_face_mesh():
+    global MP_FACE_MESH, MEDIAPIPE_FACEMESH_UNAVAILABLE
+    if MEDIAPIPE_FACEMESH_UNAVAILABLE:
+        return None
+
+    if MP_FACE_MESH is None:
+        try:
+            model_path = str(CONFIG.mediapipe_face_landmarker_model_path)
+            if not os.path.isfile(model_path):
+                raise FileNotFoundError(
+                    f"FaceLandmarker model not found at '{model_path}'. "
+                    "Download face_landmarker.task and place it there."
+                )
+
+            from mediapipe.tasks import python as mp_tasks_python
+            from mediapipe.tasks.python import vision as mp_tasks_vision
+
+            base_options = mp_tasks_python.BaseOptions(model_asset_path=model_path)
+            options = mp_tasks_vision.FaceLandmarkerOptions(
+                base_options=base_options,
+                running_mode=mp_tasks_vision.RunningMode.IMAGE,
+                num_faces=int(CONFIG.mediapipe_max_faces),
+                min_face_detection_confidence=float(CONFIG.mediapipe_min_detection_confidence),
+                min_face_presence_confidence=float(CONFIG.mediapipe_min_tracking_confidence),
+                min_tracking_confidence=float(CONFIG.mediapipe_min_tracking_confidence),
+                output_face_blendshapes=False,
+                output_facial_transformation_matrixes=False,
+            )
+            MP_FACE_MESH = mp_tasks_vision.FaceLandmarker.create_from_options(options)
+        except Exception as e:
+            MEDIAPIPE_FACEMESH_UNAVAILABLE = True
+            CONFIG.use_mediapipe_landmarks = False
+            print(
+                "Warning: MediaPipe FaceLandmarker unavailable; falling back to approx alignment. "
+                f"Reason: {e}"
+            )
+            return None
+
+    return MP_FACE_MESH
+
+
+def _bbox_iou(box_a, box_b):
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+    if inter_area <= 0:
+        return 0.0
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    denom = max(area_a + area_b - inter_area, 1e-6)
+    return inter_area / denom
+
+
+def _extract_mediapipe_faces(frame_bgr):
+    """Return list of mediapipe faces: [{'bbox': (x1,y1,x2,y2), 'landmarks': {...}}]."""
+    if not CONFIG.use_mediapipe_landmarks:
+        return []
+    if frame_bgr is None or frame_bgr.size == 0:
+        return []
+
+    h, w = frame_bgr.shape[:2]
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    face_landmarker = _get_face_mesh()
+    if face_landmarker is None:
+        return []
+
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+    results = face_landmarker.detect(mp_image)
+    if not results.face_landmarks:
+        return []
+
+    # MediaPipe FaceMesh landmark indices (stable, common references)
+    left_eye_idx = (33, 133)
+    right_eye_idx = (362, 263)
+    nose_idx = 1
+    mouth_left_idx = 61
+    mouth_right_idx = 291
+
+    faces = []
+    for face_landmarks in results.face_landmarks:
+        xs = []
+        ys = []
+        points = []
+        for lm in face_landmarks:
+            x = int(lm.x * w)
+            y = int(lm.y * h)
+            x = min(max(x, 0), w - 1)
+            y = min(max(y, 0), h - 1)
+            points.append((x, y))
+            xs.append(x)
+            ys.append(y)
+
+        if not xs or not ys:
+            continue
+
+        x1, x2 = max(0, min(xs)), min(w - 1, max(xs))
+        y1, y2 = max(0, min(ys)), min(h - 1, max(ys))
+
+        def _avg_point(idx_pair):
+            p1 = points[idx_pair[0]]
+            p2 = points[idx_pair[1]]
+            return ((p1[0] + p2[0]) * 0.5, (p1[1] + p2[1]) * 0.5)
+
+        landmarks = {
+            "left_eye": _avg_point(left_eye_idx),
+            "right_eye": _avg_point(right_eye_idx),
+            "nose": points[nose_idx],
+            "mouth_left": points[mouth_left_idx],
+            "mouth_right": points[mouth_right_idx],
+        }
+
+        faces.append({"bbox": (x1, y1, x2, y2), "landmarks": landmarks})
+
+    return faces
+
+
+def _match_mediapipe_landmarks(face_bbox, mp_faces):
+    if not mp_faces:
+        return None
+    x1, y1, x2, y2 = face_bbox
+    cx = (x1 + x2) * 0.5
+    cy = (y1 + y2) * 0.5
+
+    for item in mp_faces:
+        bx1, by1, bx2, by2 = item["bbox"]
+        if bx1 <= cx <= bx2 and by1 <= cy <= by2:
+            return item["landmarks"]
+
+    best_item = None
+    best_iou = 0.0
+    for item in mp_faces:
+        iou = _bbox_iou(face_bbox, item["bbox"])
+        if iou > best_iou:
+            best_iou = iou
+            best_item = item
+
+    if best_item and best_iou > 0.02:
+        return best_item["landmarks"]
+
+    return None
 
 
 def _to_grayscale(face_crop):
@@ -1168,6 +1260,7 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
     h, w = face_crop.shape[:2]
     area = h * w
     gray = _to_grayscale(face_crop)
+    gray = _normalize_quality_gray(gray)
     aspect_ratio = float(max(h, w)) / max(float(min(h, w)), 1.0)
 
     size_score = _score_higher_better(area, CONFIG.quality_face_area_low, CONFIG.quality_face_area_high)
@@ -1208,6 +1301,17 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
     else:
         alignment_score, pose_score = _approximate_alignment_pose(edges)
         alignment_source = "approx"
+
+    global ALIGNMENT_SOURCE_LAST_PRINT_TS, ALIGNMENT_SOURCE_LAST_PRINT_VALUE
+    now_ts = time.time()
+    # Print source changes immediately, and at most once per second otherwise.
+    if (
+        alignment_source != ALIGNMENT_SOURCE_LAST_PRINT_VALUE
+        or (now_ts - ALIGNMENT_SOURCE_LAST_PRINT_TS) >= 1.0
+    ):
+        print(f"alignment_source={alignment_source}")
+        ALIGNMENT_SOURCE_LAST_PRINT_TS = now_ts
+        ALIGNMENT_SOURCE_LAST_PRINT_VALUE = alignment_source
 
     weighted_sum = (
         CONFIG.quality_weight_size * size_score
@@ -1270,6 +1374,9 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
 def extract_embedding_ensemble(face_crop):
     """Extract embeddings using BOTH DeepFace models for Two-Factor Verification"""
     try:
+        if DeepFace is None:
+            raise RuntimeError("Runtime not initialized. Call initialize_runtime() before recognition.")
+
         if len(face_crop.shape) == 3 and face_crop.shape[2] == 3:
             face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
         else:
@@ -2099,6 +2206,9 @@ def connect_to_cctv_stream(stream_url, frame_width=640, frame_height=480, target
 
 def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
     """Process CCTV stream for face recognition"""
+    if not APP_INITIALIZED:
+        initialize_runtime()
+
     camera = connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
     
     if camera is None:
@@ -2139,6 +2249,8 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
             verbose=False,
         )
 
+        mp_faces = _extract_mediapipe_faces(frame) if CONFIG.use_mediapipe_landmarks else []
+
         face_crops = []
         face_qualities = []
         stable_faces = []
@@ -2156,9 +2268,11 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 face_crop = frame[y1:y2, x1:x2]
                 face_crops.append(face_crop)
 
+                mp_landmarks = _match_mediapipe_landmarks((x1, y1, x2, y2), mp_faces)
                 quality_score, quality_status, quality_debug = assess_face_quality(
                     face_crop,
                     detection_confidence=detection_confidence,
+                    landmarks=mp_landmarks,
                 )
                 face_qualities.append((quality_score, quality_status))
 
@@ -2729,7 +2843,7 @@ def main_menu():
 # Run the system
 # -------------------------------
 if __name__ == "__main__":
-    init_db()
+    initialize_runtime()
     log_header("CCTV Face Recognition System - Initialization")
     log_step(f"Database: {CONFIG.db_path}")
     log_step(f"Face models: {CONFIG.primary_model} + {CONFIG.secondary_model}")

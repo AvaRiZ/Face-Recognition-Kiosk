@@ -10,6 +10,9 @@ import torch
 import tensorflow as tf
 from ultralytics import YOLO
 from deepface import DeepFace
+from config import AppConfig
+
+CONFIG = AppConfig()
 
 def configure_gpu(target_index=1):
     """Configure CUDA device for both Torch/Ultralytics and TensorFlow/DeepFace."""
@@ -62,15 +65,14 @@ def log_gpu_info():
 log_gpu_info()
 
 # -------------------------------
-# Configuration - Aligned with app.py
+# Configuration - Shared with app.py
 # -------------------------------
-MODEL_PATH = "models/face_yolov8m.pt"
-DB_PATH = "database/faces_improved.db"
-BASE_SAVE_DIR = "faces_improved"
+MODEL_PATH = CONFIG.model_path
+DB_PATH = CONFIG.db_path
+BASE_SAVE_DIR = CONFIG.base_save_dir
 
-# Dual Models (same as app.py)
-PRIMARY_MODEL = "ArcFace"
-SECONDARY_MODEL = "Facenet"
+PRIMARY_MODEL = CONFIG.primary_model
+SECONDARY_MODEL = CONFIG.secondary_model
 MODELS = [PRIMARY_MODEL, SECONDARY_MODEL]
 
 print("Loading YOLOv8 model...")
@@ -251,8 +253,8 @@ def load_all_embeddings():
 # -------------------------------
 # Face quality (from app.py)
 # -------------------------------
-FACE_QUALITY_THRESHOLD = 0.2
-MIN_FACE_SIZE = 60
+FACE_QUALITY_THRESHOLD = CONFIG.face_quality_threshold
+MIN_FACE_SIZE = CONFIG.min_face_size
 
 def assess_face_quality(face_crop):
     if face_crop is None or face_crop.size == 0:
