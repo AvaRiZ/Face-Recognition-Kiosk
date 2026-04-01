@@ -83,7 +83,7 @@ class AppConfig:
     quality_detection_confidence_high: float = 0.82
 
     # Sharpness (blur) thresholds used in quality scoring.
-    quality_sharpness_low: float = 8.0
+    quality_sharpness_low: float = 08.0
     quality_sharpness_high: float = 60.0
 
     # Mean brightness thresholds used in quality scoring.
@@ -103,14 +103,14 @@ class AppConfig:
 
     # Acceptable ratios of dark/bright pixels (lower is better).
     # Decrease *_bad values to be stricter about over/under-exposure.
-    quality_dark_ratio_good: float = 0.13
-    quality_dark_ratio_bad: float = 0.32
+    quality_dark_ratio_good = 0.13
+    quality_dark_ratio_bad = 0.32
     quality_bright_ratio_good: float = 0.15
     quality_bright_ratio_bad: float = 0.50
 
     # Dynamic range (contrast) thresholds in grayscale.
     # Increase low/high to penalize flat, washed-out images more heavily.
-    quality_dynamic_range_low: float = 40.0  # retained for diagnostics only
+    quality_dynamic_range_low = 40.0 # retained for diagnostics only
     quality_dynamic_range_high: float = 95.0
 
     # Canny edge thresholds used as a proxy for detail.

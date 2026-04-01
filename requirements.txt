@@ -10,7 +10,6 @@
 torch==2.5.0
 torchvision==0.20.0
 torchaudio==2.5.0
-flask
 ultralytics
 deepface
 numpy<2
@@ -24,6 +23,7 @@ keras
 mtcnn
 lz4
 keras-facenet
+deepface
 tf-keras
 psycopg[binary]
 faiss-cpu
