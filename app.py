@@ -1798,7 +1798,7 @@ def update_user_embeddings(user_id, new_embeddings_with_meta):
         print(f"Rejected embedding: user {user_id} not found")
         return False
 
-    conn = sqlite3.connect(CONFIG.db_path)
+    conn = db_connect(CONFIG.db_path)
     c = conn.cursor()
     c.execute("SELECT embeddings, image_paths, embedding_metadata FROM users WHERE user_id = ?", (user_id,))
     row = c.fetchone()
@@ -2940,6 +2940,90 @@ def parse_args():
     return parser.parse_args()
 
 
+def _set_thresholds(base_threshold, adaptive_threshold_enabled, quality_threshold):
+    """Update runtime thresholds from settings UI/API."""
+    CONFIG.base_threshold = float(base_threshold)
+    CONFIG.adaptive_threshold_enabled = bool(adaptive_threshold_enabled)
+    CONFIG.face_quality_threshold = float(quality_threshold)
+
+
+def _get_thresholds():
+    """Return current threshold values for settings UI/API."""
+    return (
+        float(CONFIG.base_threshold),
+        bool(CONFIG.adaptive_threshold_enabled),
+        float(CONFIG.face_quality_threshold),
+    )
+
+
+def _get_user_count():
+    return int(len(STATE.user_info))
+
+
+def _reset_database_state():
+    """Reset in-memory caches after DB wipe from web routes."""
+    STATE.all_user_embeddings = []
+    STATE.user_info = []
+    STATE.user_count = 0
+    STATE.tracked_identities.clear()
+    STATE.face_stability_tracker.clear()
+    STATE.embedding_candidates.clear()
+    STATE.embedding_consistency_tracker.clear()
+    STATE.last_embedding_commit_time = 0.0
+    refresh_faiss()
+
+
+def _reset_registration_state():
+    """Reset pending registration buffers without touching database state."""
+    STATE.pending_registration = None
+    STATE.recognized_user = None
+    STATE.registration_in_progress = False
+    STATE.captured_faces_for_registration = []
+    STATE.face_capture_count = 0
+    STATE.manual_registration_requested = False
+    STATE.manual_registration_active = False
+    STATE.manual_registration_track_id = None
+
+
+def _remove_user_embedding(user_id):
+    """Drop a deleted user from in-memory embeddings and FAISS indexes."""
+    removed = remove_user_incremental(user_id)
+    if not removed:
+        user_idx = _get_user_index_by_id(user_id)
+        if user_idx != -1:
+            STATE.all_user_embeddings.pop(user_idx)
+            STATE.user_info.pop(user_idx)
+        refresh_faiss()
+    STATE.user_count = len(STATE.user_info)
+
+
+def create_app():
+    """Create Flask app and register auth/profile/core route blueprints."""
+    web_app = Flask(__name__, static_folder="static", static_url_path="/static")
+    web_app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
+
+    init_auth_db()
+    ensure_profile_upload_dir()
+
+    deps = {
+        "db_path": CONFIG.db_path,
+        "base_save_dir": CONFIG.base_save_dir,
+        "set_thresholds": _set_thresholds,
+        "get_thresholds": _get_thresholds,
+        "get_user_count": _get_user_count,
+        "reset_database_state": _reset_database_state,
+        "reset_registration_state": _reset_registration_state,
+        "remove_user_embedding": _remove_user_embedding,
+        "render_markdown_as_html": render_markdown_as_html,
+    }
+
+    web_app.register_blueprint(create_auth_blueprint())
+    web_app.register_blueprint(create_profile_blueprint(save_profile_image))
+    web_app.register_blueprint(create_routes_blueprint(deps))
+
+    return web_app
+
+
 def start_web_server(host, port, debug):
     """Run the Flask site in a background thread when CLI mode is also active."""
     app = create_app()
@@ -2962,6 +3046,7 @@ def start_web_server(host, port, debug):
 # Run the system
 # -------------------------------
 if __name__ == "__main__":
+    args = parse_args()
     initialize_runtime()
     log_header("CCTV Face Recognition System - Initialization")
     log_step(f"Database: {CONFIG.db_path}")
