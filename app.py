@@ -116,7 +116,7 @@ def parse_args():
 
 
 def start_web_server(host: str, port: int, debug: bool, runtime: AppRuntime):
-    app = create_flask_app(runtime.config, runtime.state)
+    app = create_flask_app(runtime.config, runtime.state, runtime.repository)
     server_thread = threading.Thread(
         target=app.run,
         kwargs={
@@ -144,7 +144,7 @@ def main() -> None:
 
     if args.web_only:
         log_step(f"Starting web server at http://{args.host}:{args.port}")
-        create_flask_app(runtime.config, runtime.state).run(
+        create_flask_app(runtime.config, runtime.state, runtime.repository).run(
             host=args.host,
             port=args.port,
             debug=args.debug,

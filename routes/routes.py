@@ -4,9 +4,12 @@ import struct
 import csv
 import io
 import math
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
+import cv2
+import numpy as np
 from flask import Blueprint, flash, redirect, request, session, url_for, current_app, jsonify, send_from_directory
 
 from auth import (
@@ -17,8 +20,10 @@ from auth import (
     role_required,
     toggle_staff_status,
 )
+from core.models import RegistrationSample, User
 from db import connect as db_connect
 from routes.ml_analytics import run_ml_analytics
+from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
 
 
 def init_imported_logs_table(db_path):
@@ -85,6 +90,52 @@ def create_routes_blueprint(deps):
             except (ValueError, TypeError):
                 return None
         return None
+
+    def _decode_uploaded_image(file_storage):
+        if not file_storage:
+            return None
+        raw = file_storage.read()
+        if not raw:
+            return None
+        file_storage.stream.seek(0)
+        buffer = np.frombuffer(raw, dtype=np.uint8)
+        if buffer.size == 0:
+            return None
+        return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+    def _extract_largest_face(image):
+        if image is None or image.size == 0:
+            return None, None
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        classifier = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        if classifier.empty():
+            return None, None
+
+        faces = classifier.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(deps["config"].min_face_size, deps["config"].min_face_size),
+        )
+        if len(faces) == 0:
+            return None, None
+
+        x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
+        pad_x = int(w * 0.15)
+        pad_y = int(h * 0.2)
+        x1 = max(x - pad_x, 0)
+        y1 = max(y - pad_y, 0)
+        x2 = min(x + w + pad_x, image.shape[1])
+        y2 = min(y + h + pad_y, image.shape[0])
+        face_crop = image[y1:y2, x1:x2]
+        if face_crop.size == 0:
+            return None, None
+
+        detection_confidence = min(1.0, max(0.35, float((w * h) / max(image.shape[0] * image.shape[1], 1))))
+        return face_crop, detection_confidence
 
     def _ensure_settings_table(db_path):
         conn = db_connect(db_path)
@@ -335,6 +386,7 @@ def create_routes_blueprint(deps):
     def dashboard_page():
         return _spa_index()
 
+    @bp.route("/route-list")
     @bp.route("/routes", endpoint="route_list_page")
     @login_required
     @role_required("super_admin", "library_admin")
@@ -674,6 +726,165 @@ def create_routes_blueprint(deps):
     def reset_registration():
         deps["reset_registration_state"]()
         return {"success": True, "message": "Registration state reset"}
+
+    @bp.route("/api/register-info", methods=["GET"], endpoint="api_register_info")
+    def api_register_info():
+        reg_state = deps["get_registration_state"]()
+        pending_count = len(reg_state.pending_registration or [])
+        return jsonify(
+            {
+                "capture_count": pending_count or reg_state.capture_count,
+                "max_captures": reg_state.max_captures,
+                "has_pending_registration": bool(reg_state.pending_registration),
+                "is_in_progress": reg_state.in_progress,
+            }
+        )
+
+    @bp.route("/api/register-reset", methods=["POST"], endpoint="api_register_reset")
+    def api_register_reset():
+        deps["reset_registration_state"]()
+        reg_state = deps["get_registration_state"]()
+        return jsonify(
+            {
+                "success": True,
+                "message": "Registration capture session reset.",
+                "capture_count": reg_state.capture_count,
+                "max_captures": reg_state.max_captures,
+            }
+        )
+
+    @bp.route("/api/register-capture", methods=["POST"], endpoint="api_register_capture")
+    def api_register_capture():
+        reg_state = deps["get_registration_state"]()
+        if reg_state.in_progress and reg_state.pending_registration:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "Required samples already captured. Complete the registration form or reset the session.",
+                    "capture_count": len(reg_state.pending_registration),
+                    "max_captures": reg_state.max_captures,
+                }
+            ), 400
+
+        image = _decode_uploaded_image(request.files.get("frame"))
+        if image is None:
+            return jsonify({"success": False, "message": "No camera frame was received."}), 400
+
+        face_crop, detection_confidence = _extract_largest_face(image)
+        if face_crop is None:
+            return jsonify({"success": False, "message": "No clear face detected. Center your face and try again."}), 400
+
+        quality_score, quality_status, _ = deps["quality_service"].assess_face_quality(
+            face_crop,
+            detection_confidence=detection_confidence,
+        )
+        if quality_score < deps["config"].face_quality_threshold:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": f"Face quality is too low ({quality_status}). Improve lighting and keep still.",
+                    "quality_score": round(quality_score, 2),
+                    "quality_status": quality_status,
+                }
+            ), 400
+
+        embeddings = deps["embedding_service"].extract_embedding_ensemble(face_crop)
+        if not embeddings:
+            return jsonify({"success": False, "message": "Unable to extract face embeddings from this capture."}), 400
+
+        sample = RegistrationSample(face_crop=face_crop, embeddings=embeddings, quality=quality_score)
+        captured_count = deps["capture_registration_sample"](sample)
+
+        reg_state = deps["get_registration_state"]()
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Sample {captured_count}/{reg_state.max_captures} captured.",
+                "capture_count": len(reg_state.pending_registration or []) or reg_state.capture_count,
+                "max_captures": reg_state.max_captures,
+                "quality_score": round(quality_score, 2),
+                "quality_status": quality_status,
+                "ready_to_submit": bool(reg_state.pending_registration),
+            }
+        )
+
+    @bp.route("/register", methods=["POST"], endpoint="register_submit")
+    def register_submit():
+        reg_state = deps["get_registration_state"]()
+        pending_registration = reg_state.pending_registration or []
+        if not pending_registration:
+            return jsonify({"success": False, "message": "No pending registration samples found."}), 400
+
+        name = request.form.get("name", "").strip()
+        sr_code = request.form.get("sr_code", "").strip()
+        course = request.form.get("course", "").strip()
+        if not name or not sr_code or not course:
+            return jsonify({"success": False, "message": "Name, SR Code, and course are required."}), 400
+
+        repository = deps["repository"]
+        existing = repository.get_user_by_sr_code(sr_code)
+
+        all_embeddings = {}
+        image_paths = []
+        user_folder = os.path.join(deps["base_save_dir"], sr_code)
+        os.makedirs(user_folder, exist_ok=True)
+
+        for index, face_sample in enumerate(pending_registration):
+            timestamp = int(time.time() * 1000)
+            filename = os.path.join(user_folder, f"face_{timestamp}_{index}.jpg")
+            if not cv2.imwrite(filename, face_sample.face_crop):
+                return jsonify({"success": False, "message": "Failed to save captured face sample."}), 500
+            image_paths.append(filename)
+            all_embeddings = merge_embeddings_by_model(all_embeddings, face_sample.embeddings)
+
+        user_id = repository.save_user(
+            User(
+                id=existing.id if existing else 0,
+                name=name,
+                sr_code=sr_code,
+                course=course,
+                embeddings=all_embeddings,
+                image_paths=image_paths,
+                embedding_dim=0,
+            )
+        )
+        saved_user = repository.get_user_by_sr_code(sr_code)
+        if saved_user:
+            saved_user.id = user_id
+            deps["replace_user"](saved_user)
+
+        deps["complete_registration"]()
+        total_embeddings = count_embeddings(normalize_embeddings_by_model(all_embeddings))
+        redirect_url = (
+            url_for("routes.registered_profiles")
+            if "staff_id" in session
+            else url_for("auth_routes.auth_login", next=url_for("routes.registered_profiles"))
+        )
+        profile_payload = None
+        if saved_user:
+            profile_payload = {
+                "user_id": saved_user.id,
+                "name": saved_user.name,
+                "sr_code": saved_user.sr_code,
+                "course": saved_user.course,
+            }
+        return jsonify(
+            {
+                "success": True,
+                "user_id": user_id,
+                "updated": existing is not None,
+                "embedding_count": total_embeddings,
+                "message": (
+                    f"Profile updated for {saved_user.name}."
+                    if existing is not None and saved_user
+                    else f"Profile registered for {saved_user.name}."
+                    if saved_user
+                    else "Registration saved successfully."
+                ),
+                "profile": profile_payload,
+                "redirect_url": redirect_url,
+            }
+        )
     
     @bp.route("/registered-profiles/delete/<int:user_id>", methods=["POST"], endpoint="delete_profile")
     @login_required
@@ -1267,7 +1478,19 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin")
     def api_route_list():
         routes_list = []
-        for i, rule in enumerate(sorted(current_app.url_map.iter_rules(), key=lambda r: r.rule), start=1):
+        hidden_routes = {
+            "/kiosk",
+            "/kiosk-improved",
+            "/api/kiosk-metrics",
+            "/register",
+            "/api/register-info",
+        }
+        visible_rules = [
+            rule
+            for rule in sorted(current_app.url_map.iter_rules(), key=lambda r: r.rule)
+            if rule.rule not in hidden_routes
+        ]
+        for i, rule in enumerate(visible_rules, start=1):
             routes_list.append(
                 {
                     "i": i,
