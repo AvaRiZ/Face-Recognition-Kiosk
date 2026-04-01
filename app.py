@@ -8,8 +8,6 @@ import sys
 import time
 from deepface import DeepFace  # @UnresolvedImport
 import pickle
-import faiss  # pyright: ignore[reportMissingImports]
-import mediapipe as mp
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -29,7 +27,6 @@ from services.staff_service import ensure_profile_upload_dir, save_profile_image
 import torch
 import tensorflow as tf
 from ultralytics import YOLO
-from config import AppConfig
 from db import connect as db_connect, table_columns
 
 def log_header(title):
@@ -66,7 +63,10 @@ def configure_devices(torch_device_index=1, tf_use_gpu=False):
     except Exception as e:
         print(f"GPU configuration warning (TensorFlow): {e}")
 
-DeepFace = None
+configure_devices(torch_device_index=0, tf_use_gpu=True)
+
+# Import DeepFace only after TensorFlow GPU configuration
+from deepface import DeepFace
 
 def log_gpu_info():
     """Log GPU name for Torch and TensorFlow."""
@@ -92,15 +92,91 @@ def log_gpu_info():
         log_step(f"TensorFlow GPU info unavailable: {e}", status="WARN")
         log_step("TensorFlow GPU check failed. DeepFace may run on CPU.", status="WARN")
 
+log_gpu_info()
+
+# -------------------------------
+# Configuration - Two-Factor Verification
+# -------------------------------
+@dataclass
+class AppConfig:
+    model_path: str = "models/yolov8n-face.pt"
+    db_path: str = "database/faces_improved.db"
+    base_save_dir: str = "faces_improved"
+    primary_model: str = "ArcFace"
+    secondary_model: str = "Facenet"
+    primary_threshold: float = 0.7
+    secondary_threshold: float = 0.6
+    base_threshold: float = 0.5
+    adaptive_threshold_enabled: bool = True
+    face_quality_threshold: float = 0.58
+    face_quality_good_threshold: float = 0.75
+    min_face_size: int = 50
+    confidence_smoothing_window: int = 3
+    detection_every_n_frames: int = 2
+    recognition_cooldown_seconds: int = 1
+    stability_time_required: float = 0.3
+    position_tolerance: int = 200
+    track_stale_seconds: float = 5.0
+    quality_face_area_low: int = 50 * 50
+    quality_face_area_high: int = 130 * 130
+    quality_detection_confidence_low: float = 0.35
+    quality_detection_confidence_high: float = 0.80
+    quality_sharpness_low: float = 80.0
+    quality_sharpness_high: float = 250.0
+    quality_contrast_low: float = 20.0
+    quality_contrast_high: float = 60.0
+    quality_dark_intensity_threshold: int = 40
+    quality_bright_intensity_threshold: int = 220
+    quality_dark_ratio_good: float = 0.08
+    quality_dark_ratio_bad: float = 0.35
+    quality_bright_ratio_good: float = 0.05
+    quality_bright_ratio_bad: float = 0.28
+    quality_dynamic_range_low: float = 30.0
+    quality_dynamic_range_high: float = 90.0
+    quality_canny_low: int = 50
+    quality_canny_high: int = 150
+    quality_edge_density_low: float = 0.03
+    quality_edge_density_high: float = 0.12
+    quality_low_detail_std_threshold: float = 12.0
+    quality_low_detail_ratio_good: float = 0.20
+    quality_low_detail_ratio_bad: float = 0.65
+    quality_eye_tilt_good_ratio: float = 0.08
+    quality_eye_tilt_bad_ratio: float = 0.20
+    quality_pose_good_ratio: float = 0.10
+    quality_pose_bad_ratio: float = 0.30
+    quality_band_alignment_good_ratio: float = 0.06
+    quality_band_alignment_bad_ratio: float = 0.18
+    quality_pose_balance_good: float = 0.15
+    quality_pose_balance_bad: float = 0.45
+
+    # Face quality scoring weights (recognition-focused priorities)
+    quality_weight_size: float = 0.22
+    quality_weight_sharpness: float = 0.24
+    quality_weight_detection_confidence: float = 0.20
+    quality_weight_alignment: float = 0.14
+    quality_weight_pose: float = 0.08
+    quality_weight_exposure: float = 0.07
+    quality_weight_contrast: float = 0.03
+    quality_weight_occlusion: float = 0.02
+
+    @property
+    def models(self):
+        return [self.primary_model, self.secondary_model]
+
+# Two-Factor Models: BOTH must confirm
+PRIMARY_MODEL = "ArcFace"  # First verification
+SECONDARY_MODEL = "Facenet"  # Second verification
+MODELS = [PRIMARY_MODEL, SECONDARY_MODEL]
+
+# Thresholds for each model (must BOTH pass)
+PRIMARY_THRESHOLD = 0.5  # ArcFace threshold
+SECONDARY_THRESHOLD = 0.5  # Facenet threshold
+
+
 @dataclass
 class AppState:
     all_user_embeddings: list = field(default_factory=list)
     user_info: list = field(default_factory=list)
-    faiss_indexes: dict = field(default_factory=dict)
-    faiss_metadata: dict = field(default_factory=dict)
-    faiss_id_maps: dict = field(default_factory=dict)
-    faiss_user_vector_ids: dict = field(default_factory=dict)
-    faiss_next_id: dict = field(default_factory=dict)
     user_count: int = 0
     pending_registration: Optional[list] = None
     recognized_user: Optional[dict] = None
@@ -113,61 +189,34 @@ class AppState:
     manual_registration_track_id: Optional[int] = None
     face_stability_tracker: dict = field(default_factory=dict)
     tracked_identities: dict = field(default_factory=dict)
-    embedding_candidates: dict = field(default_factory=dict)
-    embedding_consistency_tracker: dict = field(default_factory=dict)
-    last_embedding_commit_time: float = 0.0
 
 
 CONFIG = AppConfig()
 STATE = AppState()
-MP_FACE_MESH = None
-MEDIAPIPE_FACEMESH_UNAVAILABLE = False
-QUALITY_CLAHE = None
-QUALITY_GAMMA_LUT = None
-ALIGNMENT_SOURCE_LAST_PRINT_TS = 0.0
-ALIGNMENT_SOURCE_LAST_PRINT_VALUE = None
-APP_INITIALIZED = False
+
+# -------------------------------
+# YOLOv8 model
+# -------------------------------
+log_step("Loading YOLOv8 face detection model...")
 yolo_device = "cpu"
-model = None
+if torch.cuda.is_available():
+    if torch.cuda.device_count() > 1:
+        yolo_device = "cuda:1"
+    else:
+        yolo_device = "cuda:0"
 
+model = YOLO(CONFIG.model_path)
+try:
+    model.to(yolo_device)
+except Exception as e:
+    log_step(f"YOLO GPU warning: {e}", status="WARN")
+log_step(f"YOLOv8 model loaded on {yolo_device}")
 
-def initialize_runtime():
-    """Initialize GPU config, models, storage, and indexes once."""
-    global APP_INITIALIZED, DeepFace, model, yolo_device
-    if APP_INITIALIZED:
-        return
+# -------------------------------
+# DeepFace configuration - Two-Factor Verification
+# -------------------------------
+log_step(f"Two-Factor Verification: {CONFIG.primary_model} + {CONFIG.secondary_model}")
 
-    configure_devices(torch_device_index=0, tf_use_gpu=True)
-
-    from deepface import DeepFace as _DeepFace
-    DeepFace = _DeepFace
-
-    log_gpu_info()
-
-    log_step("Loading YOLOv8 face detection model...")
-    yolo_device = "cpu"
-    if torch.cuda.is_available():
-        if torch.cuda.device_count() > 1:
-            yolo_device = "cuda:1"
-        else:
-            yolo_device = "cuda:0"
-
-    model = YOLO(CONFIG.model_path)
-    try:
-        model.to(yolo_device)
-    except Exception as e:
-        log_step(f"YOLO GPU warning: {e}", status="WARN")
-    log_step(f"YOLOv8 model loaded on {yolo_device}")
-    log_step(f"Two-Factor Verification: {CONFIG.primary_model} + {CONFIG.secondary_model}")
-
-    os.makedirs(CONFIG.base_save_dir, exist_ok=True)
-
-    init_db()
-    STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
-    STATE.user_count = len(STATE.user_info)
-    refresh_faiss()
-
-    APP_INITIALIZED = True
 
 # -------------------------------
 # Database setup (SQLite) with improved schema
@@ -184,7 +233,6 @@ def init_db():
             embeddings BLOB NOT NULL,
             image_paths TEXT NOT NULL,
             embedding_dim INTEGER NOT NULL,
-            embedding_metadata BLOB,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             archived_at TIMESTAMP
@@ -214,12 +262,11 @@ def init_db():
     for col_name, col_type in extra_columns.items():
         if col_name not in existing_columns:
             c.execute(f"ALTER TABLE recognition_log ADD COLUMN {col_name} {col_type}")
-
-    c.execute("PRAGMA table_info(users)")
-    user_columns = {row[1] for row in c.fetchall()}
-    if "embedding_metadata" not in user_columns:
-        c.execute("ALTER TABLE users ADD COLUMN embedding_metadata BLOB")
     
+    existing_columns = table_columns(conn, "users")
+    if "archived_at" not in existing_columns:
+        c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
+
     conn.commit()
     conn.close()
 
@@ -418,239 +465,6 @@ def load_all_embeddings():
     log_step(f"Loaded {len(all_embeddings)} users with embeddings")
     return all_embeddings, user_info
 
-
-def _normalize_embedding_vector(embedding):
-    """Prepare a single embedding vector for FAISS (float32 + unit norm)."""
-    if embedding is None:
-        return None
-    arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
-    if arr.ndim != 1 or arr.size == 0:
-        return None
-
-    norm = np.linalg.norm(arr)
-    if norm <= 0:
-        return None
-    arr = arr / norm
-    return arr
-
-
-def _ensure_faiss_support_state():
-    """Ensure all FAISS support maps exist for configured models."""
-    if not isinstance(STATE.faiss_indexes, dict):
-        STATE.faiss_indexes = {}
-    if not isinstance(STATE.faiss_metadata, dict):
-        STATE.faiss_metadata = {}
-    if not isinstance(STATE.faiss_id_maps, dict):
-        STATE.faiss_id_maps = {}
-    if not isinstance(STATE.faiss_user_vector_ids, dict):
-        STATE.faiss_user_vector_ids = {}
-    if not isinstance(STATE.faiss_next_id, dict):
-        STATE.faiss_next_id = {}
-
-    for model_name in CONFIG.models:
-        STATE.faiss_indexes.setdefault(model_name, None)
-        STATE.faiss_metadata.setdefault(model_name, [])
-        STATE.faiss_id_maps.setdefault(model_name, {})
-        STATE.faiss_user_vector_ids.setdefault(model_name, {})
-        STATE.faiss_next_id.setdefault(model_name, 0)
-
-
-def _faiss_create_index(dim):
-    """Create an ID-addressable FAISS index while keeping IndexFlatIP as backend."""
-    base = faiss.IndexFlatIP(int(dim))
-    return faiss.IndexIDMap2(base)
-
-
-def _faiss_rebuild_with_reason(reason):
-    log_step(f"FAISS map mismatch detected. Rebuilding all indexes. Reason: {reason}", status="WARN")
-    refresh_faiss()
-
-
-def _get_user_index_by_id(user_id):
-    for idx, info in enumerate(STATE.user_info):
-        if isinstance(info, dict) and info.get('id') == user_id:
-            return idx
-    return -1
-
-
-def build_faiss_indexes(all_user_embeddings, user_info):
-    """Build per-model FAISS IndexFlatIP instances and vector metadata mappings."""
-    faiss_indexes = {model_name: None for model_name in CONFIG.models}
-    faiss_metadata = {model_name: [] for model_name in CONFIG.models}
-    faiss_id_maps = {model_name: {} for model_name in CONFIG.models}
-    faiss_user_vector_ids = {model_name: {} for model_name in CONFIG.models}
-    faiss_next_id = {model_name: 0 for model_name in CONFIG.models}
-
-    user_id_by_index = {
-        idx: info.get('id')
-        for idx, info in enumerate(user_info)
-        if isinstance(info, dict) and info.get('id') is not None
-    }
-
-    for model_name in CONFIG.models:
-        vectors = []
-        metadata = []
-        faiss_ids = []
-
-        for user_idx, user_embeddings_by_model in enumerate(all_user_embeddings):
-            if not isinstance(user_embeddings_by_model, dict):
-                continue
-
-            user_id = user_id_by_index.get(user_idx)
-            if user_id is None:
-                continue
-
-            normalized_models = normalize_embeddings_by_model(user_embeddings_by_model)
-            model_embeddings = normalized_models.get(model_name, [])
-            for embedding_id, embedding in enumerate(model_embeddings):
-                vec = _normalize_embedding_vector(embedding)
-                if vec is None:
-                    continue
-                faiss_id = faiss_next_id[model_name]
-                faiss_next_id[model_name] += 1
-
-                vectors.append(vec)
-                metadata.append((user_id, embedding_id))
-                faiss_ids.append(faiss_id)
-                faiss_id_maps[model_name][faiss_id] = (user_id, embedding_id)
-                faiss_user_vector_ids[model_name].setdefault(user_id, set()).add(faiss_id)
-
-        if vectors:
-            vector_matrix = np.vstack(vectors).astype(np.float32, copy=False)
-            index = _faiss_create_index(vector_matrix.shape[1])
-            id_array = np.array(faiss_ids, dtype=np.int64)
-            index.add_with_ids(vector_matrix, id_array)
-            faiss_indexes[model_name] = index
-            faiss_metadata[model_name] = metadata
-
-            log_step(
-                f"FAISS index built for {model_name}: {index.ntotal} vectors, dim={index.d}"
-            )
-        else:
-            faiss_metadata[model_name] = []
-            log_step(f"FAISS index built for {model_name}: 0 vectors", status="WARN")
-
-    return faiss_indexes, faiss_metadata, faiss_id_maps, faiss_user_vector_ids, faiss_next_id
-
-
-def refresh_faiss():
-    """Refresh FAISS indexes from in-memory STATE embeddings after data changes."""
-    (
-        STATE.faiss_indexes,
-        STATE.faiss_metadata,
-        STATE.faiss_id_maps,
-        STATE.faiss_user_vector_ids,
-        STATE.faiss_next_id,
-    ) = build_faiss_indexes(
-        STATE.all_user_embeddings,
-        STATE.user_info,
-    )
-    _ensure_faiss_support_state()
-
-
-def add_embeddings_incremental(user_id, embeddings_by_model, start_offsets=None):
-    """Incrementally add vectors to FAISS for one user.
-
-    Falls back to full rebuild on index/map mismatches.
-    """
-    _ensure_faiss_support_state()
-    normalized = normalize_embeddings_by_model(embeddings_by_model)
-    if not normalized:
-        return True
-
-    if start_offsets is None:
-        start_offsets = {model_name: 0 for model_name in CONFIG.models}
-
-    try:
-        for model_name in CONFIG.models:
-            model_embeddings = normalized.get(model_name, [])
-            if not model_embeddings:
-                continue
-
-            prepared_vectors = []
-            prepared_ids = []
-            prepared_meta = []
-
-            for local_idx, embedding in enumerate(model_embeddings):
-                vec = _normalize_embedding_vector(embedding)
-                if vec is None:
-                    continue
-
-                faiss_id = int(STATE.faiss_next_id.get(model_name, 0))
-                STATE.faiss_next_id[model_name] = faiss_id + 1
-                embedding_id = int(start_offsets.get(model_name, 0)) + local_idx
-
-                prepared_vectors.append(vec)
-                prepared_ids.append(faiss_id)
-                prepared_meta.append((faiss_id, user_id, embedding_id))
-
-            if not prepared_vectors:
-                continue
-
-            matrix = np.vstack(prepared_vectors).astype(np.float32, copy=False)
-            index = STATE.faiss_indexes.get(model_name)
-
-            if index is None:
-                index = _faiss_create_index(matrix.shape[1])
-                STATE.faiss_indexes[model_name] = index
-
-            if index.d != matrix.shape[1]:
-                _faiss_rebuild_with_reason(
-                    f"dimension mismatch on incremental add for {model_name} (index={index.d}, incoming={matrix.shape[1]})"
-                )
-                return False
-
-            id_array = np.array(prepared_ids, dtype=np.int64)
-            index.add_with_ids(matrix, id_array)
-
-            for faiss_id, uid, emb_id in prepared_meta:
-                STATE.faiss_id_maps[model_name][faiss_id] = (uid, emb_id)
-                STATE.faiss_user_vector_ids[model_name].setdefault(uid, set()).add(faiss_id)
-                STATE.faiss_metadata[model_name].append((uid, emb_id))
-
-        return True
-    except Exception as e:
-        _faiss_rebuild_with_reason(f"incremental add exception: {e}")
-        return False
-
-
-def remove_user_incremental(user_id):
-    """Incrementally remove all vectors for one user from FAISS.
-
-    Falls back to full rebuild on index/map mismatches.
-    """
-    _ensure_faiss_support_state()
-
-    try:
-        for model_name in CONFIG.models:
-            user_id_set_map = STATE.faiss_user_vector_ids.get(model_name, {})
-            ids = sorted(list(user_id_set_map.get(user_id, set())))
-            if not ids:
-                continue
-
-            index = STATE.faiss_indexes.get(model_name)
-            if index is None:
-                _faiss_rebuild_with_reason(f"missing index during remove for {model_name}")
-                return False
-
-            id_array = np.array(ids, dtype=np.int64)
-            removed_count = int(index.remove_ids(id_array))
-            if removed_count != len(ids):
-                _faiss_rebuild_with_reason(
-                    f"remove count mismatch for {model_name} (removed={removed_count}, expected={len(ids)})"
-                )
-                return False
-
-            for vector_id in ids:
-                STATE.faiss_id_maps.get(model_name, {}).pop(vector_id, None)
-
-            user_id_set_map.pop(user_id, None)
-
-        return True
-    except Exception as e:
-        _faiss_rebuild_with_reason(f"incremental remove exception: {e}")
-        return False
-
 def log_recognition(
     user_id,
     confidence,
@@ -695,6 +509,24 @@ def log_recognition(
     conn.commit()
     conn.close()
 
+
+# -------------------------------
+# Setup directories
+# -------------------------------
+
+os.makedirs(CONFIG.base_save_dir, exist_ok=True)
+ensure_profile_upload_dir()
+# -------------------------------
+# Initialize database
+# -------------------------------
+init_db()
+init_auth_db()
+init_imported_logs_table(CONFIG.db_path)
+
+# Load existing embeddings
+STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
+STATE.user_count = len(STATE.user_info)
+
 # -------------------------------
 # Improved thresholds and parameters
 # -------------------------------
@@ -727,199 +559,6 @@ def _score_lower_better(value, good_threshold, bad_threshold):
     if bad_threshold <= good_threshold:
         return 1.0 if value <= good_threshold else 0.0
     return _clamp01(1.0 - ((float(value) - good_threshold) / (bad_threshold - good_threshold)))
-
-
-def _get_quality_clahe():
-    global QUALITY_CLAHE
-    if QUALITY_CLAHE is None:
-        tile = max(int(CONFIG.quality_clahe_tile_grid), 2)
-        QUALITY_CLAHE = cv2.createCLAHE(
-            clipLimit=float(CONFIG.quality_clahe_clip_limit),
-            tileGridSize=(tile, tile),
-        )
-    return QUALITY_CLAHE
-
-
-def _get_quality_gamma_lut():
-    global QUALITY_GAMMA_LUT
-    gamma = float(CONFIG.quality_gamma)
-    if QUALITY_GAMMA_LUT is None or abs(gamma - 1.0) > 1e-6:
-        inv_gamma = 1.0 / max(gamma, 1e-6)
-        table = np.array(
-            [(i / 255.0) ** inv_gamma * 255 for i in range(256)],
-            dtype=np.uint8,
-        )
-        QUALITY_GAMMA_LUT = table
-    return QUALITY_GAMMA_LUT
-
-
-def _preprocess_face_for_embedding(face_crop):
-    """Apply CLAHE + gamma correction only after quality scoring has already passed."""
-    if face_crop is None or face_crop.size == 0:
-        return face_crop
-
-    processed = face_crop.copy()
-    if len(processed.shape) == 2:
-        processed = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
-
-    clahe = _get_quality_clahe()
-    lab = cv2.cvtColor(processed, cv2.COLOR_BGR2LAB)
-    l_chan, a_chan, b_chan = cv2.split(lab)
-    l_chan = clahe.apply(l_chan)
-    processed = cv2.cvtColor(cv2.merge((l_chan, a_chan, b_chan)), cv2.COLOR_LAB2BGR)
-
-    lut = _get_quality_gamma_lut()
-    processed = cv2.LUT(processed, lut)
-
-    return processed
-
-
-def _get_face_mesh():
-    global MP_FACE_MESH, MEDIAPIPE_FACEMESH_UNAVAILABLE
-    if MEDIAPIPE_FACEMESH_UNAVAILABLE:
-        return None
-
-    if MP_FACE_MESH is None:
-        try:
-            model_path = str(CONFIG.mediapipe_face_landmarker_model_path)
-            if not os.path.isfile(model_path):
-                raise FileNotFoundError(
-                    f"FaceLandmarker model not found at '{model_path}'. "
-                    "Download face_landmarker.task and place it there."
-                )
-
-            from mediapipe.tasks import python as mp_tasks_python
-            from mediapipe.tasks.python import vision as mp_tasks_vision
-
-            base_options = mp_tasks_python.BaseOptions(model_asset_path=model_path)
-            options = mp_tasks_vision.FaceLandmarkerOptions(
-                base_options=base_options,
-                running_mode=mp_tasks_vision.RunningMode.IMAGE,
-                num_faces=int(CONFIG.mediapipe_max_faces),
-                min_face_detection_confidence=float(CONFIG.mediapipe_min_detection_confidence),
-                min_face_presence_confidence=float(CONFIG.mediapipe_min_tracking_confidence),
-                min_tracking_confidence=float(CONFIG.mediapipe_min_tracking_confidence),
-                output_face_blendshapes=False,
-                output_facial_transformation_matrixes=False,
-            )
-            MP_FACE_MESH = mp_tasks_vision.FaceLandmarker.create_from_options(options)
-        except Exception as e:
-            MEDIAPIPE_FACEMESH_UNAVAILABLE = True
-            CONFIG.use_mediapipe_landmarks = False
-            print(
-                "Warning: MediaPipe FaceLandmarker unavailable; falling back to approx alignment. "
-                f"Reason: {e}"
-            )
-            return None
-
-    return MP_FACE_MESH
-
-
-def _bbox_iou(box_a, box_b):
-    ax1, ay1, ax2, ay2 = box_a
-    bx1, by1, bx2, by2 = box_b
-    inter_x1 = max(ax1, bx1)
-    inter_y1 = max(ay1, by1)
-    inter_x2 = min(ax2, bx2)
-    inter_y2 = min(ay2, by2)
-    inter_w = max(0, inter_x2 - inter_x1)
-    inter_h = max(0, inter_y2 - inter_y1)
-    inter_area = inter_w * inter_h
-    if inter_area <= 0:
-        return 0.0
-    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
-    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
-    denom = max(area_a + area_b - inter_area, 1e-6)
-    return inter_area / denom
-
-
-def _extract_mediapipe_faces(frame_bgr):
-    """Return list of mediapipe faces: [{'bbox': (x1,y1,x2,y2), 'landmarks': {...}}]."""
-    if not CONFIG.use_mediapipe_landmarks:
-        return []
-    if frame_bgr is None or frame_bgr.size == 0:
-        return []
-
-    h, w = frame_bgr.shape[:2]
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    face_landmarker = _get_face_mesh()
-    if face_landmarker is None:
-        return []
-
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-    results = face_landmarker.detect(mp_image)
-    if not results.face_landmarks:
-        return []
-
-    # MediaPipe FaceMesh landmark indices (stable, common references)
-    left_eye_idx = (33, 133)
-    right_eye_idx = (362, 263)
-    nose_idx = 1
-    mouth_left_idx = 61
-    mouth_right_idx = 291
-
-    faces = []
-    for face_landmarks in results.face_landmarks:
-        xs = []
-        ys = []
-        points = []
-        for lm in face_landmarks:
-            x = int(lm.x * w)
-            y = int(lm.y * h)
-            x = min(max(x, 0), w - 1)
-            y = min(max(y, 0), h - 1)
-            points.append((x, y))
-            xs.append(x)
-            ys.append(y)
-
-        if not xs or not ys:
-            continue
-
-        x1, x2 = max(0, min(xs)), min(w - 1, max(xs))
-        y1, y2 = max(0, min(ys)), min(h - 1, max(ys))
-
-        def _avg_point(idx_pair):
-            p1 = points[idx_pair[0]]
-            p2 = points[idx_pair[1]]
-            return ((p1[0] + p2[0]) * 0.5, (p1[1] + p2[1]) * 0.5)
-
-        landmarks = {
-            "left_eye": _avg_point(left_eye_idx),
-            "right_eye": _avg_point(right_eye_idx),
-            "nose": points[nose_idx],
-            "mouth_left": points[mouth_left_idx],
-            "mouth_right": points[mouth_right_idx],
-        }
-
-        faces.append({"bbox": (x1, y1, x2, y2), "landmarks": landmarks})
-
-    return faces
-
-
-def _match_mediapipe_landmarks(face_bbox, mp_faces):
-    if not mp_faces:
-        return None
-    x1, y1, x2, y2 = face_bbox
-    cx = (x1 + x2) * 0.5
-    cy = (y1 + y2) * 0.5
-
-    for item in mp_faces:
-        bx1, by1, bx2, by2 = item["bbox"]
-        if bx1 <= cx <= bx2 and by1 <= cy <= by2:
-            return item["landmarks"]
-
-    best_item = None
-    best_iou = 0.0
-    for item in mp_faces:
-        iou = _bbox_iou(face_bbox, item["bbox"])
-        if iou > best_iou:
-            best_iou = iou
-            best_item = item
-
-    if best_item and best_iou > 0.02:
-        return best_item["landmarks"]
-
-    return None
 
 
 def _to_grayscale(face_crop):
@@ -1079,222 +718,121 @@ def _approximate_alignment_pose(edges):
     return _clamp01(alignment_score), _clamp01(pose_score)
 
 
-def _compute_raw_quality_metrics(gray):
+def _compute_exposure_metrics(gray):
     gray_f = gray.astype(np.float32, copy=False)
-    # Laplacian variance measures edge-energy spread: blur suppresses edges, so variance drops.
-    laplacian = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    mean_intensity = float(np.mean(gray_f))
+    brightness = float(np.mean(gray_f))
     contrast = float(np.std(gray_f))
+
     dark_ratio = float(np.mean(gray_f <= CONFIG.quality_dark_intensity_threshold))
     bright_ratio = float(np.mean(gray_f >= CONFIG.quality_bright_intensity_threshold))
+
+    p5, p95 = np.percentile(gray_f, [5, 95])
+    dynamic_range = float(p95 - p5)
+
+    underexposed_score = _score_lower_better(
+        dark_ratio,
+        CONFIG.quality_dark_ratio_good,
+        CONFIG.quality_dark_ratio_bad,
+    )
+    overexposed_score = _score_lower_better(
+        bright_ratio,
+        CONFIG.quality_bright_ratio_good,
+        CONFIG.quality_bright_ratio_bad,
+    )
+    range_score = _score_higher_better(
+        dynamic_range,
+        CONFIG.quality_dynamic_range_low,
+        CONFIG.quality_dynamic_range_high,
+    )
+
+    exposure_score = _clamp01(0.45 * underexposed_score + 0.45 * overexposed_score + 0.10 * range_score)
+    contrast_score = _three_level_score(
+        contrast,
+        CONFIG.quality_contrast_low,
+        CONFIG.quality_contrast_high,
+    )
+
     return {
-        "laplacian": laplacian,
-        "mean_intensity": mean_intensity,
+        "brightness": brightness,
         "contrast": contrast,
         "dark_ratio": dark_ratio,
         "bright_ratio": bright_ratio,
+        "dynamic_range": dynamic_range,
+        "exposure_score": exposure_score,
+        "contrast_score": contrast_score,
     }
 
 
-def _quality_hard_gate_reason(metrics):
-    if metrics["laplacian"] < CONFIG.quality_hard_gate_laplacian:
-        return (
-            f"laplacian {metrics['laplacian']:.1f} < "
-            f"{CONFIG.quality_hard_gate_laplacian:.1f}"
-        )
-    if metrics["contrast"] < CONFIG.quality_hard_gate_contrast:
-        return (
-            f"contrast {metrics['contrast']:.1f} < "
-            f"{CONFIG.quality_hard_gate_contrast:.1f}"
-        )
-    if metrics["mean_intensity"] < CONFIG.quality_hard_gate_mean_intensity:
-        return (
-            f"mean_intensity {metrics['mean_intensity']:.1f} < "
-            f"{CONFIG.quality_hard_gate_mean_intensity:.1f}"
-        )
-    return None
+def _compute_detail_metrics(gray, edges):
+    edge_density = float(np.mean(edges > 0))
+    edge_density_score = _score_higher_better(
+        edge_density,
+        CONFIG.quality_edge_density_low,
+        CONFIG.quality_edge_density_high,
+    )
 
+    # Fast 4x4 local-detail map over a normalized 32x32 crop.
+    gray_small = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
+    blocks = gray_small.reshape(4, 8, 4, 8)
+    local_std = blocks.std(axis=(1, 3))
+    low_detail_ratio = float(np.mean(local_std < CONFIG.quality_low_detail_std_threshold))
 
-def _build_quality_debug_output(final_score, status, metrics, component_scores, reason, extra=None):
-    debug_info = {
-        "final_score": float(final_score),
-        "status": status,
-        "metrics": {
-            "laplacian": float(metrics.get("laplacian", 0.0)),
-            "contrast": float(metrics.get("contrast", 0.0)),
-            "mean_intensity": float(metrics.get("mean_intensity", 0.0)),
-            "dark_ratio": float(metrics.get("dark_ratio", 0.0)),
-            "bright_ratio": float(metrics.get("bright_ratio", 0.0)),
-        },
-        "component_scores": {
-            "sharpness": float(component_scores.get("sharpness", 0.0)),
-            "contrast": float(component_scores.get("contrast", 0.0)),
-            "exposure": float(component_scores.get("exposure", 0.0)),
-            "detection": float(component_scores.get("detection", 0.0)),
-            "alignment": float(component_scores.get("alignment", 0.0)),
-            "pose": float(component_scores.get("pose", 0.0)),
-        },
-        "reason": str(reason or ""),
+    low_detail_score = _score_lower_better(
+        low_detail_ratio,
+        CONFIG.quality_low_detail_ratio_good,
+        CONFIG.quality_low_detail_ratio_bad,
+    )
+    occlusion_score = _clamp01(0.6 * edge_density_score + 0.4 * low_detail_score)
+
+    return {
+        "edge_density": edge_density,
+        "low_detail_ratio": low_detail_ratio,
+        "occlusion_score": occlusion_score,
     }
-    if extra:
-        debug_info.update(extra)
-    return debug_info
-
-
-def _format_factor_values(debug_info):
-    factor_values = debug_info.get("factor_values", {})
-    if not isinstance(factor_values, dict) or not factor_values:
-        return ""
-
-    ordered = ("sharpness", "exposure", "contrast", "detection", "alignment", "pose")
-    parts = []
-    for name in ordered:
-        item = factor_values.get(name)
-        if not isinstance(item, dict):
-            continue
-        score = float(item.get("score", 0.0))
-        weighted = float(item.get("weighted", 0.0))
-        parts.append(f"{name}={score:.2f} (w={weighted:.2f})")
-    return ", ".join(parts)
-
-def _quality_component_factors(debug_info):
-    """Return component scores + human-readable details for CLI diagnostics."""
-    metrics = debug_info.get("metrics", {})
-    component_scores = debug_info.get("component_scores", {})
-
-    return [
-        {
-            "name": "sharpness",
-            "score": component_scores.get("sharpness"),
-            "detail": f"laplacian={float(metrics.get('laplacian', 0.0)):.1f}",
-        },
-        {
-            "name": "contrast",
-            "score": component_scores.get("contrast"),
-            "detail": f"contrast={float(metrics.get('contrast', 0.0)):.1f}",
-        },
-        {
-            "name": "exposure",
-            "score": component_scores.get("exposure"),
-            "detail": (
-                f"mean={float(metrics.get('mean_intensity', 0.0)):.1f}, "
-                f"dark={float(metrics.get('dark_ratio', 0.0)):.2f}, "
-                f"bright={float(metrics.get('bright_ratio', 0.0)):.2f}"
-            ),
-        },
-        {
-            "name": "detection",
-            "score": component_scores.get("detection"),
-            "detail": f"det={float(debug_info.get('detection_confidence', 0.0)):.2f}",
-        },
-        {
-            "name": "alignment",
-            "score": component_scores.get("alignment"),
-            "detail": f"source={debug_info.get('alignment_source', 'unknown')}",
-        },
-        {
-            "name": "pose",
-            "score": component_scores.get("pose"),
-            "detail": "pose consistency",
-        },
-    ]
-
-def _quality_reason_summary(debug_info, limit=3):
-    reason = str(debug_info.get("reason", "")).strip()
-    factor_values_text = _format_factor_values(debug_info)
-    if reason:
-        if factor_values_text:
-            return f"{reason}; factors: {factor_values_text}"
-        return reason
-    factors = [f for f in _quality_component_factors(debug_info) if f.get("score") is not None]
-    if not factors:
-        return ""
-    factors.sort(key=lambda item: float(item.get("score", 0.0)))
-    worst = factors[:limit]
-    parts = []
-    for item in worst:
-        parts.append(f"{item['name']}={float(item['score']):.2f} ({item['detail']})")
-    summary = "; ".join(parts)
-    if factor_values_text:
-        summary = f"{summary}; factors: {factor_values_text}"
-    return summary
 
 
 def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
-    """Three-stage face quality scoring: raw metrics, hard gating, normalized weighted scoring."""
+    """Recognition-oriented face quality scoring.
+
+    Returns:
+        (quality_score, quality_status, debug_info)
+    """
     if face_crop is None or face_crop.size == 0:
-        metrics = {
-            "laplacian": 0.0,
-            "contrast": 0.0,
-            "mean_intensity": 0.0,
-            "dark_ratio": 1.0,
-            "bright_ratio": 0.0,
-        }
-        component_scores = {
+        debug_info = {
             "sharpness": 0.0,
+            "brightness": 0.0,
             "contrast": 0.0,
-            "exposure": 0.0,
-            "detection": 0.0,
-            "alignment": 0.0,
-            "pose": 0.0,
+            "alignment_score": 0.0,
+            "detection_confidence": float(detection_confidence) if detection_confidence is not None else 0.0,
         }
-        debug_info = _build_quality_debug_output(
-            final_score=0.0,
-            status="Rejected",
-            metrics=metrics,
-            component_scores=component_scores,
-            reason="empty face crop",
-            extra={
-                "detection_confidence": float(detection_confidence) if detection_confidence is not None else 0.0,
-                "alignment_source": "none",
-            },
-        )
-        return 0.0, "Rejected: empty face crop", debug_info
+        return 0.0, "Poor", debug_info
 
-    # Stage 1: RAW metrics from the original crop only (no resize, no CLAHE, no gamma).
+    h, w = face_crop.shape[:2]
+    area = h * w
     gray = _to_grayscale(face_crop)
-    metrics = _compute_raw_quality_metrics(gray)
 
-    # Stage 2: Hard gating protects the embedding model from clearly bad frames.
-    rejection_reason = _quality_hard_gate_reason(metrics)
+    size_score = _three_level_score(area, CONFIG.quality_face_area_low, CONFIG.quality_face_area_high)
+
+    laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    sharpness_score = _three_level_score(
+        laplacian_var,
+        CONFIG.quality_sharpness_low,
+        CONFIG.quality_sharpness_high,
+    )
 
     confidence_value = float(detection_confidence) if detection_confidence is not None else 0.5
     confidence_value = _clamp01(confidence_value)
-    detection_score = _score_higher_better(
+    detection_score = _three_level_score(
         confidence_value,
         CONFIG.quality_detection_confidence_low,
         CONFIG.quality_detection_confidence_high,
     )
 
-    # Stage 3: Normalize each metric with linear interpolation and clamp to [0, 1].
-    sharpness_score = _score_higher_better(
-        metrics["laplacian"],
-        CONFIG.quality_sharpness_low,
-        CONFIG.quality_sharpness_high,
-    )
-    contrast_score = _score_higher_better(
-        metrics["contrast"],
-        CONFIG.quality_contrast_low,
-        CONFIG.quality_contrast_high,
-    )
-    brightness_score = _score_higher_better(
-        metrics["mean_intensity"],
-        CONFIG.quality_mean_intensity_low,
-        CONFIG.quality_mean_intensity_high,
-    )
-    dark_score = _score_lower_better(
-        metrics["dark_ratio"],
-        CONFIG.quality_dark_ratio_good,
-        CONFIG.quality_dark_ratio_bad,
-    )
-    bright_score = _score_lower_better(
-        metrics["bright_ratio"],
-        CONFIG.quality_bright_ratio_good,
-        CONFIG.quality_bright_ratio_bad,
-    )
-    exposure_score = _clamp01(0.50 * brightness_score + 0.25 * dark_score + 0.25 * bright_score)
+    exposure_metrics = _compute_exposure_metrics(gray)
 
     edges = cv2.Canny(gray, CONFIG.quality_canny_low, CONFIG.quality_canny_high)
+    detail_metrics = _compute_detail_metrics(gray, edges)
+
     normalized_landmarks = _normalize_landmarks(landmarks)
     if normalized_landmarks is not None:
         alignment_score, pose_score = _alignment_pose_from_landmarks(normalized_landmarks)
@@ -1303,121 +841,54 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
         alignment_score, pose_score = _approximate_alignment_pose(edges)
         alignment_source = "approx"
 
-    global ALIGNMENT_SOURCE_LAST_PRINT_TS, ALIGNMENT_SOURCE_LAST_PRINT_VALUE
-    now_ts = time.time()
-    # Print source changes immediately, and at most once per second otherwise.
-    if (
-        alignment_source != ALIGNMENT_SOURCE_LAST_PRINT_VALUE
-        or (now_ts - ALIGNMENT_SOURCE_LAST_PRINT_TS) >= 1.0
-    ):
-        print(f"alignment_source={alignment_source}")
-        ALIGNMENT_SOURCE_LAST_PRINT_TS = now_ts
-        ALIGNMENT_SOURCE_LAST_PRINT_VALUE = alignment_source
-
     weighted_sum = (
-        CONFIG.quality_weight_sharpness * sharpness_score
-        + CONFIG.quality_weight_exposure * exposure_score
-        + CONFIG.quality_weight_contrast * contrast_score
+        CONFIG.quality_weight_size * size_score
+        + CONFIG.quality_weight_sharpness * sharpness_score
         + CONFIG.quality_weight_detection_confidence * detection_score
         + CONFIG.quality_weight_alignment * alignment_score
         + CONFIG.quality_weight_pose * pose_score
+        + CONFIG.quality_weight_exposure * exposure_metrics["exposure_score"]
+        + CONFIG.quality_weight_contrast * exposure_metrics["contrast_score"]
+        + CONFIG.quality_weight_occlusion * detail_metrics["occlusion_score"]
     )
-    quality_score = _clamp01(weighted_sum)
 
-    component_scores = {
-        "sharpness": sharpness_score,
-        "contrast": contrast_score,
-        "exposure": exposure_score,
-        "detection": detection_score,
-        "alignment": alignment_score,
-        "pose": pose_score,
-    }
-
-    factor_values = {
-        "sharpness": {
-            "raw": float(metrics["laplacian"]),
-            "score": float(sharpness_score),
-            "weight": float(CONFIG.quality_weight_sharpness),
-            "weighted": float(CONFIG.quality_weight_sharpness * sharpness_score),
-        },
-        "exposure": {
-            "raw": {
-                "mean_intensity": float(metrics["mean_intensity"]),
-                "dark_ratio": float(metrics["dark_ratio"]),
-                "bright_ratio": float(metrics["bright_ratio"]),
-            },
-            "subscores": {
-                "brightness": float(brightness_score),
-                "dark": float(dark_score),
-                "bright": float(bright_score),
-            },
-            "score": float(exposure_score),
-            "weight": float(CONFIG.quality_weight_exposure),
-            "weighted": float(CONFIG.quality_weight_exposure * exposure_score),
-        },
-        "contrast": {
-            "raw": float(metrics["contrast"]),
-            "score": float(contrast_score),
-            "weight": float(CONFIG.quality_weight_contrast),
-            "weighted": float(CONFIG.quality_weight_contrast * contrast_score),
-        },
-        "detection": {
-            "raw": float(confidence_value),
-            "score": float(detection_score),
-            "weight": float(CONFIG.quality_weight_detection_confidence),
-            "weighted": float(CONFIG.quality_weight_detection_confidence * detection_score),
-        },
-        "alignment": {
-            "raw": str(alignment_source),
-            "score": float(alignment_score),
-            "weight": float(CONFIG.quality_weight_alignment),
-            "weighted": float(CONFIG.quality_weight_alignment * alignment_score),
-        },
-        "pose": {
-            "raw": float(pose_score),
-            "score": float(pose_score),
-            "weight": float(CONFIG.quality_weight_pose),
-            "weighted": float(CONFIG.quality_weight_pose * pose_score),
-        },
-    }
-
-    if rejection_reason:
-        debug_info = _build_quality_debug_output(
-            final_score=0.0,
-            status="Rejected",
-            metrics=metrics,
-            component_scores=component_scores,
-            reason=rejection_reason,
-            extra={
-                "detection_confidence": confidence_value,
-                "alignment_source": alignment_source,
-                "factor_values": factor_values,
-            },
-        )
-        return 0.0, f"Rejected: {rejection_reason}", debug_info
+    weights_total = (
+        CONFIG.quality_weight_size
+        + CONFIG.quality_weight_sharpness
+        + CONFIG.quality_weight_detection_confidence
+        + CONFIG.quality_weight_alignment
+        + CONFIG.quality_weight_pose
+        + CONFIG.quality_weight_exposure
+        + CONFIG.quality_weight_contrast
+        + CONFIG.quality_weight_occlusion
+    )
+    quality_score = _clamp01(weighted_sum / max(weights_total, 1e-6))
 
     if quality_score >= CONFIG.face_quality_good_threshold:
         quality_status = "Good"
-        reason = "meets high-quality target"
     elif quality_score >= CONFIG.face_quality_threshold:
         quality_status = "Acceptable"
-        reason = "usable but not ideal"
     else:
         quality_status = "Poor"
-        reason = "below configured pass threshold"
 
-    debug_info = _build_quality_debug_output(
-        final_score=quality_score,
-        status=quality_status,
-        metrics=metrics,
-        component_scores=component_scores,
-        reason=reason,
-        extra={
-            "detection_confidence": confidence_value,
-            "alignment_source": alignment_source,
-            "factor_values": factor_values,
-        },
-    )
+    debug_info = {
+        "sharpness": laplacian_var,
+        "brightness": exposure_metrics["brightness"],
+        "contrast": exposure_metrics["contrast"],
+        "alignment_score": alignment_score,
+        "detection_confidence": confidence_value,
+        "pose_score": pose_score,
+        "size_score": size_score,
+        "sharpness_score": sharpness_score,
+        "exposure_score": exposure_metrics["exposure_score"],
+        "dark_ratio": exposure_metrics["dark_ratio"],
+        "bright_ratio": exposure_metrics["bright_ratio"],
+        "edge_density": detail_metrics["edge_density"],
+        "low_detail_ratio": detail_metrics["low_detail_ratio"],
+        "occlusion_score": detail_metrics["occlusion_score"],
+        "alignment_source": alignment_source,
+    }
+
     return quality_score, quality_status, debug_info
 
 
@@ -1427,9 +898,6 @@ def assess_face_quality(face_crop, detection_confidence=None, landmarks=None):
 def extract_embedding_ensemble(face_crop):
     """Extract embeddings using BOTH DeepFace models for Two-Factor Verification"""
     try:
-        if DeepFace is None:
-            raise RuntimeError("Runtime not initialized. Call initialize_runtime() before recognition.")
-
         if len(face_crop.shape) == 3 and face_crop.shape[2] == 3:
             face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
         else:
@@ -1512,7 +980,7 @@ class FaceRecognitionSystem:
         smoothed = statistics.mean(self.confidence_smoothing[user_id])
         return smoothed
     
-    def find_best_match(self, query_embeddings, user_embeddings_list, user_info, face_quality, _allow_retry=True):
+    def find_best_match(self, query_embeddings, user_embeddings_list, user_info, face_quality):
         """Find the best match using Two-Factor Verification - BOTH models must confirm"""
         
         # Check if we have embeddings from both models
@@ -1528,108 +996,55 @@ class FaceRecognitionSystem:
         if isinstance(secondary_emb, list) and secondary_emb:
             secondary_emb = secondary_emb[0]
 
-        primary_query = _normalize_embedding_vector(primary_emb)
-        secondary_query = _normalize_embedding_vector(secondary_emb)
-        if primary_query is None or secondary_query is None:
-            print("  Warning: Invalid query embedding(s) for FAISS search")
-            return None, []
-
-        index_primary = STATE.faiss_indexes.get(CONFIG.primary_model)
-        index_secondary = STATE.faiss_indexes.get(CONFIG.secondary_model)
-        id_map_primary = STATE.faiss_id_maps.get(CONFIG.primary_model, {})
-        id_map_secondary = STATE.faiss_id_maps.get(CONFIG.secondary_model, {})
-
-        if index_primary is None or index_secondary is None:
-            print("  Warning: FAISS indexes are not ready for both models")
-            return None, []
-
-        if index_primary.ntotal == 0 or index_secondary.ntotal == 0:
-            return None, []
-
-        if primary_query.shape[0] != index_primary.d or secondary_query.shape[0] != index_secondary.d:
-            print("  Warning: Query embedding dimension mismatch with FAISS index")
-            return None, []
-
-        top_k_primary = min(5, index_primary.ntotal)
-        top_k_secondary = min(5, index_secondary.ntotal)
-
-        D_primary, I_primary = index_primary.search(primary_query.reshape(1, -1).astype(np.float32), top_k_primary)
-        D_secondary, I_secondary = index_secondary.search(secondary_query.reshape(1, -1).astype(np.float32), top_k_secondary)
-
-        candidate_scores = {}
-        map_mismatch = False
-
-        for score, idx in zip(D_primary[0], I_primary[0]):
-            if idx < 0:
-                continue
-            faiss_id = int(idx)
-            mapping = id_map_primary.get(faiss_id)
-            if mapping is None:
-                map_mismatch = True
-                break
-
-            user_id, _embedding_id = mapping
-            if user_id not in candidate_scores:
-                candidate_scores[user_id] = {
-                    CONFIG.primary_model: None,
-                    CONFIG.secondary_model: None,
-                }
-            current = candidate_scores[user_id].get(CONFIG.primary_model)
-            score = float(score)
-            if current is None or score > current:
-                candidate_scores[user_id][CONFIG.primary_model] = score
-
-        if not map_mismatch:
-            for score, idx in zip(D_secondary[0], I_secondary[0]):
-                if idx < 0:
-                    continue
-                faiss_id = int(idx)
-                mapping = id_map_secondary.get(faiss_id)
-                if mapping is None:
-                    map_mismatch = True
-                    break
-
-                user_id, _embedding_id = mapping
-                if user_id not in candidate_scores:
-                    candidate_scores[user_id] = {
-                        CONFIG.primary_model: None,
-                        CONFIG.secondary_model: None,
-                    }
-                current = candidate_scores[user_id].get(CONFIG.secondary_model)
-                score = float(score)
-                if current is None or score > current:
-                    candidate_scores[user_id][CONFIG.secondary_model] = score
-
-        if map_mismatch:
-            if _allow_retry:
-                _faiss_rebuild_with_reason("search returned vector IDs missing from id map")
-                return self.find_best_match(query_embeddings, user_embeddings_list, user_info, face_quality, _allow_retry=False)
-            return None, []
-
-        user_lookup = {
-            info.get('id'): (idx, info)
-            for idx, info in enumerate(user_info)
-            if isinstance(info, dict) and info.get('id') is not None
-        }
-
         best_match = None
         best_user_idx = -1
-        best_avg_confidence = -1.0
+        best_primary_dist = float('inf')
+        best_secondary_dist = float('inf')
 
-        # Candidates are pre-filtered by FAISS top-K from both models.
-        for user_id, scores in candidate_scores.items():
-            user_snapshot = user_lookup.get(user_id)
-            if user_snapshot is None:
+        # Compare against all users
+        for user_idx, user_embeddings_by_model in enumerate(user_embeddings_list):
+            user_id = user_info[user_idx]['id']
+            
+            if user_embeddings_by_model is None or not isinstance(user_embeddings_by_model, dict):
                 continue
-
-            user_idx, info = user_snapshot
-            primary_confidence = scores.get(CONFIG.primary_model)
-            secondary_confidence = scores.get(CONFIG.secondary_model)
-            if primary_confidence is None or secondary_confidence is None:
+            if CONFIG.primary_model not in user_embeddings_by_model or CONFIG.secondary_model not in user_embeddings_by_model:
                 continue
-
-            primary_best_dist = 1.0 - float(primary_confidence)
-            secondary_best_dist = 1.0 - float(secondary_confidence)
+            
+            # Find best match for PRIMARY model
+            primary_best_dist = float('inf')
+            for user_embedding in user_embeddings_by_model.get(CONFIG.primary_model, []):
+                if user_embedding is None or not isinstance(user_embedding, np.ndarray):
+                    continue
+                if user_embedding.size == 0 or user_embedding.ndim != 1:
+                    continue
+                if primary_emb.shape != user_embedding.shape:
+                    continue
+                
+                try:
+                    distance = 1 - np.dot(primary_emb, user_embedding)
+                    primary_best_dist = min(primary_best_dist, distance)
+                except:
+                    continue
+            
+            # Find best match for SECONDARY model
+            secondary_best_dist = float('inf')
+            for user_embedding in user_embeddings_by_model.get(CONFIG.secondary_model, []):
+                if user_embedding is None or not isinstance(user_embedding, np.ndarray):
+                    continue
+                if user_embedding.size == 0 or user_embedding.ndim != 1:
+                    continue
+                if secondary_emb.shape != user_embedding.shape:
+                    continue
+                
+                try:
+                    distance = 1 - np.dot(secondary_emb, user_embedding)
+                    secondary_best_dist = min(secondary_best_dist, distance)
+                except:
+                    continue
+            
+            # Both models must pass their thresholds
+            primary_confidence = 1 - primary_best_dist
+            secondary_confidence = 1 - secondary_best_dist
             
             primary_pass = primary_confidence >= CONFIG.primary_threshold
             secondary_pass = secondary_confidence >= CONFIG.secondary_threshold
@@ -1639,8 +1054,9 @@ class FaceRecognitionSystem:
                 avg_confidence = (primary_confidence + secondary_confidence) / 2
                 avg_distance = (primary_best_dist + secondary_best_dist) / 2
                 
-                if avg_confidence > best_avg_confidence:
-                    best_avg_confidence = avg_confidence
+                if avg_confidence > (1 - best_primary_dist + 1 - best_secondary_dist) / 2:
+                    best_primary_dist = primary_best_dist
+                    best_secondary_dist = secondary_best_dist
                     best_user_idx = user_idx
                     
                     best_match = {
@@ -1652,10 +1068,10 @@ class FaceRecognitionSystem:
                         'primary_distance': primary_best_dist,
                         'secondary_distance': secondary_best_dist,
                         'threshold': (CONFIG.primary_threshold + CONFIG.secondary_threshold) / 2,
-                        'user_info': info
+                        'user_info': user_info[user_idx]
                     }
                     
-                    print(f"  ✓ 2-Factor Verified: {info['name']}")
+                    print(f"  ✓ 2-Factor Verified: {user_info[user_idx]['name']}")
                     print(f"      ArcFace: {primary_confidence:.2%}, Facenet: {secondary_confidence:.2%}")
 
         if best_match and best_user_idx != -1:
@@ -1684,339 +1100,91 @@ face_recognition_system = FaceRecognitionSystem()
 # Runtime state is centralized under STATE
 # -------------------------------
 
-def _get_track_motion_px(face_id):
-    """Estimate per-track motion using the latest two center points."""
-    tracker = STATE.face_stability_tracker.get(face_id) if face_id is not None else None
-    if not tracker:
-        return 0.0
-    positions = tracker.get("positions", [])
-    if len(positions) < 2:
-        return 0.0
-    (x1, y1), (x2, y2) = positions[-2], positions[-1]
-    return float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+
+def get_thresholds():
+    return BASE_THRESHOLD, ADAPTIVE_THRESHOLD_ENABLED, FACE_QUALITY_THRESHOLD
 
 
-def embedding_similarity_check(new_embedding, existing_embeddings, threshold=0.98):
-    """Return True when incoming embedding is effectively a near-duplicate."""
-    incoming = _normalize_embedding_vector(new_embedding)
-    if incoming is None:
-        return False
-
-    for existing in existing_embeddings or []:
-        existing_vec = _normalize_embedding_vector(existing)
-        if existing_vec is None or existing_vec.shape[0] != incoming.shape[0]:
-            continue
-        similarity = float(np.dot(incoming, existing_vec))
-        if similarity >= float(threshold):
-            return True
-    return False
+def set_thresholds(threshold, adaptive_enabled, quality_threshold):
+    global BASE_THRESHOLD, ADAPTIVE_THRESHOLD_ENABLED, FACE_QUALITY_THRESHOLD
+    BASE_THRESHOLD = float(threshold)
+    ADAPTIVE_THRESHOLD_ENABLED = bool(adaptive_enabled)
+    FACE_QUALITY_THRESHOLD = float(quality_threshold)
 
 
-def _ensure_embedding_metadata_shape(metadata_by_model, embeddings_by_model):
-    """Keep per-model metadata aligned with embedding counts for safe pruning/scoring."""
-    shaped = {}
-    for model_name in CONFIG.models:
-        emb_list = normalize_embeddings_by_model(embeddings_by_model).get(model_name, [])
-        incoming_meta = metadata_by_model.get(model_name, []) if isinstance(metadata_by_model, dict) else []
-        if not isinstance(incoming_meta, list):
-            incoming_meta = []
-
-        aligned = []
-        now = time.time()
-        for idx in range(len(emb_list)):
-            if idx < len(incoming_meta) and isinstance(incoming_meta[idx], dict):
-                meta = dict(incoming_meta[idx])
-            else:
-                meta = {}
-            meta.setdefault("quality", 0.0)
-            meta.setdefault("confidence", 0.0)
-            meta.setdefault("timestamp", now)
-            meta["weight"] = float(meta.get("confidence", 0.0)) * float(meta.get("quality", 0.0))
-            aligned.append(meta)
-        shaped[model_name] = aligned
-    return shaped
+def get_user_count():
+    return len(user_info)
 
 
-def batch_consistency_check(embeddings_batch_by_model):
-    """Validate that a candidate batch is identity-consistent via centroid spread."""
-    normalized = normalize_embeddings_by_model(embeddings_batch_by_model)
-    spread_by_model = {}
-    total_samples = 0
+def reset_registration_state():
+    global pending_registration, recognized_user, registration_in_progress
+    global last_processed_face_id, captured_faces_for_registration
+    global face_capture_count, face_stability_tracker
 
-    for model_name in CONFIG.models:
-        emb_list = normalized.get(model_name, [])
-        if len(emb_list) < CONFIG.candidate_batch_min_size:
-            return False, {
-                "reason": f"insufficient batch size for {model_name}",
-                "spread": spread_by_model,
-            }
+    pending_registration = None
+    recognized_user = None
+    registration_in_progress = False
+    last_processed_face_id = None
+    captured_faces_for_registration = []
+    face_capture_count = 0
+    face_stability_tracker = {}
 
-        vectors = []
-        for emb in emb_list:
-            vec = _normalize_embedding_vector(emb)
-            if vec is None:
-                continue
-            vectors.append(vec)
 
-        if len(vectors) < CONFIG.candidate_batch_min_size:
-            return False, {
-                "reason": f"insufficient valid vectors for {model_name}",
-                "spread": spread_by_model,
-            }
+def reset_database_state():
+    global all_user_embeddings, user_info, user_count
 
-        matrix = np.vstack(vectors).astype(np.float32, copy=False)
-        centroid = matrix.mean(axis=0)
-        centroid_norm = np.linalg.norm(centroid)
-        if centroid_norm < 1e-8:
-            return False, {
-                "reason": f"degenerate centroid for {model_name}",
-                "spread": spread_by_model,
-            }
-        centroid = centroid / centroid_norm
+    reset_registration_state()
+    all_user_embeddings = []
+    user_info = []
+    user_count = 0
 
-        similarities = np.clip(matrix @ centroid, -1.0, 1.0)
-        spread = float(max(0.0, 1.0 - float(np.mean(similarities))))
-        spread_by_model[model_name] = spread
-        total_samples += len(vectors)
 
-        if spread > CONFIG.candidate_max_spread:
-            return False, {
-                "reason": f"inconsistent batch for {model_name}",
-                "spread": spread_by_model,
-            }
+def remove_user_embedding(user_id):
+    global all_user_embeddings, user_info, user_count
 
-    return total_samples >= (CONFIG.candidate_batch_min_size * len(CONFIG.models)), {
-        "reason": "ok",
-        "spread": spread_by_model,
+    for idx, info in enumerate(user_info):
+        if info["id"] == user_id:
+            user_info.pop(idx)
+            if idx < len(all_user_embeddings):
+                all_user_embeddings.pop(idx)
+            break
+    user_count = len(user_info)
+
+
+def create_app():
+    app = Flask(__name__, static_folder="static", static_url_path="/static")
+    app.secret_key = os.environ.get("FLASK_SECRET_KEY", "face-recognition-kiosk-dev-secret")
+
+    deps = {
+        "db_path": CONFIG.db_path,
+        "base_save_dir": CONFIG.base_save_dir,
+        "get_thresholds": get_thresholds,
+        "set_thresholds": set_thresholds,
+        "get_user_count": get_user_count,
+        "reset_database_state": reset_database_state,
+        "reset_registration_state": reset_registration_state,
+        "remove_user_embedding": remove_user_embedding,
+        "render_markdown_as_html": render_markdown_as_html,
     }
 
+    app.register_blueprint(create_routes_blueprint(deps))
+    app.register_blueprint(create_auth_blueprint())
+    app.register_blueprint(create_profile_blueprint(save_profile_image))
 
-def update_user_embeddings(user_id, new_embeddings_with_meta):
-    """Safely merge validated embeddings, enforce per-user limits, and persist metadata."""
-    user_idx = _get_user_index_by_id(user_id)
-    if user_idx == -1:
-        print(f"Rejected embedding: user {user_id} not found")
-        return False
+    @app.route("/")
+    def index():
+        if "staff_id" in session:
+            return redirect(url_for("routes.dashboard_page"))
+        return redirect(url_for("auth_routes.auth_login"))
 
-    conn = sqlite3.connect(CONFIG.db_path)
-    c = conn.cursor()
-    c.execute("SELECT embeddings, image_paths, embedding_metadata FROM users WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        print(f"Rejected embedding: user {user_id} missing in DB")
-        return False
+    @app.route("/register")
+    @app.route("/kiosk")
+    @app.route("/kiosk-improved")
+    def spa_public_routes():
+        return app.send_static_file("react/index.html")
 
-    existing_emb_blob, existing_paths_str, existing_meta_blob = row
-    existing_embeddings = normalize_embeddings_by_model(pickle.loads(existing_emb_blob) if existing_emb_blob else {})
-    existing_meta = pickle.loads(existing_meta_blob) if existing_meta_blob else {}
-    existing_meta = _ensure_embedding_metadata_shape(existing_meta, existing_embeddings)
+    return app
 
-    incoming = {}
-    incoming_meta = {}
-    for model_name in CONFIG.models:
-        model_items = new_embeddings_with_meta.get(model_name, []) if isinstance(new_embeddings_with_meta, dict) else []
-        model_vectors = []
-        model_meta = []
-
-        for item in model_items:
-            if not isinstance(item, dict):
-                continue
-            vec = _normalize_embedding_vector(item.get("embedding"))
-            if vec is None:
-                continue
-            model_vectors.append(vec)
-            meta = {
-                "quality": float(item.get("quality", 0.0)),
-                "confidence": float(item.get("confidence", 0.0)),
-                "timestamp": float(item.get("timestamp", time.time())),
-            }
-            meta["weight"] = meta["quality"] * meta["confidence"]
-            model_meta.append(meta)
-
-        incoming[model_name] = model_vectors
-        incoming_meta[model_name] = model_meta
-
-    for model_name in CONFIG.models:
-        current_vectors = list(existing_embeddings.get(model_name, []))
-        current_meta = list(existing_meta.get(model_name, []))
-
-        for idx, vec in enumerate(incoming.get(model_name, [])):
-            if embedding_similarity_check(
-                vec,
-                current_vectors,
-                threshold=CONFIG.candidate_duplicate_similarity,
-            ):
-                print(f"Rejected embedding: duplicate for user {user_id} model {model_name}")
-                continue
-            current_vectors.append(vec)
-            current_meta.append(incoming_meta.get(model_name, [])[idx])
-
-        max_count = int(CONFIG.max_embeddings_per_user_per_model)
-        if len(current_vectors) > max_count:
-            # Keep strongest + newest mix by ranking with weight first, then timestamp.
-            ranked_indices = sorted(
-                range(len(current_vectors)),
-                key=lambda i: (
-                    float(current_meta[i].get("weight", 0.0)),
-                    float(current_meta[i].get("timestamp", 0.0)),
-                ),
-                reverse=True,
-            )
-            keep_indices = sorted(ranked_indices[:max_count])
-            current_vectors = [current_vectors[i] for i in keep_indices]
-            current_meta = [current_meta[i] for i in keep_indices]
-
-        existing_embeddings[model_name] = current_vectors
-        existing_meta[model_name] = current_meta
-
-    updated_emb_blob = pickle.dumps(existing_embeddings)
-    updated_meta_blob = pickle.dumps(existing_meta)
-    c.execute(
-        """
-        UPDATE users
-        SET embeddings = ?, embedding_metadata = ?, last_updated = CURRENT_TIMESTAMP
-        WHERE user_id = ?
-        """,
-        (updated_emb_blob, updated_meta_blob, user_id),
-    )
-    conn.commit()
-    conn.close()
-
-    STATE.all_user_embeddings[user_idx] = existing_embeddings
-    refresh_faiss()
-    return True
-
-
-def add_to_candidate_buffer(
-    user_id,
-    embedding,
-    confidence,
-    quality,
-    face_id=None,
-    identity_locked=False,
-    quality_debug=None,
-):
-    """Stage high-quality embeddings after strict gating and temporal checks."""
-    confidence = float(confidence)
-    quality = float(quality)
-
-    if confidence < CONFIG.candidate_min_confidence:
-        print("Rejected embedding: low confidence")
-        return False
-    if quality < CONFIG.face_quality_good_threshold:
-        print("Rejected embedding: low quality")
-        if quality_debug:
-            reason = _quality_reason_summary(quality_debug)
-            if reason:
-                print(f"  Not 'Good' yet because: {reason}")
-        return False
-    if not identity_locked:
-        print("Rejected embedding: identity not locked")
-        return False
-
-    normalized = normalize_embeddings_by_model(embedding)
-    if any(model_name not in normalized or not normalized[model_name] for model_name in CONFIG.models):
-        print("Rejected embedding: missing model embeddings")
-        return False
-
-    consistency_key = face_id if face_id is not None else f"uid:{user_id}"
-    record = STATE.embedding_consistency_tracker.get(
-        consistency_key,
-        {"user_id": user_id, "count": 0},
-    )
-    if record.get("user_id") == user_id:
-        record["count"] = int(record.get("count", 0)) + 1
-    else:
-        record = {"user_id": user_id, "count": 1}
-    STATE.embedding_consistency_tracker[consistency_key] = record
-
-    if record["count"] < int(CONFIG.candidate_consistent_frames):
-        print("Rejected embedding: insufficient temporal consistency")
-        return False
-
-    now = time.time()
-    user_candidates = STATE.embedding_candidates.setdefault(user_id, [])
-    if user_candidates:
-        last_ts = float(user_candidates[-1].get("timestamp", 0.0))
-        if (now - last_ts) < CONFIG.candidate_min_time_gap_seconds:
-            print("Rejected embedding: duplicate timestamp window")
-            return False
-
-    motion_px = _get_track_motion_px(face_id)
-    if motion_px < CONFIG.candidate_static_motion_threshold_px:
-        print("Rejected embedding: static face sequence")
-        return False
-
-    primary_vec = _normalize_embedding_vector(normalized.get(CONFIG.primary_model, [None])[0])
-    user_candidates.append(
-        {
-            "embedding": primary_vec,
-            "embeddings_by_model": {
-                model_name: _normalize_embedding_vector(normalized.get(model_name, [None])[0])
-                for model_name in CONFIG.models
-            },
-            "quality": quality,
-            "confidence": confidence,
-            "timestamp": now,
-        }
-    )
-    return True
-
-
-def process_embedding_candidates():
-    """Validate candidate batches and commit only consistent, bounded updates."""
-    if not STATE.embedding_candidates:
-        return 0
-
-    accepted_users = 0
-    for user_id in list(STATE.embedding_candidates.keys()):
-        candidates = STATE.embedding_candidates.get(user_id, [])
-        if len(candidates) < CONFIG.candidate_batch_min_size:
-            continue
-
-        batch = candidates[:CONFIG.candidate_batch_min_size]
-        batch_embeddings = {model_name: [] for model_name in CONFIG.models}
-        for candidate in batch:
-            model_map = candidate.get("embeddings_by_model", {})
-            for model_name in CONFIG.models:
-                vec = _normalize_embedding_vector(model_map.get(model_name))
-                if vec is not None:
-                    batch_embeddings[model_name].append(vec)
-
-        is_consistent, diagnostics = batch_consistency_check(batch_embeddings)
-        if not is_consistent:
-            print(f"Rejected embedding: {diagnostics.get('reason', 'inconsistent batch')}")
-            STATE.embedding_candidates[user_id] = candidates[1:]
-            continue
-
-        payload = {model_name: [] for model_name in CONFIG.models}
-        for candidate in batch:
-            for model_name in CONFIG.models:
-                vec = _normalize_embedding_vector(candidate.get("embeddings_by_model", {}).get(model_name))
-                if vec is None:
-                    continue
-                payload[model_name].append(
-                    {
-                        "embedding": vec,
-                        "quality": float(candidate.get("quality", 0.0)),
-                        "confidence": float(candidate.get("confidence", 0.0)),
-                        "timestamp": float(candidate.get("timestamp", time.time())),
-                    }
-                )
-
-        if update_user_embeddings(user_id, payload):
-            accepted_users += 1
-            STATE.embedding_candidates[user_id] = candidates[CONFIG.candidate_batch_min_size:]
-            print(f"Accepted {CONFIG.candidate_batch_min_size} embeddings for user {user_id}")
-        else:
-            print(f"Rejected embedding: failed to persist user {user_id}")
-            STATE.embedding_candidates[user_id] = candidates[1:]
-
-        if not STATE.embedding_candidates.get(user_id):
-            STATE.embedding_candidates.pop(user_id, None)
-
-    return accepted_users
 
 # -------------------------------
 # Register or Recognize Face
@@ -2043,31 +1211,15 @@ def register_or_recognize_face(
     
     if quality_score < CONFIG.face_quality_threshold:
         print(f"  Skipping low quality face: {quality_score:.2f} ({quality_status})")
-        if quality_debug:
-            reason = _quality_reason_summary(quality_debug)
-            if reason:
-                print(f"  Low quality factors: {reason}")
         return None
-
-    metrics = quality_debug.get("metrics", {}) if quality_debug else {}
-    det_conf = float(quality_debug.get("detection_confidence", 0.0)) if quality_debug else 0.0
     
     print(
         f"  Face quality: {quality_score:.2f} ({quality_status}) "
-        f"| lap={float(metrics.get('laplacian', 0.0)):.1f} "
-        f"| det={det_conf:.2f}"
+        f"| sharpness={quality_debug.get('sharpness', 0.0):.1f} "
+        f"| det={quality_debug.get('detection_confidence', 0.0):.2f}"
     )
-    factor_values_text = _format_factor_values(quality_debug) if quality_debug else ""
-    if factor_values_text:
-        print(f"  Factor values: {factor_values_text}")
-    if quality_status != "Good" and quality_debug:
-        reason = _quality_reason_summary(quality_debug)
-        if reason:
-            print(f"  Not 'Good' yet because: {reason}")
-
-    # Quality is computed on raw pixels; enhancement is applied only after passing quality gates.
-    face_for_embedding = _preprocess_face_for_embedding(face_crop)
-    embeddings = extract_embedding_ensemble(face_for_embedding)
+    
+    embeddings = extract_embedding_ensemble(face_crop)
     if not embeddings:
         print("  Failed to extract embeddings")
         return None
@@ -2077,23 +1229,43 @@ def register_or_recognize_face(
     )
     
     if best_match:
+        user_idx = best_match['user_idx']
         user_id = best_match['user_info']['id']
-        confidence_value = float(best_match.get('confidence', 0.0))
 
-        track_state = STATE.tracked_identities.get(face_id) if face_id is not None else None
-        identity_locked = bool(track_state.get("identity_locked")) if track_state else False
-        added = add_to_candidate_buffer(
-            user_id=user_id,
-            embedding=embeddings,
-            confidence=confidence_value,
-            quality=quality_score,
-            face_id=face_id,
-            identity_locked=identity_locked,
-            quality_debug=quality_debug,
-        )
-        if added:
-            pending_count = len(STATE.embedding_candidates.get(user_id, []))
-            print(f"Candidate embedding buffered for user {user_id} (pending={pending_count})")
+        STATE.all_user_embeddings[user_idx].setdefault(CONFIG.primary_model, []).append(embeddings[CONFIG.primary_model])
+        STATE.all_user_embeddings[user_idx].setdefault(CONFIG.secondary_model, []).append(embeddings[CONFIG.secondary_model])
+
+        timestamp = int(time.time() * 1000)
+        user_folder = os.path.join(CONFIG.base_save_dir, best_match['user_info']['sr_code'])
+        os.makedirs(user_folder, exist_ok=True)
+        filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
+        cv2.imwrite(filename, face_crop)
+
+        conn = db_connect(CONFIG.db_path)
+        c = conn.cursor()
+
+        c.execute("SELECT embeddings, image_paths FROM users WHERE user_id = ?", (user_id,))
+        existing_emb_blob, existing_paths_str = c.fetchone()
+        existing_embeddings = pickle.loads(existing_emb_blob) if existing_emb_blob else {}
+        existing_paths = existing_paths_str.split(';') if existing_paths_str else []
+
+        existing_embeddings = merge_embeddings_by_model(existing_embeddings, embeddings)
+        existing_paths.append(filename)
+
+        updated_emb_blob = pickle.dumps(existing_embeddings)
+        updated_paths_str = ';'.join(existing_paths)
+        c.execute("""
+            UPDATE users
+            SET embeddings = ?, image_paths = ?, last_updated = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        """, (updated_emb_blob, updated_paths_str, user_id))
+
+        conn.commit()
+        conn.close()
+
+        total_emb = count_embeddings(STATE.all_user_embeddings[user_idx])
+        print(f"✓ Learned new embedding for {best_match['user_info']['name']} "
+              f"(total: {total_emb} embeddings across models)")
 
         STATE.recognized_user = {
             'name': best_match['user_info']['name'],
@@ -2128,55 +1300,13 @@ def initialize_track_state(track_id, current_time):
     if track_id not in STATE.tracked_identities:
         STATE.tracked_identities[track_id] = {
             "recognized": False,
-            "identity_locked": False,
             "user": None,
             "last_seen": current_time,
             "last_recognition_time": 0.0,
-            "confidence": 0.0,
-            "quality": 0.0,
         }
     else:
         STATE.tracked_identities[track_id]["last_seen"] = current_time
     return STATE.tracked_identities[track_id]
-
-def parse_confidence_value(confidence_text):
-    """Parse confidence text like '87.50%' into a 0..1 float."""
-    if confidence_text is None:
-        return 0.0
-    if isinstance(confidence_text, (int, float)):
-        value = float(confidence_text)
-        return value if value <= 1.0 else value / 100.0
-
-    try:
-        text = str(confidence_text).strip().replace('%', '')
-        value = float(text)
-        return value / 100.0 if value > 1.0 else value
-    except (ValueError, TypeError):
-        return 0.0
-
-def update_track_identity_state(track_state, result, current_time, quality_score):
-    """Apply recognition result to a per-track identity state machine."""
-    track_state["last_seen"] = current_time
-    track_state["last_recognition_time"] = current_time
-    track_state["quality"] = float(quality_score)
-
-    if result is True:
-        user_snapshot = dict(STATE.recognized_user) if STATE.recognized_user else None
-        confidence_value = parse_confidence_value(user_snapshot.get("confidence") if user_snapshot else 0.0)
-
-        track_state["recognized"] = True
-        track_state["user"] = user_snapshot
-        track_state["confidence"] = confidence_value
-        # Lock identity only when confidence and quality are both strong.
-        track_state["identity_locked"] = (
-            confidence_value >= CONFIG.identity_lock_confidence_threshold
-            and float(quality_score) >= CONFIG.face_quality_good_threshold
-        )
-    elif result is False:
-        track_state["recognized"] = False
-        track_state["identity_locked"] = False
-        track_state["user"] = None
-        track_state["confidence"] = 0.0
 
 def cleanup_stale_tracks(current_time):
     """Remove old tracker states and stability buffers that are no longer visible."""
@@ -2188,7 +1318,6 @@ def cleanup_stale_tracks(current_time):
     for track_id in stale_track_ids:
         STATE.tracked_identities.pop(track_id, None)
         STATE.face_stability_tracker.pop(track_id, None)
-        STATE.embedding_consistency_tracker.pop(track_id, None)
     return stale_track_ids
 
 
@@ -2272,9 +1401,6 @@ def connect_to_cctv_stream(stream_url, frame_width=640, frame_height=480, target
 
 def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
     """Process CCTV stream for face recognition"""
-    if not APP_INITIALIZED:
-        initialize_runtime()
-
     camera = connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
     
     if camera is None:
@@ -2315,8 +1441,6 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
             verbose=False,
         )
 
-        mp_faces = _extract_mediapipe_faces(frame) if CONFIG.use_mediapipe_landmarks else []
-
         face_crops = []
         face_qualities = []
         stable_faces = []
@@ -2335,11 +1459,9 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 if face_crop.size == 0:
                     continue
 
-                mp_landmarks = _match_mediapipe_landmarks((x1, y1, x2, y2), mp_faces)
                 quality_score, quality_status, quality_debug = assess_face_quality(
                     face_crop,
                     detection_confidence=detection_confidence,
-                    landmarks=mp_landmarks,
                 )
                 face_qualities.append((quality_score, quality_status))
 
@@ -2381,15 +1503,14 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 track_state = STATE.tracked_identities.get(face_id) if face_id is not None else None
                 if track_state and track_state.get("recognized") and track_state.get("user"):
                     cached_user = track_state["user"]
-                    confidence_value = track_state.get("confidence", 0.0)
-                    if track_state.get("identity_locked"):
-                        identity_text = f"{cached_user['name']} LOCKED {confidence_value:.0%}"
-                        identity_color = (0, 255, 0)
-                    else:
-                        identity_text = f"{cached_user['name']} UNLOCKED {confidence_value:.0%}"
-                        identity_color = (0, 255, 255)
+                    confidence_text = cached_user.get("confidence")
+                    identity_text = (
+                        f"{cached_user['name']} ({confidence_text})"
+                        if confidence_text else cached_user["name"]
+                    )
+                    identity_color = (0, 255, 0)
                 elif track_state and track_state.get("last_recognition_time", 0.0) > 0.0:
-                    identity_text = "UNKNOWN"
+                    identity_text = "Unknown"
                     identity_color = (0, 165, 255)
                 else:
                     identity_text = "Untracked" if face_id is None else "Tracking"
@@ -2413,35 +1534,21 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 continue
 
             track_state = initialize_track_state(face_id, current_time)
-            quality_score = quality_tuple[0]
 
             if STATE.manual_registration_requested and not STATE.manual_registration_active and track_state.get("recognized"):
                 print("Face already in database. Manual registration canceled.")
                 STATE.manual_registration_requested = False
                 continue
 
-            # Per-track state machine:
-            # - UNLOCKED tracks can run recognition after cooldown.
-            # - LOCKED tracks only revalidate every revalidation interval.
-            last_attempt = track_state.get("last_recognition_time", 0.0)
-            should_recognize = False
-            is_revalidation = False
-
-            if track_state.get("identity_locked"):
-                if (current_time - last_attempt) >= CONFIG.revalidation_interval_seconds:
-                    should_recognize = True
-                    is_revalidation = True
-            else:
-                if (current_time - last_attempt) >= CONFIG.recognition_cooldown_seconds:
-                    should_recognize = True
-
-            if not should_recognize:
+            if track_state.get("recognized"):
                 continue
 
-            # Mark attempt time now so failed/unknown attempts still obey cooldown.
+            last_attempt = track_state.get("last_recognition_time", 0.0)
+            if (current_time - last_attempt) < CONFIG.recognition_cooldown_seconds:
+                continue
+
             track_state["last_recognition_time"] = current_time
             track_state["last_seen"] = current_time
-            track_state["quality"] = float(quality_score)
             
             if STATE.manual_registration_requested and not STATE.manual_registration_active:
                 result = register_or_recognize_face(
@@ -2454,11 +1561,21 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 if result is None:
                     continue
                 if result:
-                    update_track_identity_state(track_state, True, current_time, quality_score)
+                    track_state.update({
+                        "recognized": True,
+                        "user": dict(STATE.recognized_user) if STATE.recognized_user else None,
+                        "last_seen": current_time,
+                        "last_recognition_time": current_time,
+                    })
                     print("Face already in database. Manual registration canceled.")
                     STATE.manual_registration_requested = False
                 else:
-                    update_track_identity_state(track_state, False, current_time, quality_score)
+                    track_state.update({
+                        "recognized": False,
+                        "user": None,
+                        "last_seen": current_time,
+                        "last_recognition_time": current_time,
+                    })
                     print("Unknown face. Capturing 3 samples for registration...")
                     STATE.manual_registration_requested = False
                     STATE.manual_registration_active = True
@@ -2490,12 +1607,19 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
             )
 
             if result is True:
-                update_track_identity_state(track_state, True, current_time, quality_score)
+                track_state.update({
+                    "recognized": True,
+                    "user": dict(STATE.recognized_user) if STATE.recognized_user else None,
+                    "last_seen": current_time,
+                    "last_recognition_time": current_time,
+                })
             elif result is False:
-                # Revalidation failure explicitly unlocks and marks unknown.
-                update_track_identity_state(track_state, False, current_time, quality_score)
-                if is_revalidation:
-                    print(f"Track {face_id}: identity unlock after failed revalidation")
+                track_state.update({
+                    "recognized": False,
+                    "user": None,
+                    "last_seen": current_time,
+                    "last_recognition_time": current_time,
+                })
 
             if STATE.manual_registration_active:
                 if result is True:
@@ -2507,12 +1631,6 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
                 elif STATE.registration_in_progress:
                     STATE.manual_registration_active = False
                     STATE.manual_registration_track_id = None
-
-        if (current_time - float(STATE.last_embedding_commit_time)) >= CONFIG.embedding_commit_interval_seconds:
-            accepted_batches = process_embedding_candidates()
-            if accepted_batches > 0:
-                print(f"Background commit: {accepted_batches} user batch(es) committed")
-            STATE.last_embedding_commit_time = current_time
 
         if STATE.registration_in_progress and STATE.pending_registration and not registration_prompted:
             registration_prompted = True
@@ -2592,9 +1710,6 @@ def process_cctv_stream(stream_url, frame_width=1280, frame_height=720):
             registration_prompted = False
             STATE.tracked_identities.clear()
             STATE.face_stability_tracker.clear()
-            STATE.embedding_candidates.clear()
-            STATE.embedding_consistency_tracker.clear()
-            STATE.last_embedding_commit_time = 0.0
             print("Recognition status reset")
         elif key == ord('n'):
             if STATE.registration_in_progress:
@@ -2662,7 +1777,6 @@ def handle_registration():
             all_embeddings = merge_embeddings_by_model(all_embeddings, face_data['embeddings'])
     
     if all_embeddings:
-        all_embeddings = normalize_embeddings_by_model(all_embeddings)
         user_id = save_user_with_multiple_embeddings(all_embeddings, image_paths, name, sr_code, course)
         
         STATE.all_user_embeddings.append(all_embeddings)
@@ -2672,12 +1786,6 @@ def handle_registration():
             'sr_code': sr_code
         })
         STATE.user_count = len(STATE.user_info)
-
-        add_embeddings_incremental(
-            user_id=user_id,
-            embeddings_by_model=all_embeddings,
-            start_offsets={model_name: 0 for model_name in CONFIG.models},
-        )
         
         total_emb = count_embeddings(all_embeddings)
         print(f"✓ Registered {name} with {total_emb} embeddings across models")
@@ -2730,7 +1838,6 @@ def main_menu():
             # Reload embeddings after registration
             STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
             STATE.user_count = len(STATE.user_info)
-            refresh_faiss()
             
         elif choice == '3':
             print("\n" + "="*50)
@@ -2766,16 +1873,10 @@ def main_menu():
                     c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
                     conn.commit()
                     print("User deleted")
-
-                    removed = remove_user_incremental(user_id)
-                    user_idx = _get_user_index_by_id(user_id)
-                    if user_idx != -1:
-                        STATE.all_user_embeddings.pop(user_idx)
-                        STATE.user_info.pop(user_idx)
+                    
+                    # Reload embeddings
+                    STATE.all_user_embeddings, STATE.user_info = load_all_embeddings()
                     STATE.user_count = len(STATE.user_info)
-
-                    if not removed:
-                        refresh_faiss()
                     
                 conn.close()
             except ValueError:
@@ -2897,7 +1998,6 @@ def main_menu():
                 STATE.all_user_embeddings = []
                 STATE.user_info = []
                 STATE.user_count = 0
-                refresh_faiss()
                 print("Database reset complete")
             else:
                 print("Reset cancelled")
@@ -2962,7 +2062,7 @@ def start_web_server(host, port, debug):
 # Run the system
 # -------------------------------
 if __name__ == "__main__":
-    initialize_runtime()
+    args = parse_args()
     log_header("CCTV Face Recognition System - Initialization")
     log_step(f"Database: {CONFIG.db_path}")
     log_step(f"Face models: {CONFIG.primary_model} + {CONFIG.secondary_model}")

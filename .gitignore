@@ -30,6 +30,5 @@ Thumbs.db
 .env
 .env.*
 
-#Database
-database/
-faces_improved/
+# Database
+database/*.db
