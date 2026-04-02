@@ -50,7 +50,7 @@ class RegistrationState:
     pending_registration: Optional[list[RegistrationSample]] = None
     in_progress: bool = False
     captured_samples: list[RegistrationSample] = field(default_factory=list)
-    max_captures: int = 3
+    max_captures: int = 10
     manual_requested: bool = False
     manual_active: bool = False
     manual_track_id: Optional[int] = None
@@ -73,6 +73,7 @@ class TrackingState:
     user: Optional[dict[str, str]] = None
     last_seen: float = 0.0
     last_recognition_time: float = 0.0
+    last_bbox: Optional[tuple[int, int, int, int]] = None
 
 
 def recognized_user_payload(result: RecognitionResult) -> dict[str, str]:

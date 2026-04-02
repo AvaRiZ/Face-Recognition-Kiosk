@@ -12,6 +12,7 @@ from core.config import AppConfig
 from core.models import RecognitionResult, RegistrationSample, recognized_user_payload
 from core.state import AppStateManager
 from database.repository import UserRepository
+from services.dataset_service import DetectorDatasetService
 from services.embedding_service import EmbeddingService, count_embeddings, first_embedding
 
 
@@ -27,6 +28,7 @@ class FaceRecognitionService:
         self.state = state
         self.repository = repository
         self.embedding_service = embedding_service
+        self.detector_dataset_service = DetectorDatasetService(config)
         self.recognition_history: dict[int, deque[float]] = {}
         self.confidence_smoothing: dict[int, deque[float]] = {}
 
@@ -192,6 +194,14 @@ class FaceRecognitionService:
             os.makedirs(user_folder, exist_ok=True)
             filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
             cv2.imwrite(filename, face_crop)
+            dataset_entry = self.detector_dataset_service.save_recognized_face_crop(
+                face_crop=face_crop,
+                sr_code=best_match.user.sr_code,
+                timestamp=timestamp,
+            )
+            if dataset_entry:
+                dataset_image_path, _dataset_label_path = dataset_entry
+                print(f"[OK] Added recognized crop to detector training dataset: {dataset_image_path}")
 
             primary_new = first_embedding(embeddings, self.config.primary_model)
             secondary_new = first_embedding(embeddings, self.config.secondary_model)

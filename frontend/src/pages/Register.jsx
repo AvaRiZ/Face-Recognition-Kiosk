@@ -2,7 +2,7 @@ import React from 'react';
 
 const INITIAL_INFO = {
   capture_count: 0,
-  max_captures: 3,
+  max_captures: 10,
   has_pending_registration: false,
   is_in_progress: false
 };
@@ -29,6 +29,14 @@ export default function RegisterPage() {
       .then((resp) => setInfo((prev) => ({ ...prev, ...resp })))
       .catch(() => undefined)
       .finally(() => setLoading(false));
+  }, []);
+
+  React.useEffect(() => {
+    fetch('/api/detection/pause', { method: 'POST', credentials: 'include' }).catch(() => undefined);
+
+    return () => {
+      fetch('/api/detection/resume', { method: 'POST', credentials: 'include' }).catch(() => undefined);
+    };
   }, []);
 
   React.useEffect(() => {
@@ -246,6 +254,11 @@ export default function RegisterPage() {
                             <p className="text-muted small mb-0">
                               Capture {info.max_captures} clear samples directly from your camera.
                             </p>
+                            {info.detection_paused ? (
+                              <div className="small text-success mt-2">
+                                Detection camera is paused while registration is open.
+                              </div>
+                            ) : null}
                           </div>
                           <span className="badge bg-light text-dark">{info.capture_count}/{info.max_captures}</span>
                         </div>

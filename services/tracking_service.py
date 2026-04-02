@@ -25,6 +25,35 @@ class TrackingService:
             self.state.remove_track_state(track_id)
         return stale_track_ids
 
+    def refresh_track_geometry(self, track_id: int, bbox: tuple[int, int, int, int]) -> bool:
+        track_state = self.state.get_track_state(track_id)
+        if track_state is None:
+            return False
+
+        identity_reset = False
+        previous_bbox = track_state.last_bbox
+        if previous_bbox is not None:
+            px1, py1, px2, py2 = previous_bbox
+            x1, y1, x2, y2 = bbox
+            prev_center_x = (px1 + px2) / 2
+            prev_center_y = (py1 + py2) / 2
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            center_shift = ((center_x - prev_center_x) ** 2 + (center_y - prev_center_y) ** 2) ** 0.5
+
+            prev_area = max((px2 - px1) * (py2 - py1), 1)
+            area = max((x2 - x1) * (y2 - y1), 1)
+            area_ratio = area / prev_area
+
+            if center_shift > (self.config.position_tolerance * 1.5) or area_ratio < 0.4 or area_ratio > 2.5:
+                self.state.reset_track_identity(track_id)
+                identity_reset = True
+
+        track_state = self.state.get_track_state(track_id)
+        if track_state is not None:
+            track_state.last_bbox = bbox
+        return identity_reset
+
     def check_face_stability(self, face_id: int, x1: int, y1: int, x2: int, y2: int) -> bool:
         current_time = time.time()
         center_x = (x1 + x2) / 2

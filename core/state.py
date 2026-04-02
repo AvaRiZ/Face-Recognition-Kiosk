@@ -17,7 +17,7 @@ class AppStateManager:
     def __init__(self, config: AppConfig):
         self._users: list[User] = []
         self._recognized_user: Optional[dict[str, str]] = None
-        self._registration_state = RegistrationState(max_captures=3)
+        self._registration_state = RegistrationState(max_captures=10)
         self._tracked_faces: dict[int, TrackingState] = {}
         self._face_stability: dict[int, FaceStabilityState] = {}
 
@@ -156,6 +156,16 @@ class AppStateManager:
         else:
             self._tracked_faces[track_id].last_seen = current_time
         return self._tracked_faces[track_id]
+
+    def reset_track_identity(self, track_id: int) -> Optional[TrackingState]:
+        track_state = self._tracked_faces.get(track_id)
+        if track_state is None:
+            return None
+        track_state.recognized = False
+        track_state.user = None
+        track_state.last_recognition_time = 0.0
+        self._face_stability.pop(track_id, None)
+        return track_state
 
     def get_track_state(self, track_id: int) -> Optional[TrackingState]:
         return self._tracked_faces.get(track_id)

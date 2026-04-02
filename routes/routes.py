@@ -737,8 +737,19 @@ def create_routes_blueprint(deps):
                 "max_captures": reg_state.max_captures,
                 "has_pending_registration": bool(reg_state.pending_registration),
                 "is_in_progress": reg_state.in_progress,
+                "detection_paused": bool(deps["detection_paused"]()),
             }
         )
+
+    @bp.route("/api/detection/pause", methods=["POST"], endpoint="api_detection_pause")
+    def api_detection_pause():
+        deps["pause_detection"]()
+        return jsonify({"success": True, "detection_paused": True})
+
+    @bp.route("/api/detection/resume", methods=["POST"], endpoint="api_detection_resume")
+    def api_detection_resume():
+        deps["resume_detection"]()
+        return jsonify({"success": True, "detection_paused": False})
 
     @bp.route("/api/register-reset", methods=["POST"], endpoint="api_register_reset")
     def api_register_reset():

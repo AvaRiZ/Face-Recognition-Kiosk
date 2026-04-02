@@ -12,6 +12,12 @@ class AppConfig:
     model_path: str = "models/yolov8n-face.pt"
     db_path: str = "database/faces_improved.db"
     base_save_dir: str = "faces_improved"
+    detector_dataset_dir: str = "detector_dataset"
+    detector_train_split: str = "train"
+    real_val_dataset_dir: str = "real_val_dataset"
+    real_val_capture_enabled: bool = True
+    real_val_capture_every_n_frames: int = 90
+    real_val_capture_max_frames: int = 300
     primary_model: str = "ArcFace"
     secondary_model: str = "Facenet"
     primary_threshold: float = 0.7

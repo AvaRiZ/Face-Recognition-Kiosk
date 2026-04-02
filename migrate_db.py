@@ -57,7 +57,7 @@ def migrate_database():
         print(f"\nUser {user_id}: {name} ({sr_code}) - {len(paths)} images")
         
         new_embeddings_all = []
-        for img_path in paths[:3]:  # First 3 images
+        for img_path in paths[:10]:  # First 10 images
             if os.path.exists(img_path):
                 embeddings = extract_dual_embeddings(img_path)
                 if embeddings:

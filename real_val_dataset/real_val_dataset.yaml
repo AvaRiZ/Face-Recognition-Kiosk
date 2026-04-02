@@ -1,0 +1,4 @@
+path: C:/Users/admin/Desktop/Thesis/Face-Recognition-Kiosk/real_val_dataset
+train: images/val
+val: images/val
+names: ['face']

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from flask import Flask, redirect, session, url_for
+from flask import Flask, redirect, request, session, url_for
 
 from core.config import AppConfig
 from core.state import AppStateManager
@@ -17,7 +17,7 @@ from services.quality_service import FaceQualityService
 from services.staff_service import save_profile_image
 
 
-def create_flask_app(config: AppConfig, state: AppStateManager, repository: UserRepository) -> Flask:
+def create_flask_app(config: AppConfig, state: AppStateManager, repository: UserRepository, cli=None) -> Flask:
     repo_root = Path(__file__).resolve().parent.parent
     static_root = repo_root / "static"
     app = Flask(__name__, static_folder=str(static_root), static_url_path="/static")
@@ -41,11 +41,28 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
         "remove_user_embedding": state.remove_user,
         "replace_user": state.replace_user,
         "render_markdown_as_html": render_markdown_as_html,
+        "pause_detection": cli.pause_detection if cli else (lambda: None),
+        "resume_detection": cli.resume_detection if cli else (lambda: None),
+        "detection_paused": cli.detection_paused if cli else (lambda: False),
     }
 
     app.register_blueprint(create_routes_blueprint(deps))
     app.register_blueprint(create_auth_blueprint())
     app.register_blueprint(create_profile_blueprint(save_profile_image))
+
+    @app.before_request
+    def sync_detection_with_page():
+        if cli is None:
+            return None
+        if request.method != "GET":
+            return None
+        if request.path.startswith("/static") or request.path.startswith("/api/detection/"):
+            return None
+        if request.path == "/register" or request.path.startswith("/api/register"):
+            cli.pause_detection()
+        else:
+            cli.resume_detection()
+        return None
 
     @app.route("/")
     def index():

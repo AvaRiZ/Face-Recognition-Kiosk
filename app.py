@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import os
 import threading
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from routes.routes import init_imported_logs_table
 from services.embedding_service import EmbeddingService
 from services.quality_service import FaceQualityService
 from services.recognition_service import FaceRecognitionService
+from services.dataset_service import DetectorDatasetService
 from services.staff_service import ensure_profile_upload_dir
 from services.tracking_service import TrackingService
 from utils.logging import log_gpu_info, log_header, log_step
@@ -42,6 +42,7 @@ def build_runtime() -> AppRuntime:
 
     os.makedirs(config.base_save_dir, exist_ok=True)
     ensure_profile_upload_dir()
+    DetectorDatasetService(config).ensure_structure()
 
     repository = UserRepository(config.db_path)
     repository.init_db()
@@ -84,39 +85,8 @@ def build_runtime() -> AppRuntime:
     return AppRuntime(config=config, state=state, repository=repository, cli=cli)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Face Recognition Kiosk")
-    parser.add_argument(
-        "--web",
-        action="store_true",
-        help="Run the Flask web interface alongside the interactive CLI menu.",
-    )
-    parser.add_argument(
-        "--web-only",
-        action="store_true",
-        help="Run only the Flask web interface.",
-    )
-    parser.add_argument(
-        "--host",
-        default=os.environ.get("FLASK_RUN_HOST", "127.0.0.1"),
-        help="Host interface for web mode.",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.environ.get("FLASK_RUN_PORT", 5000)),
-        help="Port for web mode.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable Flask debug mode in web mode.",
-    )
-    return parser.parse_args()
-
-
 def start_web_server(host: str, port: int, debug: bool, runtime: AppRuntime):
-    app = create_flask_app(runtime.config, runtime.state, runtime.repository)
+    app = create_flask_app(runtime.config, runtime.state, runtime.repository, runtime.cli)
     server_thread = threading.Thread(
         target=app.run,
         kwargs={
@@ -133,29 +103,24 @@ def start_web_server(host: str, port: int, debug: bool, runtime: AppRuntime):
 
 
 def main() -> None:
-    args = parse_args()
     runtime = build_runtime()
+    host = os.environ.get("FLASK_RUN_HOST", "127.0.0.1")
+    port = int(os.environ.get("FLASK_RUN_PORT", 5000))
+    debug = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    stream_url = os.environ.get("CCTV_STREAM_URL", "0").strip() or "0"
 
     log_header("CCTV Face Recognition System - Initialization")
     log_step(f"Database: {runtime.config.db_path}")
     log_step(f"Face models: {runtime.config.primary_model} + {runtime.config.secondary_model}")
     log_step(f"Base threshold: {runtime.state.base_threshold}")
     log_step(f"Users in database: {runtime.state.user_count}")
+    log_step(f"The website is running at the same time with detection and recognition.")
+    log_step(f"The register is only on the website, there should be no options on the terminal.")
+    log_step(f"Starting web server at http://{host}:{port}")
+    log_step(f"Starting detection and recognition using stream source: {stream_url}")
 
-    if args.web_only:
-        log_step(f"Starting web server at http://{args.host}:{args.port}")
-        create_flask_app(runtime.config, runtime.state, runtime.repository).run(
-            host=args.host,
-            port=args.port,
-            debug=args.debug,
-        )
-        return
-
-    if args.web:
-        log_step(f"Starting web server at http://{args.host}:{args.port}")
-        start_web_server(args.host, args.port, args.debug, runtime)
-
-    runtime.cli.main_menu()
+    start_web_server(host, port, debug, runtime)
+    runtime.cli.process_cctv_stream(stream_url)
 
 
 if __name__ == "__main__":
