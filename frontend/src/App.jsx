@@ -13,8 +13,6 @@ import ManageUsersPage from './pages/ManageUsers.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import PolicyPage from './pages/Policy.jsx';
 import ProfileSettingsPage from './pages/ProfileSettings.jsx';
-import KioskPage from './pages/Kiosk.jsx';
-import KioskImprovedPage from './pages/KioskImproved.jsx';
 import RegisterPage from './pages/Register.jsx';
 
 const SessionContext = React.createContext({
@@ -81,8 +79,6 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
-        <Route path="/kiosk" element={<KioskPage />} />
-        <Route path="/kiosk-improved" element={<KioskImprovedPage />} />
         <Route
           path="/"
           element={

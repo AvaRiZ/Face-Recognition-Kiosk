@@ -34,7 +34,7 @@ export default function RegisterPage() {
       .then((res) => res.json())
       .then((resp) => {
         if (resp.success) {
-          window.location.href = '/kiosk';
+          window.location.href = '/dashboard';
         }
       })
       .catch(() => undefined);
