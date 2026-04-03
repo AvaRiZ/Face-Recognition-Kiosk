@@ -109,6 +109,8 @@ class CLIApplication:
         fps_start_time = time.time()
         current_fps = 0
         frame_index = 0
+        last_results = None
+        detection_interval = max(int(self.config.detection_every_n_frames), 1)
         saved_real_val_frames = self.detector_dataset_service.count_real_val_frames()
 
         while True:
@@ -128,6 +130,7 @@ class CLIApplication:
                 if camera is None:
                     time.sleep(1.0)
                     continue
+                last_results = None
                 if self._pause_notice_shown:
                     print("[INFO] Detection resumed after website registration camera release.")
                     self._pause_notice_shown = False
@@ -136,6 +139,7 @@ class CLIApplication:
             if not success:
                 print("[WARN] Lost connection to CCTV stream. Reconnecting...")
                 camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
+                last_results = None
                 if camera is None:
                     break
                 continue
@@ -154,15 +158,22 @@ class CLIApplication:
                     saved_real_val_frames += 1
                     print(f"[OK] Saved real validation frame: {saved_frame_path}")
 
-            results = self.yolo_model.track(
-                frame,
-                persist=True,
-                tracker="bytetrack.yaml",
-                conf=0.3,
-                imgsz=768,
-                device=self.yolo_device,
-                verbose=False,
-            )
+            should_run_detection = True
+            if self.config.enable_detection_frame_scheduling and detection_interval > 1:
+                should_run_detection = (frame_index % detection_interval == 0) or (last_results is None)
+
+            if should_run_detection:
+                last_results = self.yolo_model.track(
+                    frame,
+                    persist=True,
+                    tracker="bytetrack.yaml",
+                    conf=0.3,
+                    imgsz=768,
+                    device=self.yolo_device,
+                    verbose=False,
+                )
+
+            results = last_results or []
 
             face_crops = []
             face_qualities = []

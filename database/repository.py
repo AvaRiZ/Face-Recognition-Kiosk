@@ -284,6 +284,59 @@ class UserRepository:
             embedding_dim=infer_embedding_dim(merged_embeddings),
         )
 
+    def overwrite_embeddings(
+        self,
+        user_id: int,
+        embeddings_by_model: dict[str, list[np.ndarray]],
+        image_path: str | None = None,
+    ) -> User | None:
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT name, sr_code, course, image_paths
+            FROM users
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return None
+
+        name, sr_code, course, existing_paths_str = row
+        normalized_embeddings = normalize_embeddings_by_model(embeddings_by_model)
+        image_paths = existing_paths_str.split(";") if existing_paths_str else []
+        if image_path:
+            image_paths.append(image_path)
+
+        c.execute(
+            """
+            UPDATE users
+            SET embeddings = ?, image_paths = ?, embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (
+                pickle.dumps(normalized_embeddings),
+                ";".join(image_paths),
+                infer_embedding_dim(normalized_embeddings),
+                user_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        return User(
+            id=user_id,
+            name=name or "",
+            sr_code=sr_code or "",
+            course=course or "",
+            embeddings=normalized_embeddings,
+            image_paths=image_paths,
+            embedding_dim=infer_embedding_dim(normalized_embeddings),
+        )
+
     def delete_user(self, user_id: int) -> None:
         conn = db_connect(self.db_path)
         c = conn.cursor()

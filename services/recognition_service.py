@@ -32,6 +32,53 @@ class FaceRecognitionService:
         self.recognition_history: dict[int, deque[float]] = {}
         self.confidence_smoothing: dict[int, deque[float]] = {}
 
+    @staticmethod
+    def _min_cosine_distance(query_embedding: np.ndarray, existing_embeddings: list[np.ndarray]) -> float | None:
+        if not isinstance(query_embedding, np.ndarray) or query_embedding.ndim != 1 or query_embedding.size == 0:
+            return None
+
+        candidates = [
+            emb
+            for emb in existing_embeddings
+            if isinstance(emb, np.ndarray) and emb.ndim == 1 and emb.shape == query_embedding.shape and emb.size > 0
+        ]
+        if not candidates:
+            return None
+
+        stacked = np.vstack(candidates)
+        similarities = stacked @ query_embedding
+        distances = 1.0 - similarities
+        return float(np.min(distances))
+
+    def _try_add_learning_embedding(
+        self,
+        user,
+        model_name: str,
+        new_embedding: np.ndarray | None,
+        quality_score: float,
+    ) -> bool:
+        if new_embedding is None or not isinstance(new_embedding, np.ndarray):
+            return False
+        if new_embedding.ndim != 1 or new_embedding.size == 0:
+            return False
+        if quality_score < self.config.recognition_min_quality_for_learning:
+            return False
+
+        model_embeddings = user.embeddings.setdefault(model_name, [])
+        min_distance = self._min_cosine_distance(new_embedding, model_embeddings)
+        if (
+            min_distance is not None
+            and min_distance < self.config.embedding_novelty_min_distance
+        ):
+            return False
+
+        model_embeddings.append(new_embedding.astype(np.float32, copy=False))
+
+        max_keep = max(int(self.config.max_embeddings_per_user_per_model), 1)
+        if len(model_embeddings) > max_keep:
+            del model_embeddings[:-max_keep]
+        return True
+
     def calculate_dynamic_threshold(self, user_id: int, face_quality: float) -> float:
         base_threshold = self.state.base_threshold
 
@@ -189,40 +236,62 @@ class FaceRecognitionService:
             return None
 
         if best_match:
-            timestamp = int(time.time() * 1000)
-            user_folder = os.path.join(self.config.base_save_dir, best_match.user.sr_code)
-            os.makedirs(user_folder, exist_ok=True)
-            filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
-            cv2.imwrite(filename, face_crop)
-            dataset_entry = self.detector_dataset_service.save_recognized_face_crop(
-                face_crop=face_crop,
-                sr_code=best_match.user.sr_code,
-                timestamp=timestamp,
-            )
-            if dataset_entry:
-                dataset_image_path, _dataset_label_path = dataset_entry
-                print(f"[OK] Added recognized crop to detector training dataset: {dataset_image_path}")
-
             primary_new = first_embedding(embeddings, self.config.primary_model)
             secondary_new = first_embedding(embeddings, self.config.secondary_model)
-            if primary_new is not None:
-                best_match.user.embeddings.setdefault(self.config.primary_model, []).append(primary_new)
-            if secondary_new is not None:
-                best_match.user.embeddings.setdefault(self.config.secondary_model, []).append(secondary_new)
 
-            updated_user = self.repository.update_embeddings(best_match.user_id, embeddings, image_path=filename)
-            if updated_user:
-                self.state.replace_user(updated_user)
-                active_user = updated_user
+            learned_by_model: dict[str, list[np.ndarray]] = {}
+            if self._try_add_learning_embedding(
+                best_match.user,
+                self.config.primary_model,
+                primary_new,
+                quality_score,
+            ):
+                learned_by_model[self.config.primary_model] = [primary_new]
+
+            if self._try_add_learning_embedding(
+                best_match.user,
+                self.config.secondary_model,
+                secondary_new,
+                quality_score,
+            ):
+                learned_by_model[self.config.secondary_model] = [secondary_new]
+
+            active_user = best_match.user
+            if learned_by_model:
+                timestamp = int(time.time() * 1000)
+                user_folder = os.path.join(self.config.base_save_dir, best_match.user.sr_code)
+                os.makedirs(user_folder, exist_ok=True)
+                filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
+                cv2.imwrite(filename, face_crop)
+
+                dataset_entry = self.detector_dataset_service.save_recognized_face_crop(
+                    face_crop=face_crop,
+                    sr_code=best_match.user.sr_code,
+                    timestamp=timestamp,
+                )
+                if dataset_entry:
+                    dataset_image_path, _dataset_label_path = dataset_entry
+                    print(f"[OK] Added recognized crop to detector training dataset: {dataset_image_path}")
+
+                updated_user = self.repository.overwrite_embeddings(
+                    best_match.user_id,
+                    best_match.user.embeddings,
+                    image_path=filename,
+                )
+                if updated_user:
+                    self.state.replace_user(updated_user)
+                    active_user = updated_user
+                else:
+                    self.state.replace_user(best_match.user)
+
+                total_embeddings = count_embeddings(active_user.embeddings)
+                print(
+                    f"[OK] Learned embedding update for {active_user.name} "
+                    f"(total: {total_embeddings} embeddings across models)"
+                )
             else:
                 self.state.replace_user(best_match.user)
-                active_user = best_match.user
-
-            total_embeddings = count_embeddings(active_user.embeddings)
-            print(
-                f"[OK] Learned new embedding for {active_user.name} "
-                f"(total: {total_embeddings} embeddings across models)"
-            )
+                print("[INFO] Recognition accepted, but learning skipped (quality/novelty gate).")
 
             recognized_payload = recognized_user_payload(best_match)
             self.state.set_recognized_user(recognized_payload)
