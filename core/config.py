@@ -9,30 +9,97 @@ import torch
 
 @dataclass
 class AppConfig:
+    # ---------------------------
+    # Paths and storage
+    # ---------------------------
     model_path: str = "models/yolov8n-face.pt"
     db_path: str = "database/faces_improved.db"
     base_save_dir: str = "faces_improved"
     detector_dataset_dir: str = "detector_dataset"
     detector_train_split: str = "train"
     real_val_dataset_dir: str = "real_val_dataset"
+
+    # ---------------------------
+    # Validation frame capture
+    # ---------------------------
+    # Saves raw CCTV frames for offline detector validation.
     real_val_capture_enabled: bool = True
+    # Save one frame every N frames while capture is enabled.
     real_val_capture_every_n_frames: int = 90
+    # Hard cap to prevent unbounded disk growth.
     real_val_capture_max_frames: int = 300
+
+    # ---------------------------
+    # Embedding models
+    # ---------------------------
     primary_model: str = "ArcFace"
     secondary_model: str = "Facenet"
+
+    # ---------------------------
+    # Recognition thresholds
+    # ---------------------------
+    # Minimum confidence required per model. Higher values reduce false accepts,
+    # but may increase misses for hard faces (blur, side pose, low light).
     primary_threshold: float = 0.7
     secondary_threshold: float = 0.6
+
+    # Base threshold used by adaptive logic.
+    # Increasing this generally makes recognition stricter system-wide.
     base_threshold: float = 0.5
     adaptive_threshold_enabled: bool = True
+
+    # ---------------------------
+    # Face quality gates
+    # ---------------------------
+    # Faces below this score are skipped before recognition.
     face_quality_threshold: float = 0.58
+    # "Good" quality target used for color/status and high-confidence actions.
     face_quality_good_threshold: float = 0.75
+
+    # ---------------------------
+    # Runtime and scheduling
+    # ---------------------------
     min_face_size: int = 50
     confidence_smoothing_window: int = 3
+
+    # Detector scheduling: run detection every N frames when enabled.
+    # Increase N for better FPS, decrease N for fresher detections.
     detection_every_n_frames: int = 2
+    enable_detection_frame_scheduling: bool = True
+
+    # Prevent repeated recognition attempts on the same track too frequently.
     recognition_cooldown_seconds: int = 1
+
+    # ---------------------------
+    # Continuous learning controls
+    # ---------------------------
+    # Max number of stored embeddings per user per model.
+    # Lower values reduce memory and matching cost; very low values can hurt recall.
+    max_embeddings_per_user_per_model: int = 30
+
+    # Minimum cosine distance from existing embeddings to accept a new sample.
+    # Smaller value learns more aggressively; larger value learns only novel samples.
+    embedding_novelty_min_distance: float = 0.08
+
+    # Require this quality score before writing new learned embeddings.
+    recognition_min_quality_for_learning: float = 0.75
+
+    # ---------------------------
+    # Tracking stability
+    # ---------------------------
+    # Required stable time before recognition is attempted.
     stability_time_required: float = 0.3
+    # Pixel movement tolerance used by the stability tracker.
     position_tolerance: int = 200
+    # Remove stale tracks after this many seconds.
     track_stale_seconds: float = 5.0
+
+    # ---------------------------
+    # Quality metric thresholds
+    # ---------------------------
+    # Most low/high pairs below follow the same rule:
+    # - "low" is where score starts to become acceptable
+    # - "high" is where score is considered strong
     quality_face_area_low: int = 50 * 50
     quality_face_area_high: int = 130 * 130
     quality_detection_confidence_low: float = 0.35
@@ -65,6 +132,11 @@ class AppConfig:
     quality_pose_balance_good: float = 0.15
     quality_pose_balance_bad: float = 0.45
 
+    # ---------------------------
+    # Quality score weights
+    # ---------------------------
+    # Combined quality score is a weighted blend of features.
+    # Increase a weight to make that feature influence quality more.
     quality_weight_size: float = 0.22
     quality_weight_sharpness: float = 0.24
     quality_weight_detection_confidence: float = 0.20
@@ -74,6 +146,9 @@ class AppConfig:
     quality_weight_contrast: float = 0.03
     quality_weight_occlusion: float = 0.02
 
+    # ---------------------------
+    # Device selection
+    # ---------------------------
     torch_device_index: int = 0
     tf_use_gpu: bool = True
 
