@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import os
-import statistics
 import time
-from collections import deque
 
 import cv2
 import numpy as np
@@ -29,8 +27,6 @@ class FaceRecognitionService:
         self.repository = repository
         self.embedding_service = embedding_service
         self.detector_dataset_service = DetectorDatasetService(config)
-        self.recognition_history: dict[int, deque[float]] = {}
-        self.confidence_smoothing: dict[int, deque[float]] = {}
         self._search_index_signature: tuple | None = None
         self._search_index_cache: dict[str, dict[str, object]] = {}
 
@@ -130,10 +126,6 @@ class FaceRecognitionService:
 
         top_primary = eligible[primary_rank[:top_k]]
         top_secondary = eligible[secondary_rank[:top_k]]
-
-        intersection = np.intersect1d(top_primary, top_secondary, assume_unique=False)
-        if intersection.size > 0:
-            return intersection
         return np.union1d(top_primary, top_secondary)
 
     @staticmethod
@@ -183,31 +175,6 @@ class FaceRecognitionService:
             del model_embeddings[:-max_keep]
         return True
 
-    def calculate_dynamic_threshold(self, user_id: int, face_quality: float) -> float:
-        base_threshold = self.state.base_threshold
-
-        if face_quality < 0.5:
-            quality_adjustment = 0.1
-        elif face_quality < 0.7:
-            quality_adjustment = 0.05
-        else:
-            quality_adjustment = -0.05
-
-        if user_id in self.recognition_history and len(self.recognition_history[user_id]) > 0:
-            avg_confidence = statistics.mean(self.recognition_history[user_id])
-            history_adjustment = (0.5 - avg_confidence) * 0.2
-        else:
-            history_adjustment = 0.0
-
-        dynamic_threshold = base_threshold + quality_adjustment + history_adjustment
-        return max(0.2, min(0.6, dynamic_threshold))
-
-    def smooth_confidence(self, user_id: int, confidence: float) -> float:
-        if user_id not in self.confidence_smoothing:
-            self.confidence_smoothing[user_id] = deque(maxlen=self.config.confidence_smoothing_window)
-        self.confidence_smoothing[user_id].append(confidence)
-        return statistics.mean(self.confidence_smoothing[user_id])
-
     def find_best_match(self, query_embeddings, face_quality: float) -> RecognitionResult | None:
         if self.config.primary_model not in query_embeddings or self.config.secondary_model not in query_embeddings:
             print("  [WARN] Need embeddings from both models for two-factor verification")
@@ -229,6 +196,8 @@ class FaceRecognitionService:
         primary_best_by_user = self._best_distance_by_user(self.config.primary_model, primary_emb)
         secondary_best_by_user = self._best_distance_by_user(self.config.secondary_model, secondary_emb)
         candidate_user_indices = self._select_candidate_user_indices(primary_best_by_user, secondary_best_by_user)
+        primary_threshold = max(self.config.primary_threshold, self.state.base_threshold)
+        secondary_threshold = max(self.config.secondary_threshold, self.state.base_threshold)
 
         for user_idx in candidate_user_indices:
             user = users[int(user_idx)]
@@ -237,10 +206,6 @@ class FaceRecognitionService:
 
             primary_confidence = 1 - primary_best_dist
             secondary_confidence = 1 - secondary_best_dist
-
-            dynamic_threshold = self.calculate_dynamic_threshold(user.id, face_quality)
-            primary_threshold = max(self.config.primary_threshold, dynamic_threshold)
-            secondary_threshold = max(self.config.secondary_threshold, dynamic_threshold)
 
             primary_pass = primary_confidence >= primary_threshold
             secondary_pass = secondary_confidence >= secondary_threshold
@@ -266,9 +231,6 @@ class FaceRecognitionService:
                 )
 
         if best_match:
-            if best_match.user_id not in self.recognition_history:
-                self.recognition_history[best_match.user_id] = deque(maxlen=50)
-            self.recognition_history[best_match.user_id].append(best_match.confidence)
             self.repository.log_recognition(best_match, face_quality=face_quality, method="two-factor")
             print(
                 f"  [OK] 2-Factor Verified: {best_match.user.name} "

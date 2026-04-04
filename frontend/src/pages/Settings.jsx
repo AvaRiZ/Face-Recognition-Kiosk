@@ -33,7 +33,6 @@ export default function SettingsPage() {
 
   const [threshold, setThreshold] = React.useState('0.3');
   const [qualityThreshold, setQualityThreshold] = React.useState('0.2');
-  const [adaptiveThreshold, setAdaptiveThreshold] = React.useState(false);
   const [maxOccupancy, setMaxOccupancy] = React.useState('300');
 
   React.useEffect(() => {
@@ -42,7 +41,6 @@ export default function SettingsPage() {
         setData(resp);
         setThreshold(String(resp.threshold ?? '0.3'));
         setQualityThreshold(String(resp.quality_threshold ?? '0.2'));
-        setAdaptiveThreshold(!!resp.adaptive_threshold);
         setMaxOccupancy(String(resp.max_occupancy ?? '300'));
       })
       .catch(() => setData(null))
@@ -56,7 +54,6 @@ export default function SettingsPage() {
       body: JSON.stringify({
         max_occupancy: maxOccupancy,
         threshold,
-        adaptive_threshold: adaptiveThreshold,
         quality_threshold: qualityThreshold
       })
     })
@@ -136,8 +133,8 @@ export default function SettingsPage() {
                 </div>
                 <div className="col-md-4">
                   <div className="border rounded p-3 text-center h-100">
-                    <div className="h3 mb-1">{adaptiveThreshold ? 'Enabled' : 'Disabled'}</div>
-                    <small className="text-muted">Adaptive Threshold</small>
+                    <div className="h3 mb-1">{Number(qualityThreshold).toFixed(2)}</div>
+                    <small className="text-muted">Min Face Quality</small>
                   </div>
                 </div>
               </div>
@@ -187,23 +184,7 @@ export default function SettingsPage() {
                     value={threshold}
                     onChange={(ev) => setThreshold(ev.target.value)}
                   />
-                  <div className="form-text">Lower values = stricter. Higher values = more lenient.</div>
-                </div>
-
-                <div className="col-12">
-                  <div className="form-check">
-                    <input
-                      className="form-check-input"
-                      type="checkbox"
-                      id="adaptive_threshold"
-                      name="adaptive_threshold"
-                      checked={adaptiveThreshold}
-                      onChange={(ev) => setAdaptiveThreshold(ev.target.checked)}
-                    />
-                    <label className="form-check-label" htmlFor="adaptive_threshold">
-                      Enable Adaptive Threshold
-                    </label>
-                  </div>
+                  <div className="form-text">Lower values = more lenient. Higher values = stricter.</div>
                 </div>
 
                 <div className="col-12">

@@ -91,6 +91,21 @@ def create_routes_blueprint(deps):
                 return None
         return None
 
+    def _safe_float(value, fallback):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(fallback)
+
+    def _clamp(value, minimum, maximum):
+        return max(minimum, min(maximum, value))
+
+    def _coerce_runtime_thresholds(threshold_raw, quality_threshold_raw):
+        current_threshold, current_quality_threshold = deps["get_thresholds"]()
+        threshold_value = _safe_float(threshold_raw, current_threshold)
+        quality_value = _safe_float(quality_threshold_raw, current_quality_threshold)
+        return _clamp(threshold_value, 0.0, 1.0), _clamp(quality_value, 0.0, 1.0)
+
     def _decode_uploaded_image(file_storage):
         if not file_storage:
             return None
@@ -448,10 +463,13 @@ def create_routes_blueprint(deps):
     @role_required("super_admin")
     def settings():
         if request.method == "POST":
+            threshold, quality_threshold = _coerce_runtime_thresholds(
+                request.form.get("threshold", deps["get_thresholds"]()[0]),
+                request.form.get("quality_threshold", deps["get_thresholds"]()[1]),
+            )
             deps["set_thresholds"](
-                float(request.form.get("threshold", deps["get_thresholds"]()[0])),
-                request.form.get("adaptive_threshold") == "on",
-                float(request.form.get("quality_threshold", deps["get_thresholds"]()[2])),
+                threshold,
+                quality_threshold,
             )
             max_occupancy_raw = request.form.get("max_occupancy", "").strip()
             if max_occupancy_raw:
@@ -789,7 +807,8 @@ def create_routes_blueprint(deps):
             face_crop,
             detection_confidence=detection_confidence,
         )
-        if quality_score < deps["config"].face_quality_threshold:
+        runtime_quality_threshold = deps["get_thresholds"]()[1]
+        if quality_score < runtime_quality_threshold:
             return jsonify(
                 {
                     "success": False,
@@ -1022,10 +1041,13 @@ def create_routes_blueprint(deps):
     def api_settings():
         if request.method == "POST":
             payload = request.get_json(silent=True) or {}
+            threshold, quality_threshold = _coerce_runtime_thresholds(
+                payload.get("threshold", deps["get_thresholds"]()[0]),
+                payload.get("quality_threshold", deps["get_thresholds"]()[1]),
+            )
             deps["set_thresholds"](
-                float(payload.get("threshold", deps["get_thresholds"]()[0])),
-                bool(payload.get("adaptive_threshold")),
-                float(payload.get("quality_threshold", deps["get_thresholds"]()[2])),
+                threshold,
+                quality_threshold,
             )
             max_occupancy_raw = str(payload.get("max_occupancy", "")).strip()
             if max_occupancy_raw:
@@ -1035,7 +1057,7 @@ def create_routes_blueprint(deps):
                     max_occupancy_value = 300
                 _set_setting(deps["db_path"], "max_occupancy", max_occupancy_value)
 
-        threshold, adaptive_threshold, quality_threshold = deps["get_thresholds"]()
+        threshold, quality_threshold = deps["get_thresholds"]()
         max_occupancy_setting = _get_setting(deps["db_path"], "max_occupancy", "300")
         try:
             max_occupancy = int(max_occupancy_setting)
@@ -1045,7 +1067,6 @@ def create_routes_blueprint(deps):
             {
                 "user_count": deps["get_user_count"](),
                 "threshold": threshold,
-                "adaptive_threshold": adaptive_threshold,
                 "quality_threshold": quality_threshold,
                 "max_occupancy": max_occupancy,
             }

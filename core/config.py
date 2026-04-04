@@ -40,13 +40,13 @@ class AppConfig:
     # ---------------------------
     # Minimum confidence required per model. Higher values reduce false accepts,
     # but may increase misses for hard faces (blur, side pose, low light).
+
     primary_threshold: float = 0.7
     secondary_threshold: float = 0.6
 
-    # Base threshold used by adaptive logic.
+    # Global recognition threshold floor set from settings.
     # Increasing this generally makes recognition stricter system-wide.
     base_threshold: float = 0.5
-    adaptive_threshold_enabled: bool = True
 
     # ---------------------------
     # Face quality gates
