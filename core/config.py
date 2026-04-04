@@ -125,17 +125,39 @@ class AppConfig:
     # ---------------------------
     # Quality metric thresholds
     # ---------------------------
-    # Most low/high pairs below follow the same rule:
-    # - "low" is where score starts to become acceptable
-    # - "high" is where score is considered strong
+    # Tuning guide:
+    # 1) Start with acceptance gates (`*_hard_min`, `*_bad`).
+    # 2) Then tune scoring ranges (`*_low`/`*_high`).
+    # 3) Validate on day/night and front/side samples before deploying.
+    #
+    # Naming guide:
+    # - `*_low` / `*_high`: score interpolation anchors.
+    # - `*_good` / `*_bad`: ratio targets for favorable/unfavorable conditions.
+
+    # Face size and detector confidence.
+    # Raise these to be stricter when small or uncertain detections are noisy.
     quality_face_area_hard_min: int = 36 * 36
     quality_face_area_low: int = 50 * 50
     quality_face_area_high: int = 130 * 130
     quality_size_curve_exponent: float = 1.8
     quality_detection_confidence_low: float = 0.35
     quality_detection_confidence_high: float = 0.80
+
+    # Detail/texture quality (focus and edges).
+    # Increase lows if blur frequently passes quality checks.
     quality_sharpness_low: float = 80.0
     quality_sharpness_high: float = 250.0
+    quality_canny_low: int = 50
+    quality_canny_high: int = 150
+    quality_edge_magnitude_threshold: float = 18.0
+    quality_edge_density_low: float = 0.03
+    quality_edge_density_high: float = 0.12
+    quality_low_detail_std_threshold: float = 12.0
+    quality_low_detail_ratio_good: float = 0.20
+    quality_low_detail_ratio_bad: float = 0.65
+
+    # Exposure and tonal range.
+    # If low-light scenes are over-rejected, relax dark/clip bad ratios first.
     quality_contrast_low: float = 20.0
     quality_contrast_high: float = 60.0
     quality_dark_intensity_threshold: int = 40
@@ -152,14 +174,9 @@ class AppConfig:
     quality_shadow_clip_ratio_bad: float = 0.20
     quality_highlight_clip_ratio_good: float = 0.02
     quality_highlight_clip_ratio_bad: float = 0.20
-    quality_canny_low: int = 50
-    quality_canny_high: int = 150
-    quality_edge_magnitude_threshold: float = 18.0
-    quality_edge_density_low: float = 0.03
-    quality_edge_density_high: float = 0.12
-    quality_low_detail_std_threshold: float = 12.0
-    quality_low_detail_ratio_good: float = 0.20
-    quality_low_detail_ratio_bad: float = 0.65
+
+    # Geometric alignment and pose stability.
+    # Tighten `*_bad` values to reject off-angle or poorly aligned faces earlier.
     quality_eye_tilt_good_ratio: float = 0.08
     quality_eye_tilt_bad_ratio: float = 0.20
     quality_pose_good_ratio: float = 0.10
