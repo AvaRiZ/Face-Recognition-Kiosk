@@ -31,6 +31,110 @@ class FaceRecognitionService:
         self.detector_dataset_service = DetectorDatasetService(config)
         self.recognition_history: dict[int, deque[float]] = {}
         self.confidence_smoothing: dict[int, deque[float]] = {}
+        self._search_index_signature: tuple | None = None
+        self._search_index_cache: dict[str, dict[str, object]] = {}
+
+    def _invalidate_search_index(self) -> None:
+        self._search_index_signature = None
+        self._search_index_cache = {}
+
+    def _compute_search_index_signature(self) -> tuple:
+        users = self.state.users
+        primary = self.config.primary_model
+        secondary = self.config.secondary_model
+        return tuple(
+            (user.id, len(user.embeddings.get(primary, [])), len(user.embeddings.get(secondary, [])))
+            for user in users
+        )
+
+    def _rebuild_search_indices(self) -> None:
+        users = self.state.users
+        model_names = (self.config.primary_model, self.config.secondary_model)
+        fresh_cache: dict[str, dict[str, object]] = {}
+
+        for model_name in model_names:
+            embeddings: list[np.ndarray] = []
+            user_indices: list[int] = []
+            dims: list[int] = []
+
+            for user_idx, user in enumerate(users):
+                for emb in user.embeddings.get(model_name, []):
+                    if not isinstance(emb, np.ndarray):
+                        continue
+                    if emb.ndim != 1 or emb.size == 0:
+                        continue
+                    emb_f32 = emb.astype(np.float32, copy=False)
+                    embeddings.append(emb_f32)
+                    user_indices.append(user_idx)
+                    dims.append(int(emb_f32.shape[0]))
+
+            fresh_cache[model_name] = {
+                "embeddings": embeddings,
+                "user_indices": np.array(user_indices, dtype=np.int32) if user_indices else np.array([], dtype=np.int32),
+                "dims": np.array(dims, dtype=np.int32) if dims else np.array([], dtype=np.int32),
+            }
+
+        self._search_index_cache = fresh_cache
+        self._search_index_signature = self._compute_search_index_signature()
+
+    def _ensure_search_indices(self) -> None:
+        current_signature = self._compute_search_index_signature()
+        if self._search_index_signature != current_signature:
+            self._rebuild_search_indices()
+
+    def _best_distance_by_user(self, model_name: str, query_embedding: np.ndarray) -> np.ndarray:
+        users = self.state.users
+        best_distances = np.full(len(users), np.inf, dtype=np.float32)
+        if len(users) == 0:
+            return best_distances
+
+        model_cache = self._search_index_cache.get(model_name)
+        if not model_cache:
+            return best_distances
+
+        embeddings: list[np.ndarray] = model_cache.get("embeddings", [])
+        if not embeddings:
+            return best_distances
+
+        dims: np.ndarray = model_cache.get("dims")
+        user_indices: np.ndarray = model_cache.get("user_indices")
+        if dims.size == 0 or user_indices.size == 0:
+            return best_distances
+
+        query_dim = int(query_embedding.shape[0])
+        matching_indices = np.where(dims == query_dim)[0]
+        if matching_indices.size == 0:
+            return best_distances
+
+        matrix = np.vstack([embeddings[int(i)] for i in matching_indices]).astype(np.float32, copy=False)
+        similarities = matrix @ query_embedding.astype(np.float32, copy=False)
+        distances = 1.0 - similarities
+
+        per_embedding_user_idx = user_indices[matching_indices]
+        np.minimum.at(best_distances, per_embedding_user_idx, distances)
+        return best_distances
+
+    def _select_candidate_user_indices(self, primary_distances: np.ndarray, secondary_distances: np.ndarray) -> np.ndarray:
+        finite_primary = np.isfinite(primary_distances)
+        finite_secondary = np.isfinite(secondary_distances)
+        eligible = np.where(finite_primary & finite_secondary)[0]
+        if eligible.size == 0:
+            return eligible
+
+        top_k = max(int(self.config.vector_search_top_k_per_model), 0)
+        if top_k <= 0:
+            return eligible
+
+        primary_rank = np.argsort(primary_distances[eligible])
+        secondary_rank = np.argsort(secondary_distances[eligible])
+
+        top_primary = eligible[primary_rank[:top_k]]
+        top_secondary = eligible[secondary_rank[:top_k]]
+
+        intersection = np.intersect1d(top_primary, top_secondary, assume_unique=False)
+        if intersection.size > 0:
+            return intersection
+        return np.union1d(top_primary, top_secondary)
 
     @staticmethod
     def _min_cosine_distance(query_embedding: np.ndarray, existing_embeddings: list[np.ndarray]) -> float | None:
@@ -113,41 +217,23 @@ class FaceRecognitionService:
         secondary_emb = first_embedding(query_embeddings, self.config.secondary_model)
         if primary_emb is None or secondary_emb is None:
             return None
+        if not isinstance(primary_emb, np.ndarray) or not isinstance(secondary_emb, np.ndarray):
+            return None
+        if primary_emb.ndim != 1 or secondary_emb.ndim != 1:
+            return None
 
         best_match: RecognitionResult | None = None
 
         users = self.state.users
-        for user_idx, user in enumerate(users):
-            user_embeddings_by_model = user.embeddings
-            if self.config.primary_model not in user_embeddings_by_model:
-                continue
-            if self.config.secondary_model not in user_embeddings_by_model:
-                continue
+        self._ensure_search_indices()
+        primary_best_by_user = self._best_distance_by_user(self.config.primary_model, primary_emb)
+        secondary_best_by_user = self._best_distance_by_user(self.config.secondary_model, secondary_emb)
+        candidate_user_indices = self._select_candidate_user_indices(primary_best_by_user, secondary_best_by_user)
 
-            primary_best_dist = float("inf")
-            for user_embedding in user_embeddings_by_model.get(self.config.primary_model, []):
-                if not isinstance(user_embedding, np.ndarray):
-                    continue
-                if user_embedding.size == 0 or user_embedding.ndim != 1:
-                    continue
-                if primary_emb.shape != user_embedding.shape:
-                    continue
-                distance = 1 - float(np.dot(primary_emb, user_embedding))
-                primary_best_dist = min(primary_best_dist, distance)
-
-            secondary_best_dist = float("inf")
-            for user_embedding in user_embeddings_by_model.get(self.config.secondary_model, []):
-                if not isinstance(user_embedding, np.ndarray):
-                    continue
-                if user_embedding.size == 0 or user_embedding.ndim != 1:
-                    continue
-                if secondary_emb.shape != user_embedding.shape:
-                    continue
-                distance = 1 - float(np.dot(secondary_emb, user_embedding))
-                secondary_best_dist = min(secondary_best_dist, distance)
-
-            if primary_best_dist == float("inf") or secondary_best_dist == float("inf"):
-                continue
+        for user_idx in candidate_user_indices:
+            user = users[int(user_idx)]
+            primary_best_dist = float(primary_best_by_user[int(user_idx)])
+            secondary_best_dist = float(secondary_best_by_user[int(user_idx)])
 
             primary_confidence = 1 - primary_best_dist
             secondary_confidence = 1 - secondary_best_dist
@@ -176,7 +262,7 @@ class FaceRecognitionService:
                     secondary_distance=secondary_best_dist,
                     threshold=(primary_threshold + secondary_threshold) / 2,
                     user=user,
-                    user_index=user_idx,
+                    user_index=int(user_idx),
                 )
 
         if best_match:
@@ -283,6 +369,8 @@ class FaceRecognitionService:
                     active_user = updated_user
                 else:
                     self.state.replace_user(best_match.user)
+
+                self._invalidate_search_index()
 
                 total_embeddings = count_embeddings(active_user.embeddings)
                 print(

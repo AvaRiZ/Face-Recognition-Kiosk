@@ -71,6 +71,13 @@ class AppConfig:
     recognition_cooldown_seconds: int = 1
 
     # ---------------------------
+    # Vectorized matching (Phase 1)
+    # ---------------------------
+    # 0 means evaluate all users after vectorized distance computation.
+    # Set > 0 to evaluate only top-k nearest candidates per model.
+    vector_search_top_k_per_model: int = 0
+
+    # ---------------------------
     # Continuous learning controls
     # ---------------------------
     # Max number of stored embeddings per user per model.
