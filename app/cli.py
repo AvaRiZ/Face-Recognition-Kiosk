@@ -186,6 +186,8 @@ class CLIApplication:
                 for box in result.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     detection_confidence = float(box.conf[0]) if box.conf is not None else None
+                    track_id = int(box.id[0]) if box.id is not None else None
+                    face_id = track_id
 
                     if (x2 - x1) < self.config.min_face_size or (y2 - y1) < self.config.min_face_size:
                         continue
@@ -197,16 +199,16 @@ class CLIApplication:
                     quality_score, quality_status, quality_debug = self.quality_service.assess_face_quality(
                         face_crop,
                         detection_confidence=detection_confidence,
+                        track_id=face_id,
                     )
                     face_crops.append(face_crop)
                     face_qualities.append((quality_score, quality_status))
 
-                    track_id = int(box.id[0]) if box.id is not None else None
-                    face_id = track_id
                     if face_id is not None:
                         self.tracking_service.initialize_track_state(face_id, current_time)
                         if self.tracking_service.refresh_track_geometry(face_id, (x1, y1, x2, y2)):
                             print(f"[INFO] Track {face_id} geometry changed sharply. Resetting carried identity.")
+                            self.quality_service.reset_track_quality_history(face_id)
 
                     is_stable = False
                     if face_id is not None:
@@ -273,7 +275,8 @@ class CLIApplication:
                         1,
                     )
 
-            self.tracking_service.cleanup_stale_tracks(current_time)
+            stale_track_ids = self.tracking_service.cleanup_stale_tracks(current_time)
+            self.quality_service.reset_stale_track_quality_history(stale_track_ids)
 
             for face_crop, face_id, detection_confidence, quality_tuple in stable_faces:
                 if face_id is None:

@@ -100,6 +100,27 @@ class AppConfig:
     position_tolerance: int = 200
     # Remove stale tracks after this many seconds.
     track_stale_seconds: float = 5.0
+    # Smooth quality jitter per active track using a short moving window.
+    quality_temporal_smoothing_enabled: bool = True
+    quality_temporal_smoothing_window: int = 5
+    # Adapt selected quality weights based on detection confidence and landmark quality source.
+    quality_confidence_weighting_enabled: bool = True
+    quality_confidence_weight_floor: float = 0.55
+    quality_confidence_weight_approx_factor: float = 0.75
+    quality_confidence_detection_weight_boost: float = 0.35
+    # Hybrid gate controls: hard reject extreme failures, soft-penalize borderline low scores.
+    quality_hard_gate_enabled: bool = True
+    quality_hard_gate_min_face_area: int = 34 * 34
+    quality_hard_gate_min_laplacian: float = 20.0
+    quality_hard_gate_min_dynamic_range: float = 18.0
+    quality_hard_gate_max_shadow_clip_ratio: float = 0.70
+    quality_hard_gate_max_highlight_clip_ratio: float = 0.70
+    quality_soft_gate_enabled: bool = True
+    quality_soft_gate_floor: float = 0.45
+    quality_soft_gate_min_multiplier: float = 0.60
+    # Keep explainability off in the real-time loop; enable explicitly for tuning runs.
+    quality_explainability_enabled: bool = False
+    quality_explainability_top_k: int = 3
 
     # ---------------------------
     # Quality metric thresholds
@@ -107,8 +128,10 @@ class AppConfig:
     # Most low/high pairs below follow the same rule:
     # - "low" is where score starts to become acceptable
     # - "high" is where score is considered strong
+    quality_face_area_hard_min: int = 36 * 36
     quality_face_area_low: int = 50 * 50
     quality_face_area_high: int = 130 * 130
+    quality_size_curve_exponent: float = 1.8
     quality_detection_confidence_low: float = 0.35
     quality_detection_confidence_high: float = 0.80
     quality_sharpness_low: float = 80.0
@@ -123,8 +146,15 @@ class AppConfig:
     quality_bright_ratio_bad: float = 0.28
     quality_dynamic_range_low: float = 30.0
     quality_dynamic_range_high: float = 90.0
+    quality_shadow_clip_intensity_threshold: int = 12
+    quality_highlight_clip_intensity_threshold: int = 245
+    quality_shadow_clip_ratio_good: float = 0.02
+    quality_shadow_clip_ratio_bad: float = 0.20
+    quality_highlight_clip_ratio_good: float = 0.02
+    quality_highlight_clip_ratio_bad: float = 0.20
     quality_canny_low: int = 50
     quality_canny_high: int = 150
+    quality_edge_magnitude_threshold: float = 18.0
     quality_edge_density_low: float = 0.03
     quality_edge_density_high: float = 0.12
     quality_low_detail_std_threshold: float = 12.0
