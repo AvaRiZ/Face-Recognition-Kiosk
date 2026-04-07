@@ -117,7 +117,8 @@ class EmbeddingService:
                         model_name=model_name,
                         enforce_detection=False,
                         detector_backend="skip",
-                        align=True,
+                        # "skip" bypasses detector landmarks, so alignment is not available.
+                        align=False,
                         normalization="base",
                     )
 

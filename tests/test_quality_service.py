@@ -81,6 +81,19 @@ class FaceQualityServiceTests(unittest.TestCase):
         self.assertGreater(debug["pose_score"], 0.5)
         self.assertGreater(debug["occlusion_score"], 0.5)
 
+    def test_missing_landmarks_are_not_treated_as_ideal(self) -> None:
+        face = _checkerboard_face()
+
+        score, status, debug = self.service.assess_face_quality(face, detection_confidence=0.95)
+
+        self.assertEqual(debug["alignment_source"], "unavailable")
+        self.assertFalse(debug["landmarks_available"])
+        self.assertEqual(debug["quality_degraded_reason"], "landmarks_unavailable")
+        self.assertLess(debug["alignment_score"], 1.0)
+        self.assertLess(debug["pose_score"], 1.0)
+        self.assertEqual(status, "Acceptable")
+        self.assertLess(score, self.config.face_quality_good_threshold)
+
     def test_debug_summary_contains_primary_issue_and_component_scores(self) -> None:
         face = cv2.GaussianBlur(_checkerboard_face(), (31, 31), 0)
 

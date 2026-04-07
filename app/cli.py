@@ -19,6 +19,7 @@ from services.embedding_service import count_embeddings, merge_embeddings_by_mod
 from services.quality_service import FaceQualityService
 from services.recognition_service import FaceRecognitionService
 from services.tracking_service import TrackingService
+from utils.image_utils import crop_face_region
 
 
 def _coerce_float(value):
@@ -185,9 +186,10 @@ class CLIApplication:
                     if (x2 - x1) < self.config.min_face_size or (y2 - y1) < self.config.min_face_size:
                         continue
 
-                    face_crop = frame[y1:y2, x1:x2]
-                    if face_crop.size == 0:
+                    face_crop, clamped_bbox = crop_face_region(frame, x1, y1, x2, y2)
+                    if face_crop is None or clamped_bbox is None:
                         continue
+                    x1, y1, x2, y2 = clamped_bbox
 
                     quality_score, quality_status, quality_debug = self.quality_service.assess_face_quality(
                         face_crop,

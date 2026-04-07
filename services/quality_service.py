@@ -274,6 +274,7 @@ class FaceQualityService:
 
         exposure_metrics = self._compute_exposure_metrics(gray)
         normalized_landmarks = _normalize_landmarks(landmarks)
+        quality_degraded_reason = None
         if normalized_landmarks is not None:
             alignment_score, pose_score, occlusion_score = self._alignment_pose_from_landmarks(
                 normalized_landmarks,
@@ -282,10 +283,12 @@ class FaceQualityService:
             )
             alignment_source = "landmarks"
         else:
-            alignment_score = 1.0
-            pose_score = 1.0
-            occlusion_score = 1.0
+            # Without landmarks, avoid treating the crop as perfectly aligned.
+            alignment_score = 0.5
+            pose_score = 0.5
+            occlusion_score = 0.6
             alignment_source = "unavailable"
+            quality_degraded_reason = "landmarks_unavailable"
 
         component_scores = [
             size_score,
@@ -296,6 +299,8 @@ class FaceQualityService:
             occlusion_score,
         ]
         quality_score = _clamp01(float(np.mean(component_scores)))
+        if normalized_landmarks is None:
+            quality_score = _clamp01(quality_score - 0.12)
 
         failed_checks = []
         if area < self.config.quality_face_area_min:
@@ -326,6 +331,9 @@ class FaceQualityService:
         else:
             quality_status = "Poor"
 
+        if normalized_landmarks is None and quality_status == "Good":
+            quality_status = "Acceptable"
+
         debug_info = {
             "sharpness": laplacian_var,
             "brightness": exposure_metrics["brightness"],
@@ -340,6 +348,8 @@ class FaceQualityService:
             "dynamic_range": exposure_metrics["dynamic_range"],
             "occlusion_score": occlusion_score,
             "alignment_source": alignment_source,
+            "landmarks_available": normalized_landmarks is not None,
+            "quality_degraded_reason": quality_degraded_reason,
             "failed_checks": failed_checks,
             "component_scores": {
                 "size_score": size_score,

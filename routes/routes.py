@@ -25,6 +25,7 @@ from core.models import RegistrationSample, User
 from db import connect as db_connect
 from routes.ml_analytics import run_ml_analytics
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
+from utils.image_utils import crop_face_region
 
 
 def init_imported_logs_table(db_path):
@@ -162,12 +163,8 @@ def create_routes_blueprint(deps):
 
                     if best_box is not None:
                         x1, y1, x2, y2 = map(int, best_box.xyxy[0])
-                        x1 = max(x1, 0)
-                        y1 = max(y1, 0)
-                        x2 = min(x2, image.shape[1])
-                        y2 = min(y2, image.shape[0])
-                        face_crop = image[y1:y2, x1:x2]
-                        if face_crop.size != 0:
+                        face_crop, _clamped_bbox = crop_face_region(image, x1, y1, x2, y2)
+                        if face_crop is not None:
                             detection_confidence = (
                                 float(best_box.conf[0]) if best_box.conf is not None else None
                             )
@@ -192,14 +189,8 @@ def create_routes_blueprint(deps):
             return None, None
 
         x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
-        pad_x = int(w * 0.15)
-        pad_y = int(h * 0.2)
-        x1 = max(x - pad_x, 0)
-        y1 = max(y - pad_y, 0)
-        x2 = min(x + w + pad_x, image.shape[1])
-        y2 = min(y + h + pad_y, image.shape[0])
-        face_crop = image[y1:y2, x1:x2]
-        if face_crop.size == 0:
+        face_crop, _clamped_bbox = crop_face_region(image, x, y, x + w, y + h)
+        if face_crop is None:
             return None, None
 
         detection_confidence = min(1.0, max(0.35, float((w * h) / max(image.shape[0] * image.shape[1], 1))))
