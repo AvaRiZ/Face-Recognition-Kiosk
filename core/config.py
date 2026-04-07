@@ -9,71 +9,162 @@ import torch
 
 @dataclass
 class AppConfig:
+    """Central application settings.
+
+    Notes on the face quality thresholds:
+    - `*_min` values are the hard minimums used to flag a failed check.
+    - `*_good` values mark the point where that component reaches a full score.
+    - `face_quality_threshold` is the pass line between `Poor` and `Acceptable`.
+    - `face_quality_good_threshold` is the line for promoting a pass to `Good`.
+
+    Practical tuning guide for `FaceQualityService`:
+    - Increase a `*_min` threshold to reject more weak crops.
+    - Decrease a `*_min` threshold to accept more difficult real-world captures.
+    - Increase a `*_good` threshold when you want the `Good` label to mean a
+      clearly cleaner sample.
+    - Decrease a `*_good` threshold if too many usable faces stay stuck as
+      `Acceptable`.
+    - Tune one family at a time: size, detector confidence, sharpness,
+      exposure, then landmark-based pose/truncation.
+    - Re-test after each change because the final quality score is the average
+      of multiple component scores, and any failed hard check forces the result
+      below `face_quality_threshold`.
+    """
+
+    # ------------------------------------------------------------------
+    # Paths and dataset locations
+    # ------------------------------------------------------------------
     model_path: str = "models/yolov8n-face.pt"
     db_path: str = "database/faces_improved.db"
     base_save_dir: str = "faces_improved"
     detector_dataset_dir: str = "detector_dataset"
     detector_train_split: str = "train"
     real_val_dataset_dir: str = "real_val_dataset"
+
+    # ------------------------------------------------------------------
+    # Dataset capture / validation collection
+    # ------------------------------------------------------------------
     real_val_capture_enabled: bool = True
     real_val_capture_every_n_frames: int = 90
     real_val_capture_max_frames: int = 300
+
+    # ------------------------------------------------------------------
+    # Recognition models and identity thresholds
+    # ------------------------------------------------------------------
     primary_model: str = "ArcFace"
     secondary_model: str = "Facenet"
     primary_threshold: float = 0.7
     secondary_threshold: float = 0.6
     base_threshold: float = 0.5
     adaptive_threshold_enabled: bool = True
+
+    # ------------------------------------------------------------------
+    # Overall face quality decisions
+    # ------------------------------------------------------------------
+    # `face_quality_threshold`:
+    # - Raise this to make registration / recognition gatekeeping stricter.
+    # - Lower this if usable real-world faces are being rejected too often.
     face_quality_threshold: float = 0.58
+
+    # `face_quality_good_threshold`:
+    # - Raise this if you want the `Good` label to be harder to earn.
+    # - Lower this if strong samples are rarely reaching `Good`.
     face_quality_good_threshold: float = 0.75
+
+    # Minimum crop size used outside the quality scorer for fast filtering.
     min_face_size: int = 50
+
+    # ------------------------------------------------------------------
+    # Runtime behavior
+    # ------------------------------------------------------------------
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 2
     recognition_cooldown_seconds: int = 1
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
-    quality_face_area_low: int = 50 * 50
-    quality_face_area_high: int = 130 * 130
-    quality_detection_confidence_low: float = 0.35
-    quality_detection_confidence_high: float = 0.80
-    quality_sharpness_low: float = 80.0
-    quality_sharpness_high: float = 250.0
-    quality_contrast_low: float = 20.0
-    quality_contrast_high: float = 60.0
-    quality_dark_intensity_threshold: int = 40
-    quality_bright_intensity_threshold: int = 220
-    quality_dark_ratio_good: float = 0.08
-    quality_dark_ratio_bad: float = 0.35
-    quality_bright_ratio_good: float = 0.05
-    quality_bright_ratio_bad: float = 0.28
-    quality_dynamic_range_low: float = 30.0
-    quality_dynamic_range_high: float = 90.0
-    quality_canny_low: int = 50
-    quality_canny_high: int = 150
-    quality_edge_density_low: float = 0.03
-    quality_edge_density_high: float = 0.12
-    quality_low_detail_std_threshold: float = 12.0
-    quality_low_detail_ratio_good: float = 0.20
-    quality_low_detail_ratio_bad: float = 0.65
-    quality_eye_tilt_good_ratio: float = 0.08
-    quality_eye_tilt_bad_ratio: float = 0.20
-    quality_pose_good_ratio: float = 0.10
-    quality_pose_bad_ratio: float = 0.30
-    quality_band_alignment_good_ratio: float = 0.06
-    quality_band_alignment_bad_ratio: float = 0.18
-    quality_pose_balance_good: float = 0.15
-    quality_pose_balance_bad: float = 0.45
 
-    quality_weight_size: float = 0.22
-    quality_weight_sharpness: float = 0.24
-    quality_weight_detection_confidence: float = 0.20
-    quality_weight_alignment: float = 0.14
-    quality_weight_pose: float = 0.08
-    quality_weight_exposure: float = 0.07
-    quality_weight_contrast: float = 0.03
-    quality_weight_occlusion: float = 0.02
+    # ------------------------------------------------------------------
+    # Quality scoring: face size
+    # ------------------------------------------------------------------
+    # Area is measured in pixels (`width * height` of the face crop).
+    # Example:
+    # - `50 * 50` means crops smaller than roughly 50px by 50px fail size.
+    # - `130 * 130` means crops around that size get full size credit.
+    # Tuning:
+    # - Raise `quality_face_area_min` to reject small, low-detail faces.
+    # - Lower it if your camera is farther away and valid faces look smaller.
+    quality_face_area_min: int = 50 * 50
+    quality_face_area_good: int = 130 * 130
 
+    # ------------------------------------------------------------------
+    # Quality scoring: detector confidence
+    # ------------------------------------------------------------------
+    # Tuning:
+    # - Raise these if false detections are slipping through.
+    # - Lower these if the detector is generally conservative but still right.
+    quality_detection_confidence_min: float = 0.35
+    quality_detection_confidence_good: float = 0.80
+
+    # ------------------------------------------------------------------
+    # Quality scoring: sharpness / blur
+    # ------------------------------------------------------------------
+    # Sharpness is based on Laplacian variance.
+    # Tuning:
+    # - Raise `quality_sharpness_min` to be stricter against blur.
+    # - Lower it if motion blur is common but recognition still works.
+    quality_sharpness_min: float = 80.0
+    quality_sharpness_good: float = 250.0
+
+    # ------------------------------------------------------------------
+    # Quality scoring: brightness / exposure
+    # ------------------------------------------------------------------
+    # Brightness is the mean grayscale intensity on a 0-255 scale.
+    # The "good" window is the comfort zone with full brightness credit.
+    # Tuning:
+    # - Raise `quality_brightness_min` if dark faces are hurting recognition.
+    # - Lower it if your environment is dim and faces are still usable.
+    # - Lower `quality_brightness_max` if overexposed faces should fail sooner.
+    # - Widen the `good_min` to `good_max` band if lighting is more variable.
+    quality_brightness_min: float = 55.0
+    quality_brightness_good_min: float = 85.0
+    quality_brightness_good_max: float = 185.0
+    quality_brightness_max: float = 215.0
+
+    # Dynamic range approximates how much tonal spread exists in the crop.
+    # Low values often mean flat lighting or washed-out detail.
+    # Tuning:
+    # - Raise these to prefer richer contrast and facial detail.
+    # - Lower them if your camera feed is naturally low-contrast.
+    quality_dynamic_range_min: float = 35.0
+    quality_dynamic_range_good: float = 85.0
+
+    # ------------------------------------------------------------------
+    # Quality scoring: landmark-based pose / truncation
+    # ------------------------------------------------------------------
+    # These apply only when landmarks are available.
+    #
+    # Eye tilt:
+    # - Lower values mean a more level face.
+    # - Lower the thresholds to become stricter about roll / alignment.
+    quality_pose_eye_tilt_good: float = 0.05
+    quality_pose_eye_tilt_max: float = 0.14
+
+    # Yaw:
+    # - Based on nose offset from the eye midpoint.
+    # - Lower the thresholds to prefer more front-facing faces.
+    quality_pose_yaw_good: float = 0.08
+    quality_pose_yaw_max: float = 0.20
+
+    # Landmark margin:
+    # - Measures how close key landmarks are to the crop edges.
+    # - Raise these to be stricter about cut-off / partially cropped faces.
+    quality_landmark_margin_good: float = 0.10
+    quality_landmark_margin_min: float = 0.04
+
+    # ------------------------------------------------------------------
+    # Device configuration
+    # ------------------------------------------------------------------
     torch_device_index: int = 0
     tf_use_gpu: bool = True
 
@@ -87,7 +178,12 @@ def configure_devices(
     tf_use_gpu: bool = True,
     logger: Callable[[str, str], None] | None = None,
 ) -> None:
-    """Configure Torch and TensorFlow device visibility."""
+    """Configure Torch and TensorFlow device visibility.
+
+    `torch_device_index` selects the preferred GPU. If that index does not
+    exist, the code falls back to GPU 0. Set `tf_use_gpu=False` to force
+    TensorFlow onto CPU even when CUDA is available.
+    """
     if torch.cuda.is_available():
         try:
             if torch.cuda.device_count() > torch_device_index:
@@ -117,6 +213,7 @@ def configure_devices(
 
 
 def resolve_yolo_device(torch_device_index: int = 0) -> str:
+    """Return the device string expected by YOLO / PyTorch code."""
     if not torch.cuda.is_available():
         return "cpu"
     if torch.cuda.device_count() > torch_device_index:
