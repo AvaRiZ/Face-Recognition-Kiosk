@@ -174,14 +174,28 @@ class FaceRecognitionService:
             quality_score, quality_status, quality_debug = precomputed_quality
 
         if quality_score < self.state.face_quality_threshold:
-            print(f"  Skipping low quality face: {quality_score:.2f} ({quality_status})")
+            message = f"  Skipping low quality face: {quality_score:.2f} ({quality_status})"
+            if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
+                primary_issue = quality_debug.get("primary_issue_label")
+                if primary_issue:
+                    message += f" | main issue: {primary_issue}"
+            if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
+                message += f" | {quality_service.quality_debug_summary(quality_debug)}"
+            print(message)
             return None
 
-        print(
+        message = (
             f"  Face quality: {quality_score:.2f} ({quality_status}) "
             f"| sharpness={quality_debug.get('sharpness', 0.0):.1f} "
             f"| det={quality_debug.get('detection_confidence', 0.0):.2f}"
         )
+        if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
+            primary_issue = quality_debug.get("primary_issue_label")
+            if primary_issue and quality_status != "Good":
+                message += f" | weakest: {primary_issue}"
+        if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
+            message += f" | {quality_service.quality_debug_summary(quality_debug)}"
+        print(message)
 
         best_match, embeddings = self.recognize(face_crop, quality_score)
         if not embeddings:

@@ -38,6 +38,8 @@ class FaceQualityServiceTests(unittest.TestCase):
         self.assertLess(score, self.config.face_quality_threshold)
         self.assertEqual(status, "Poor")
         self.assertIn("size", debug["failed_checks"])
+        self.assertEqual(debug["primary_issue"], "size")
+        self.assertEqual(debug["primary_issue_label"], "face too small")
 
     def test_rejects_blurry_face(self) -> None:
         face = cv2.GaussianBlur(_checkerboard_face(), (31, 31), 0)
@@ -78,6 +80,16 @@ class FaceQualityServiceTests(unittest.TestCase):
         self.assertEqual(debug["alignment_source"], "landmarks")
         self.assertGreater(debug["pose_score"], 0.5)
         self.assertGreater(debug["occlusion_score"], 0.5)
+
+    def test_debug_summary_contains_primary_issue_and_component_scores(self) -> None:
+        face = cv2.GaussianBlur(_checkerboard_face(), (31, 31), 0)
+
+        _score, _status, debug = self.service.assess_face_quality(face, detection_confidence=0.95)
+        summary = self.service.quality_debug_summary(debug)
+
+        self.assertIn("main_issue=too blurry", summary)
+        self.assertIn("sharpness=", summary)
+        self.assertIn("brightness=", summary)
 
 
 if __name__ == "__main__":

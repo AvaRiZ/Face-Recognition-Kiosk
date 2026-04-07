@@ -54,6 +54,10 @@ class CLIApplication:
         self._detection_pause_event = threading.Event()
         self._pause_notice_shown = False
 
+    def toggle_quality_debug(self) -> bool:
+        self.config.quality_debug_enabled = not self.config.quality_debug_enabled
+        return self.config.quality_debug_enabled
+
     def reload_users_from_database(self) -> None:
         self.state.load_users(self.repository.get_all_users())
 
@@ -103,6 +107,7 @@ class CLIApplication:
         print("Press 'q' to quit")
         print("Press 'n' to start CLI registration")
         print("Press 'r' to reset recognition status")
+        print("Press 'd' to toggle quality debug")
         print("=" * 50)
 
         fps_counter = 0
@@ -226,9 +231,14 @@ class CLIApplication:
 
                     track_text = f"T{face_id}" if face_id is not None else "T?"
                     stability_text = "NO-ID" if face_id is None else ("STABLE" if is_stable else "MOVING")
+                    issue_text = ""
+                    if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
+                        primary_issue = quality_debug.get("primary_issue_label")
+                        if primary_issue and quality_status == "Poor":
+                            issue_text = f" {primary_issue}"
                     cv2.putText(
                         frame,
-                        f"{track_text} {stability_text} Q:{quality_score:.1f}",
+                        f"{track_text} {stability_text} Q:{quality_score:.1f}{issue_text}",
                         (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.5,
@@ -363,7 +373,7 @@ class CLIApplication:
 
             cv2.putText(
                 frame,
-                "Controls: [N] New User  [R] Reset  [Q] Quit",
+                "Controls: [N] New User  [R] Reset  [D] Debug  [Q] Quit",
                 (10, 25),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -372,7 +382,11 @@ class CLIApplication:
             )
             cv2.putText(
                 frame,
-                f"DB Users: {self.state.user_count}   FPS: {current_fps}   Val Frames: {saved_real_val_frames}",
+                (
+                    f"DB Users: {self.state.user_count}   FPS: {current_fps}   "
+                    f"Val Frames: {saved_real_val_frames}   "
+                    f"Debug: {'ON' if self.config.quality_debug_enabled else 'OFF'}"
+                ),
                 (10, 50),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -428,6 +442,10 @@ class CLIApplication:
                 self.state.clear_tracking_state()
                 registration_prompted = False
                 print("Recognition status reset")
+            if key == ord("d"):
+                debug_enabled = self.toggle_quality_debug()
+                debug_status = "enabled" if debug_enabled else "disabled"
+                print(f"Quality debug {debug_status}.")
             if key == ord("n"):
                 reg_state = self.state.registration_state
                 if reg_state.in_progress or reg_state.manual_active or reg_state.manual_requested:

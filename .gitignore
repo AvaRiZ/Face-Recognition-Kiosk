@@ -31,4 +31,7 @@ Thumbs.db
 .env.*
 
 # Database
-database/*.db
+database/*
+detector_dataset/*
+faces_improved/*
+real_val_dataset/*

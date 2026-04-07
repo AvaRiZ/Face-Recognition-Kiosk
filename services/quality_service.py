@@ -74,6 +74,68 @@ class FaceQualityService:
     def __init__(self, config: AppConfig):
         self.config = config
 
+    @staticmethod
+    def _describe_check(check_name):
+        labels = {
+            "empty_face": "empty crop",
+            "size": "face too small",
+            "detection_confidence": "low detector confidence",
+            "sharpness": "too blurry",
+            "exposure": "bad brightness",
+            "dynamic_range": "low contrast",
+            "alignment": "tilted face",
+            "pose": "face turned away",
+            "truncation": "face cut off",
+        }
+        return labels.get(check_name, check_name.replace("_", " "))
+
+    @staticmethod
+    def _format_component_scores(component_scores):
+        ordered_items = [
+            ("size", component_scores.get("size_score", 0.0)),
+            ("sharpness", component_scores.get("sharpness_score", 0.0)),
+            ("detection", component_scores.get("detection_score", 0.0)),
+            ("exposure", component_scores.get("exposure_score", 0.0)),
+            ("pose", component_scores.get("pose_score", 0.0)),
+            ("truncation", component_scores.get("occlusion_score", 0.0)),
+        ]
+        return " | ".join(f"{name}={value:.2f}" for name, value in ordered_items)
+
+    def primary_quality_issue(self, debug_info):
+        failed_checks = debug_info.get("failed_checks", [])
+        if failed_checks:
+            primary_check = failed_checks[0]
+            return primary_check, self._describe_check(primary_check)
+
+        component_scores = debug_info.get("component_scores", {})
+        if not component_scores:
+            return None, "no issue detected"
+
+        aliases = {
+            "size_score": "size",
+            "sharpness_score": "sharpness",
+            "detection_score": "detection_confidence",
+            "exposure_score": "exposure",
+            "pose_score": "pose",
+            "occlusion_score": "truncation",
+        }
+        weakest_name, weakest_score = min(component_scores.items(), key=lambda item: item[1])
+        issue_name = aliases.get(weakest_name, weakest_name)
+        return issue_name, f"{self._describe_check(issue_name)} ({weakest_score:.2f})"
+
+    def quality_debug_summary(self, debug_info):
+        issue_name, issue_label = self.primary_quality_issue(debug_info)
+        component_summary = self._format_component_scores(debug_info.get("component_scores", {}))
+        raw_metrics = (
+            f"sharpness={debug_info.get('sharpness', 0.0):.1f} | "
+            f"brightness={debug_info.get('brightness', 0.0):.1f} | "
+            f"dynamic_range={debug_info.get('dynamic_range', 0.0):.1f} | "
+            f"det={debug_info.get('detection_confidence', 0.0):.2f}"
+        )
+        if issue_name is None:
+            return f"{component_summary} | {raw_metrics}"
+        return f"main_issue={issue_label} | {component_summary} | {raw_metrics}"
+
     def _alignment_pose_from_landmarks(self, landmarks, width, height):
         left_eye = landmarks.get("left_eye")
         right_eye = landmarks.get("right_eye")
@@ -166,10 +228,23 @@ class FaceQualityService:
                 "detection_confidence": float(detection_confidence) if detection_confidence is not None else 0.0,
                 "pose_score": 0.0,
                 "size_score": 0.0,
+                "sharpness_score": 0.0,
+                "detection_score": 0.0,
                 "exposure_score": 0.0,
                 "occlusion_score": 0.0,
                 "failed_checks": ["empty_face"],
+                "component_scores": {
+                    "size_score": 0.0,
+                    "sharpness_score": 0.0,
+                    "detection_score": 0.0,
+                    "exposure_score": 0.0,
+                    "pose_score": 0.0,
+                    "occlusion_score": 0.0,
+                },
             }
+            issue_name, issue_label = self.primary_quality_issue(debug_info)
+            debug_info["primary_issue"] = issue_name
+            debug_info["primary_issue_label"] = issue_label
             return 0.0, "Poor", debug_info
 
         h, w = face_crop.shape[:2]
@@ -266,6 +341,17 @@ class FaceQualityService:
             "occlusion_score": occlusion_score,
             "alignment_source": alignment_source,
             "failed_checks": failed_checks,
+            "component_scores": {
+                "size_score": size_score,
+                "sharpness_score": sharpness_score,
+                "detection_score": detection_score,
+                "exposure_score": exposure_metrics["exposure_score"],
+                "pose_score": pose_score,
+                "occlusion_score": occlusion_score,
+            },
         }
+        issue_name, issue_label = self.primary_quality_issue(debug_info)
+        debug_info["primary_issue"] = issue_name
+        debug_info["primary_issue_label"] = issue_label
 
         return quality_score, quality_status, debug_info

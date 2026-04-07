@@ -71,6 +71,17 @@ class AppConfig:
     # - Lower this if strong samples are rarely reaching `Good`.
     face_quality_good_threshold: float = 0.75
 
+    # CLI/debug output for face quality assessment.
+    # - Enable `quality_debug_enabled` to include richer quality diagnostics in
+    #   CLI logs and on-screen labels.
+    # - Keep `quality_debug_show_primary_issue=True` to surface the most likely
+    #   reason a face was marked poor.
+    # - Enable `quality_debug_show_all_scores` while tuning thresholds so you
+    #   can inspect every component score and raw metric value.
+    quality_debug_enabled: bool = True
+    quality_debug_show_primary_issue: bool = True
+    quality_debug_show_all_scores: bool = True
+
     # Minimum crop size used outside the quality scorer for fast filtering.
     min_face_size: int = 50
 
@@ -113,8 +124,8 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_sharpness_min` to be stricter against blur.
     # - Lower it if motion blur is common but recognition still works.
-    quality_sharpness_min: float = 80.0
-    quality_sharpness_good: float = 250.0
+    quality_sharpness_min: float = 25.0
+    quality_sharpness_good: float = 35.0
 
     # ------------------------------------------------------------------
     # Quality scoring: brightness / exposure
