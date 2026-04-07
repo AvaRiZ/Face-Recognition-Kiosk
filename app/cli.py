@@ -101,17 +101,16 @@ class CLIApplication:
         print("CCTV FACE RECOGNITION SYSTEM")
         print("=" * 50)
         print("Press 'q' to quit")
+        print("Press 'n' to start CLI registration")
         print("Press 'r' to reset recognition status")
-        print("Registration is available on the website only")
         print("=" * 50)
 
         fps_counter = 0
         fps_start_time = time.time()
         current_fps = 0
         frame_index = 0
-        last_results = None
-        detection_interval = max(int(self.config.detection_every_n_frames), 1)
         saved_real_val_frames = self.detector_dataset_service.count_real_val_frames()
+        registration_prompted = False
 
         while True:
             if self.detection_paused():
@@ -130,7 +129,6 @@ class CLIApplication:
                 if camera is None:
                     time.sleep(1.0)
                     continue
-                last_results = None
                 if self._pause_notice_shown:
                     print("[INFO] Detection resumed after website registration camera release.")
                     self._pause_notice_shown = False
@@ -139,7 +137,6 @@ class CLIApplication:
             if not success:
                 print("[WARN] Lost connection to CCTV stream. Reconnecting...")
                 camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
-                last_results = None
                 if camera is None:
                     break
                 continue
@@ -158,22 +155,15 @@ class CLIApplication:
                     saved_real_val_frames += 1
                     print(f"[OK] Saved real validation frame: {saved_frame_path}")
 
-            should_run_detection = True
-            if self.config.enable_detection_frame_scheduling and detection_interval > 1:
-                should_run_detection = (frame_index % detection_interval == 0) or (last_results is None)
-
-            if should_run_detection:
-                last_results = self.yolo_model.track(
-                    frame,
-                    persist=True,
-                    tracker="bytetrack.yaml",
-                    conf=0.3,
-                    imgsz=768,
-                    device=self.yolo_device,
-                    verbose=False,
-                )
-
-            results = last_results or []
+            results = self.yolo_model.track(
+                frame,
+                persist=True,
+                tracker="bytetrack.yaml",
+                conf=0.3,
+                imgsz=768,
+                device=self.yolo_device,
+                verbose=False,
+            )
 
             face_crops = []
             face_qualities = []
@@ -186,8 +176,6 @@ class CLIApplication:
                 for box in result.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     detection_confidence = float(box.conf[0]) if box.conf is not None else None
-                    track_id = int(box.id[0]) if box.id is not None else None
-                    face_id = track_id
 
                     if (x2 - x1) < self.config.min_face_size or (y2 - y1) < self.config.min_face_size:
                         continue
@@ -199,16 +187,16 @@ class CLIApplication:
                     quality_score, quality_status, quality_debug = self.quality_service.assess_face_quality(
                         face_crop,
                         detection_confidence=detection_confidence,
-                        track_id=face_id,
                     )
                     face_crops.append(face_crop)
                     face_qualities.append((quality_score, quality_status))
 
+                    track_id = int(box.id[0]) if box.id is not None else None
+                    face_id = track_id
                     if face_id is not None:
                         self.tracking_service.initialize_track_state(face_id, current_time)
                         if self.tracking_service.refresh_track_geometry(face_id, (x1, y1, x2, y2)):
                             print(f"[INFO] Track {face_id} geometry changed sharply. Resetting carried identity.")
-                            self.quality_service.reset_track_quality_history(face_id)
 
                     is_stable = False
                     if face_id is not None:
@@ -275,14 +263,27 @@ class CLIApplication:
                         1,
                     )
 
-            stale_track_ids = self.tracking_service.cleanup_stale_tracks(current_time)
-            self.quality_service.reset_stale_track_quality_history(stale_track_ids)
+            self.tracking_service.cleanup_stale_tracks(current_time)
 
             for face_crop, face_id, detection_confidence, quality_tuple in stable_faces:
                 if face_id is None:
                     continue
 
                 track_state = self.tracking_service.initialize_track_state(face_id, current_time)
+                reg_state = self.state.registration_state
+
+                if reg_state.manual_requested:
+                    if track_state.recognized and track_state.user:
+                        print("Manual registration canceled because the selected face is already recognized.")
+                        self.state.stop_manual_registration()
+                        continue
+
+                    self.state.start_manual_registration(face_id)
+                    registration_prompted = False
+                    print(f"[INFO] CLI registration locked to track {face_id}. Hold still for sample capture.")
+
+                if reg_state.manual_active and reg_state.manual_track_id is not None and face_id != reg_state.manual_track_id:
+                    continue
 
                 if track_state.recognized:
                     continue
@@ -297,7 +298,7 @@ class CLIApplication:
                     face_crop,
                     quality_service=self.quality_service,
                     face_id=face_id,
-                    allow_registration=False,
+                    allow_registration=reg_state.manual_active and face_id == reg_state.manual_track_id,
                     detection_confidence=detection_confidence,
                     precomputed_quality=quality_tuple,
                 )
@@ -312,6 +313,23 @@ class CLIApplication:
                     track_state.user = None
                     track_state.last_seen = current_time
                     track_state.last_recognition_time = current_time
+
+                if reg_state.manual_active:
+                    if result is True:
+                        self.state.stop_manual_registration()
+                        self.state.clear_captured_samples()
+                        print("Face already exists in the database. CLI registration canceled.")
+                    elif reg_state.in_progress:
+                        self.state.stop_manual_registration()
+
+            reg_state = self.state.registration_state
+            if registration_prompted and not reg_state.in_progress:
+                registration_prompted = False
+
+            if reg_state.in_progress and reg_state.pending_registration and not registration_prompted:
+                registration_prompted = True
+                self.handle_registration()
+                self.state.set_recognized_user(None)
 
             for i, (crop, (quality_score, _quality_status)) in enumerate(zip(face_crops[:5], face_qualities[:5])):
                 crop_h, crop_w = crop.shape[:2]
@@ -345,7 +363,7 @@ class CLIApplication:
 
             cv2.putText(
                 frame,
-                "Controls: [R] Reset  [Q] Quit",
+                "Controls: [N] New User  [R] Reset  [Q] Quit",
                 (10, 25),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -368,6 +386,20 @@ class CLIApplication:
                     f"({self.state.recognized_user['confidence']})"
                 )
                 status_color = (0, 255, 0)
+            elif reg_state.in_progress:
+                status_text = (
+                    f"Registration ready - "
+                    f"{len(reg_state.pending_registration or [])}/{reg_state.max_captures} samples"
+                )
+                status_color = (0, 165, 255)
+            elif reg_state.manual_active:
+                status_text = (
+                    f"CLI capture in progress: {reg_state.capture_count}/{reg_state.max_captures}"
+                )
+                status_color = (0, 165, 255)
+            elif reg_state.manual_requested:
+                status_text = "CLI registration requested - hold still"
+                status_color = (0, 165, 255)
             else:
                 status_text = "Scanning for faces..."
                 status_color = (255, 255, 255)
@@ -390,17 +422,40 @@ class CLIApplication:
                 break
             if key == ord("r"):
                 self.state.set_recognized_user(None)
+                self.state.stop_manual_registration()
+                self.state.clear_captured_samples()
+                self.state.complete_registration()
                 self.state.clear_tracking_state()
+                registration_prompted = False
                 print("Recognition status reset")
+            if key == ord("n"):
+                reg_state = self.state.registration_state
+                if reg_state.in_progress or reg_state.manual_active or reg_state.manual_requested:
+                    print("CLI registration is already in progress.")
+                else:
+                    self.state.request_manual_registration()
+                    registration_prompted = False
+                    print("CLI registration requested. Hold still so the system can capture samples.")
 
         camera.release()
         cv2.destroyAllWindows()
 
     def handle_registration(self):
-        print("Terminal registration is disabled. Please use the website register page.")
+        reg_state = self.state.registration_state
+        pending_registration = reg_state.pending_registration or []
+        if not pending_registration:
+            print("No pending registration samples.")
+            return
+
+        print("\n" + "=" * 50)
+        print("CLI CAPTURE COMPLETE")
+        print("=" * 50)
+        print(f"Captured {len(pending_registration)} face samples")
+        print("Open the website register page to enter the user details and submit this captured face set.")
+        print("The pending samples will stay available until the website registration is completed or reset.")
 
     def main_menu(self):
         stream_url = os.environ.get("CCTV_STREAM_URL", "0").strip() or "0"
         print("The website is running at the same time with detection and recognition.")
-        print("The register is only on the website, there should be no options on the terminal.")
+        print("You can also press 'n' in the CCTV window to register from the CLI.")
         self.process_cctv_stream(stream_url)

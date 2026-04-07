@@ -5,6 +5,7 @@ import csv
 import io
 import math
 import time
+import base64
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -91,21 +92,6 @@ def create_routes_blueprint(deps):
                 return None
         return None
 
-    def _safe_float(value, fallback):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float(fallback)
-
-    def _clamp(value, minimum, maximum):
-        return max(minimum, min(maximum, value))
-
-    def _coerce_runtime_thresholds(threshold_raw, quality_threshold_raw):
-        current_threshold, current_quality_threshold = deps["get_thresholds"]()
-        threshold_value = _safe_float(threshold_raw, current_threshold)
-        quality_value = _safe_float(quality_threshold_raw, current_quality_threshold)
-        return _clamp(threshold_value, 0.0, 1.0), _clamp(quality_value, 0.0, 1.0)
-
     def _decode_uploaded_image(file_storage):
         if not file_storage:
             return None
@@ -118,9 +104,76 @@ def create_routes_blueprint(deps):
             return None
         return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
 
+    def _registration_sample_previews(reg_state):
+        samples = reg_state.pending_registration or reg_state.captured_samples or []
+        previews = []
+        for index, sample in enumerate(samples[: reg_state.max_captures]):
+            face_crop = getattr(sample, "face_crop", None)
+            if face_crop is None or getattr(face_crop, "size", 0) == 0:
+                continue
+            preview = face_crop
+            if preview.shape[0] > 160:
+                scale = 160.0 / preview.shape[0]
+                preview = cv2.resize(
+                    preview,
+                    (max(1, int(preview.shape[1] * scale)), 160),
+                    interpolation=cv2.INTER_AREA,
+                )
+            success, encoded = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if not success:
+                continue
+            previews.append(
+                {
+                    "id": index,
+                    "quality_score": round(float(getattr(sample, "quality", 0.0)), 2),
+                    "image_url": "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii"),
+                }
+            )
+        return previews
+
     def _extract_largest_face(image):
         if image is None or image.size == 0:
             return None, None
+
+        yolo_model = deps.get("yolo_model")
+        if yolo_model is not None:
+            try:
+                yolo_results = yolo_model.predict(
+                    source=image,
+                    verbose=False,
+                    device=deps.get("yolo_device", "cpu"),
+                )
+                for result in yolo_results or []:
+                    if result.boxes is None:
+                        continue
+
+                    best_box = None
+                    best_area = -1
+                    for box in result.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        w = x2 - x1
+                        h = y2 - y1
+                        if w < deps["config"].min_face_size or h < deps["config"].min_face_size:
+                            continue
+                        area = w * h
+                        if area > best_area:
+                            best_area = area
+                            best_box = box
+
+                    if best_box is not None:
+                        x1, y1, x2, y2 = map(int, best_box.xyxy[0])
+                        x1 = max(x1, 0)
+                        y1 = max(y1, 0)
+                        x2 = min(x2, image.shape[1])
+                        y2 = min(y2, image.shape[0])
+                        face_crop = image[y1:y2, x1:x2]
+                        if face_crop.size != 0:
+                            detection_confidence = (
+                                float(best_box.conf[0]) if best_box.conf is not None else None
+                            )
+                            return face_crop, detection_confidence
+            except Exception:
+                pass
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         classifier = cv2.CascadeClassifier(
@@ -463,13 +516,10 @@ def create_routes_blueprint(deps):
     @role_required("super_admin")
     def settings():
         if request.method == "POST":
-            threshold, quality_threshold = _coerce_runtime_thresholds(
-                request.form.get("threshold", deps["get_thresholds"]()[0]),
-                request.form.get("quality_threshold", deps["get_thresholds"]()[1]),
-            )
             deps["set_thresholds"](
-                threshold,
-                quality_threshold,
+                float(request.form.get("threshold", deps["get_thresholds"]()[0])),
+                request.form.get("adaptive_threshold") == "on",
+                float(request.form.get("quality_threshold", deps["get_thresholds"]()[2])),
             )
             max_occupancy_raw = request.form.get("max_occupancy", "").strip()
             if max_occupancy_raw:
@@ -756,6 +806,7 @@ def create_routes_blueprint(deps):
                 "has_pending_registration": bool(reg_state.pending_registration),
                 "is_in_progress": reg_state.in_progress,
                 "detection_paused": bool(deps["detection_paused"]()),
+                "sample_previews": _registration_sample_previews(reg_state),
             }
         )
 
@@ -807,8 +858,7 @@ def create_routes_blueprint(deps):
             face_crop,
             detection_confidence=detection_confidence,
         )
-        runtime_quality_threshold = deps["get_thresholds"]()[1]
-        if quality_score < runtime_quality_threshold:
+        if quality_score < deps["config"].face_quality_threshold:
             return jsonify(
                 {
                     "success": False,
@@ -847,9 +897,10 @@ def create_routes_blueprint(deps):
 
         name = request.form.get("name", "").strip()
         sr_code = request.form.get("sr_code", "").strip()
+        gender = request.form.get("gender", "").strip()
         course = request.form.get("course", "").strip()
-        if not name or not sr_code or not course:
-            return jsonify({"success": False, "message": "Name, SR Code, and course are required."}), 400
+        if not name or not sr_code or not gender or not course:
+            return jsonify({"success": False, "message": "Name, SR Code, gender, and course are required."}), 400
 
         repository = deps["repository"]
         existing = repository.get_user_by_sr_code(sr_code)
@@ -872,6 +923,7 @@ def create_routes_blueprint(deps):
                 id=existing.id if existing else 0,
                 name=name,
                 sr_code=sr_code,
+                gender=gender,
                 course=course,
                 embeddings=all_embeddings,
                 image_paths=image_paths,
@@ -896,6 +948,7 @@ def create_routes_blueprint(deps):
                 "user_id": saved_user.id,
                 "name": saved_user.name,
                 "sr_code": saved_user.sr_code,
+                "gender": saved_user.gender,
                 "course": saved_user.course,
             }
         return jsonify(
@@ -1041,13 +1094,10 @@ def create_routes_blueprint(deps):
     def api_settings():
         if request.method == "POST":
             payload = request.get_json(silent=True) or {}
-            threshold, quality_threshold = _coerce_runtime_thresholds(
-                payload.get("threshold", deps["get_thresholds"]()[0]),
-                payload.get("quality_threshold", deps["get_thresholds"]()[1]),
-            )
             deps["set_thresholds"](
-                threshold,
-                quality_threshold,
+                float(payload.get("threshold", deps["get_thresholds"]()[0])),
+                bool(payload.get("adaptive_threshold")),
+                float(payload.get("quality_threshold", deps["get_thresholds"]()[2])),
             )
             max_occupancy_raw = str(payload.get("max_occupancy", "")).strip()
             if max_occupancy_raw:
@@ -1057,7 +1107,7 @@ def create_routes_blueprint(deps):
                     max_occupancy_value = 300
                 _set_setting(deps["db_path"], "max_occupancy", max_occupancy_value)
 
-        threshold, quality_threshold = deps["get_thresholds"]()
+        threshold, adaptive_threshold, quality_threshold = deps["get_thresholds"]()
         max_occupancy_setting = _get_setting(deps["db_path"], "max_occupancy", "300")
         try:
             max_occupancy = int(max_occupancy_setting)
@@ -1067,6 +1117,7 @@ def create_routes_blueprint(deps):
             {
                 "user_count": deps["get_user_count"](),
                 "threshold": threshold,
+                "adaptive_threshold": adaptive_threshold,
                 "quality_threshold": quality_threshold,
                 "max_occupancy": max_occupancy,
             }
@@ -1080,7 +1131,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, created_at, last_updated
+            SELECT user_id, name, sr_code, gender, course, created_at, last_updated
             FROM users
             ORDER BY created_at DESC
             """
@@ -1090,9 +1141,10 @@ def create_routes_blueprint(deps):
                 "user_id": row[0],
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
-                "course": row[3] or "-",
-                "created_at": row[4] or "-",
-                "last_updated": row[5] or "-",
+                "gender": row[3] or "-",
+                "course": row[4] or "-",
+                "created_at": row[5] or "-",
+                "last_updated": row[6] or "-",
             }
             for row in c.fetchall()
         ]
@@ -1107,7 +1159,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, created_at, last_updated
+            SELECT user_id, name, sr_code, gender, course, created_at, last_updated
             FROM users
             WHERE archived_at IS NULL
             ORDER BY created_at DESC
@@ -1118,9 +1170,10 @@ def create_routes_blueprint(deps):
                 "user_id": row[0],
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
-                "course": row[3] or "-",
-                "created_at": row[4] or "-",
-                "last_updated": row[5] or "-",
+                "gender": row[3] or "-",
+                "course": row[4] or "-",
+                "created_at": row[5] or "-",
+                "last_updated": row[6] or "-",
             }
             for row in c.fetchall()
         ]
@@ -1160,7 +1213,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, created_at, last_updated, archived_at
+            SELECT user_id, name, sr_code, gender, course, created_at, last_updated, archived_at
             FROM users
             WHERE archived_at IS NOT NULL
             ORDER BY archived_at DESC
@@ -1171,10 +1224,11 @@ def create_routes_blueprint(deps):
                 "user_id": row[0],
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
-                "course": row[3] or "-",
-                "created_at": row[4] or "-",
-                "last_updated": row[5] or "-",
-                "archived_at": row[6] or "-",
+                "gender": row[3] or "-",
+                "course": row[4] or "-",
+                "created_at": row[5] or "-",
+                "last_updated": row[6] or "-",
+                "archived_at": row[7] or "-",
             }
             for row in c.fetchall()
         ]
@@ -1414,7 +1468,7 @@ def create_routes_blueprint(deps):
             return jsonify(result), status
         except Exception as e:
             return jsonify({
-                "message": "Analytics pipeline failed to run.",
+                "message": f"Analytics pipeline failed to run: {e}",
                 "details": str(e),
             }), 500
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import statistics
 import time
+from collections import deque
 
 import cv2
 import numpy as np
@@ -27,153 +29,33 @@ class FaceRecognitionService:
         self.repository = repository
         self.embedding_service = embedding_service
         self.detector_dataset_service = DetectorDatasetService(config)
-        self._search_index_signature: tuple | None = None
-        self._search_index_cache: dict[str, dict[str, object]] = {}
+        self.recognition_history: dict[int, deque[float]] = {}
+        self.confidence_smoothing: dict[int, deque[float]] = {}
 
-    def _invalidate_search_index(self) -> None:
-        self._search_index_signature = None
-        self._search_index_cache = {}
+    def calculate_dynamic_threshold(self, user_id: int, face_quality: float) -> float:
+        base_threshold = self.state.base_threshold
 
-    def _compute_search_index_signature(self) -> tuple:
-        users = self.state.users
-        primary = self.config.primary_model
-        secondary = self.config.secondary_model
-        return tuple(
-            (user.id, len(user.embeddings.get(primary, [])), len(user.embeddings.get(secondary, [])))
-            for user in users
-        )
+        if face_quality < 0.5:
+            quality_adjustment = 0.1
+        elif face_quality < 0.7:
+            quality_adjustment = 0.05
+        else:
+            quality_adjustment = -0.05
 
-    def _rebuild_search_indices(self) -> None:
-        users = self.state.users
-        model_names = (self.config.primary_model, self.config.secondary_model)
-        fresh_cache: dict[str, dict[str, object]] = {}
+        if user_id in self.recognition_history and len(self.recognition_history[user_id]) > 0:
+            avg_confidence = statistics.mean(self.recognition_history[user_id])
+            history_adjustment = (0.5 - avg_confidence) * 0.2
+        else:
+            history_adjustment = 0.0
 
-        for model_name in model_names:
-            embeddings: list[np.ndarray] = []
-            user_indices: list[int] = []
-            dims: list[int] = []
+        dynamic_threshold = base_threshold + quality_adjustment + history_adjustment
+        return max(0.2, min(0.6, dynamic_threshold))
 
-            for user_idx, user in enumerate(users):
-                for emb in user.embeddings.get(model_name, []):
-                    if not isinstance(emb, np.ndarray):
-                        continue
-                    if emb.ndim != 1 or emb.size == 0:
-                        continue
-                    emb_f32 = emb.astype(np.float32, copy=False)
-                    embeddings.append(emb_f32)
-                    user_indices.append(user_idx)
-                    dims.append(int(emb_f32.shape[0]))
-
-            fresh_cache[model_name] = {
-                "embeddings": embeddings,
-                "user_indices": np.array(user_indices, dtype=np.int32) if user_indices else np.array([], dtype=np.int32),
-                "dims": np.array(dims, dtype=np.int32) if dims else np.array([], dtype=np.int32),
-            }
-
-        self._search_index_cache = fresh_cache
-        self._search_index_signature = self._compute_search_index_signature()
-
-    def _ensure_search_indices(self) -> None:
-        current_signature = self._compute_search_index_signature()
-        if self._search_index_signature != current_signature:
-            self._rebuild_search_indices()
-
-    def _best_distance_by_user(self, model_name: str, query_embedding: np.ndarray) -> np.ndarray:
-        users = self.state.users
-        best_distances = np.full(len(users), np.inf, dtype=np.float32)
-        if len(users) == 0:
-            return best_distances
-
-        model_cache = self._search_index_cache.get(model_name)
-        if not model_cache:
-            return best_distances
-
-        embeddings: list[np.ndarray] = model_cache.get("embeddings", [])
-        if not embeddings:
-            return best_distances
-
-        dims: np.ndarray = model_cache.get("dims")
-        user_indices: np.ndarray = model_cache.get("user_indices")
-        if dims.size == 0 or user_indices.size == 0:
-            return best_distances
-
-        query_dim = int(query_embedding.shape[0])
-        matching_indices = np.where(dims == query_dim)[0]
-        if matching_indices.size == 0:
-            return best_distances
-
-        matrix = np.vstack([embeddings[int(i)] for i in matching_indices]).astype(np.float32, copy=False)
-        similarities = matrix @ query_embedding.astype(np.float32, copy=False)
-        distances = 1.0 - similarities
-
-        per_embedding_user_idx = user_indices[matching_indices]
-        np.minimum.at(best_distances, per_embedding_user_idx, distances)
-        return best_distances
-
-    def _select_candidate_user_indices(self, primary_distances: np.ndarray, secondary_distances: np.ndarray) -> np.ndarray:
-        finite_primary = np.isfinite(primary_distances)
-        finite_secondary = np.isfinite(secondary_distances)
-        eligible = np.where(finite_primary & finite_secondary)[0]
-        if eligible.size == 0:
-            return eligible
-
-        top_k = max(int(self.config.vector_search_top_k_per_model), 0)
-        if top_k <= 0:
-            return eligible
-
-        primary_rank = np.argsort(primary_distances[eligible])
-        secondary_rank = np.argsort(secondary_distances[eligible])
-
-        top_primary = eligible[primary_rank[:top_k]]
-        top_secondary = eligible[secondary_rank[:top_k]]
-        return np.union1d(top_primary, top_secondary)
-
-    @staticmethod
-    def _min_cosine_distance(query_embedding: np.ndarray, existing_embeddings: list[np.ndarray]) -> float | None:
-        if not isinstance(query_embedding, np.ndarray) or query_embedding.ndim != 1 or query_embedding.size == 0:
-            return None
-
-        candidates = [
-            emb
-            for emb in existing_embeddings
-            if isinstance(emb, np.ndarray) and emb.ndim == 1 and emb.shape == query_embedding.shape and emb.size > 0
-        ]
-        if not candidates:
-            return None
-
-        stacked = np.vstack(candidates)
-        similarities = stacked @ query_embedding
-        distances = 1.0 - similarities
-        return float(np.min(distances))
-
-    def _try_add_learning_embedding(
-        self,
-        user,
-        model_name: str,
-        new_embedding: np.ndarray | None,
-        quality_score: float,
-    ) -> bool:
-        if new_embedding is None or not isinstance(new_embedding, np.ndarray):
-            return False
-        if new_embedding.ndim != 1 or new_embedding.size == 0:
-            return False
-        if quality_score < self.config.recognition_min_quality_for_learning:
-            return False
-
-        model_embeddings = user.embeddings.setdefault(model_name, [])
-        min_distance = self._min_cosine_distance(new_embedding, model_embeddings)
-        if (
-            min_distance is not None
-            and min_distance < self.config.embedding_novelty_min_distance
-        ):
-            return False
-
-        model_embeddings.append(new_embedding.astype(np.float32, copy=False))
-
-        max_keep = max(int(self.config.max_embeddings_per_user_per_model), 1)
-        if len(model_embeddings) > max_keep:
-            del model_embeddings[:-max_keep]
-        return True
+    def smooth_confidence(self, user_id: int, confidence: float) -> float:
+        if user_id not in self.confidence_smoothing:
+            self.confidence_smoothing[user_id] = deque(maxlen=self.config.confidence_smoothing_window)
+        self.confidence_smoothing[user_id].append(confidence)
+        return statistics.mean(self.confidence_smoothing[user_id])
 
     def find_best_match(self, query_embeddings, face_quality: float) -> RecognitionResult | None:
         if self.config.primary_model not in query_embeddings or self.config.secondary_model not in query_embeddings:
@@ -184,28 +66,48 @@ class FaceRecognitionService:
         secondary_emb = first_embedding(query_embeddings, self.config.secondary_model)
         if primary_emb is None or secondary_emb is None:
             return None
-        if not isinstance(primary_emb, np.ndarray) or not isinstance(secondary_emb, np.ndarray):
-            return None
-        if primary_emb.ndim != 1 or secondary_emb.ndim != 1:
-            return None
 
         best_match: RecognitionResult | None = None
 
         users = self.state.users
-        self._ensure_search_indices()
-        primary_best_by_user = self._best_distance_by_user(self.config.primary_model, primary_emb)
-        secondary_best_by_user = self._best_distance_by_user(self.config.secondary_model, secondary_emb)
-        candidate_user_indices = self._select_candidate_user_indices(primary_best_by_user, secondary_best_by_user)
-        primary_threshold = max(self.config.primary_threshold, self.state.base_threshold)
-        secondary_threshold = max(self.config.secondary_threshold, self.state.base_threshold)
+        for user_idx, user in enumerate(users):
+            user_embeddings_by_model = user.embeddings
+            if self.config.primary_model not in user_embeddings_by_model:
+                continue
+            if self.config.secondary_model not in user_embeddings_by_model:
+                continue
 
-        for user_idx in candidate_user_indices:
-            user = users[int(user_idx)]
-            primary_best_dist = float(primary_best_by_user[int(user_idx)])
-            secondary_best_dist = float(secondary_best_by_user[int(user_idx)])
+            primary_best_dist = float("inf")
+            for user_embedding in user_embeddings_by_model.get(self.config.primary_model, []):
+                if not isinstance(user_embedding, np.ndarray):
+                    continue
+                if user_embedding.size == 0 or user_embedding.ndim != 1:
+                    continue
+                if primary_emb.shape != user_embedding.shape:
+                    continue
+                distance = 1 - float(np.dot(primary_emb, user_embedding))
+                primary_best_dist = min(primary_best_dist, distance)
+
+            secondary_best_dist = float("inf")
+            for user_embedding in user_embeddings_by_model.get(self.config.secondary_model, []):
+                if not isinstance(user_embedding, np.ndarray):
+                    continue
+                if user_embedding.size == 0 or user_embedding.ndim != 1:
+                    continue
+                if secondary_emb.shape != user_embedding.shape:
+                    continue
+                distance = 1 - float(np.dot(secondary_emb, user_embedding))
+                secondary_best_dist = min(secondary_best_dist, distance)
+
+            if primary_best_dist == float("inf") or secondary_best_dist == float("inf"):
+                continue
 
             primary_confidence = 1 - primary_best_dist
             secondary_confidence = 1 - secondary_best_dist
+
+            dynamic_threshold = self.calculate_dynamic_threshold(user.id, face_quality)
+            primary_threshold = max(self.config.primary_threshold, dynamic_threshold)
+            secondary_threshold = max(self.config.secondary_threshold, dynamic_threshold)
 
             primary_pass = primary_confidence >= primary_threshold
             secondary_pass = secondary_confidence >= secondary_threshold
@@ -227,10 +129,13 @@ class FaceRecognitionService:
                     secondary_distance=secondary_best_dist,
                     threshold=(primary_threshold + secondary_threshold) / 2,
                     user=user,
-                    user_index=int(user_idx),
+                    user_index=user_idx,
                 )
 
         if best_match:
+            if best_match.user_id not in self.recognition_history:
+                self.recognition_history[best_match.user_id] = deque(maxlen=50)
+            self.recognition_history[best_match.user_id].append(best_match.confidence)
             self.repository.log_recognition(best_match, face_quality=face_quality, method="two-factor")
             print(
                 f"  [OK] 2-Factor Verified: {best_match.user.name} "
@@ -284,64 +189,40 @@ class FaceRecognitionService:
             return None
 
         if best_match:
+            timestamp = int(time.time() * 1000)
+            user_folder = os.path.join(self.config.base_save_dir, best_match.user.sr_code)
+            os.makedirs(user_folder, exist_ok=True)
+            filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
+            cv2.imwrite(filename, face_crop)
+            dataset_entry = self.detector_dataset_service.save_recognized_face_crop(
+                face_crop=face_crop,
+                sr_code=best_match.user.sr_code,
+                timestamp=timestamp,
+            )
+            if dataset_entry:
+                dataset_image_path, _dataset_label_path = dataset_entry
+                print(f"[OK] Added recognized crop to detector training dataset: {dataset_image_path}")
+
             primary_new = first_embedding(embeddings, self.config.primary_model)
             secondary_new = first_embedding(embeddings, self.config.secondary_model)
+            if primary_new is not None:
+                best_match.user.embeddings.setdefault(self.config.primary_model, []).append(primary_new)
+            if secondary_new is not None:
+                best_match.user.embeddings.setdefault(self.config.secondary_model, []).append(secondary_new)
 
-            learned_by_model: dict[str, list[np.ndarray]] = {}
-            if self._try_add_learning_embedding(
-                best_match.user,
-                self.config.primary_model,
-                primary_new,
-                quality_score,
-            ):
-                learned_by_model[self.config.primary_model] = [primary_new]
-
-            if self._try_add_learning_embedding(
-                best_match.user,
-                self.config.secondary_model,
-                secondary_new,
-                quality_score,
-            ):
-                learned_by_model[self.config.secondary_model] = [secondary_new]
-
-            active_user = best_match.user
-            if learned_by_model:
-                timestamp = int(time.time() * 1000)
-                user_folder = os.path.join(self.config.base_save_dir, best_match.user.sr_code)
-                os.makedirs(user_folder, exist_ok=True)
-                filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
-                cv2.imwrite(filename, face_crop)
-
-                dataset_entry = self.detector_dataset_service.save_recognized_face_crop(
-                    face_crop=face_crop,
-                    sr_code=best_match.user.sr_code,
-                    timestamp=timestamp,
-                )
-                if dataset_entry:
-                    dataset_image_path, _dataset_label_path = dataset_entry
-                    print(f"[OK] Added recognized crop to detector training dataset: {dataset_image_path}")
-
-                updated_user = self.repository.overwrite_embeddings(
-                    best_match.user_id,
-                    best_match.user.embeddings,
-                    image_path=filename,
-                )
-                if updated_user:
-                    self.state.replace_user(updated_user)
-                    active_user = updated_user
-                else:
-                    self.state.replace_user(best_match.user)
-
-                self._invalidate_search_index()
-
-                total_embeddings = count_embeddings(active_user.embeddings)
-                print(
-                    f"[OK] Learned embedding update for {active_user.name} "
-                    f"(total: {total_embeddings} embeddings across models)"
-                )
+            updated_user = self.repository.update_embeddings(best_match.user_id, embeddings, image_path=filename)
+            if updated_user:
+                self.state.replace_user(updated_user)
+                active_user = updated_user
             else:
                 self.state.replace_user(best_match.user)
-                print("[INFO] Recognition accepted, but learning skipped (quality/novelty gate).")
+                active_user = best_match.user
+
+            total_embeddings = count_embeddings(active_user.embeddings)
+            print(
+                f"[OK] Learned new embedding for {active_user.name} "
+                f"(total: {total_embeddings} embeddings across models)"
+            )
 
             recognized_payload = recognized_user_payload(best_match)
             self.state.set_recognized_user(recognized_payload)

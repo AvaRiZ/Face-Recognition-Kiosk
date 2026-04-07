@@ -9,155 +9,36 @@ import torch
 
 @dataclass
 class AppConfig:
-    # ---------------------------
-    # Paths and storage
-    # ---------------------------
     model_path: str = "models/yolov8n-face.pt"
     db_path: str = "database/faces_improved.db"
     base_save_dir: str = "faces_improved"
     detector_dataset_dir: str = "detector_dataset"
     detector_train_split: str = "train"
     real_val_dataset_dir: str = "real_val_dataset"
-
-    # ---------------------------
-    # Validation frame capture
-    # ---------------------------
-    # Saves raw CCTV frames for offline detector validation.
     real_val_capture_enabled: bool = True
-    # Save one frame every N frames while capture is enabled.
     real_val_capture_every_n_frames: int = 90
-    # Hard cap to prevent unbounded disk growth.
     real_val_capture_max_frames: int = 300
-
-    # ---------------------------
-    # Embedding models
-    # ---------------------------
     primary_model: str = "ArcFace"
     secondary_model: str = "Facenet"
-
-    # ---------------------------
-    # Recognition thresholds
-    # ---------------------------
-    # Minimum confidence required per model. Higher values reduce false accepts,
-    # but may increase misses for hard faces (blur, side pose, low light).
-
     primary_threshold: float = 0.7
     secondary_threshold: float = 0.6
-
-    # Global recognition threshold floor set from settings.
-    # Increasing this generally makes recognition stricter system-wide.
     base_threshold: float = 0.5
-
-    # ---------------------------
-    # Face quality gates
-    # ---------------------------
-    # Faces below this score are skipped before recognition.
+    adaptive_threshold_enabled: bool = True
     face_quality_threshold: float = 0.58
-    # "Good" quality target used for color/status and high-confidence actions.
     face_quality_good_threshold: float = 0.75
-
-    # ---------------------------
-    # Runtime and scheduling
-    # ---------------------------
     min_face_size: int = 50
     confidence_smoothing_window: int = 3
-
-    # Detector scheduling: run detection every N frames when enabled.
-    # Increase N for better FPS, decrease N for fresher detections.
     detection_every_n_frames: int = 2
-    enable_detection_frame_scheduling: bool = True
-
-    # Prevent repeated recognition attempts on the same track too frequently.
     recognition_cooldown_seconds: int = 1
-
-    # ---------------------------
-    # Vectorized matching (Phase 1)
-    # ---------------------------
-    # 0 means evaluate all users after vectorized distance computation.
-    # Set > 0 to evaluate only top-k nearest candidates per model.
-    vector_search_top_k_per_model: int = 0
-
-    # ---------------------------
-    # Continuous learning controls
-    # ---------------------------
-    # Max number of stored embeddings per user per model.
-    # Lower values reduce memory and matching cost; very low values can hurt recall.
-    max_embeddings_per_user_per_model: int = 30
-
-    # Minimum cosine distance from existing embeddings to accept a new sample.
-    # Smaller value learns more aggressively; larger value learns only novel samples.
-    embedding_novelty_min_distance: float = 0.08
-
-    # Require this quality score before writing new learned embeddings.
-    recognition_min_quality_for_learning: float = 0.75
-
-    # ---------------------------
-    # Tracking stability
-    # ---------------------------
-    # Required stable time before recognition is attempted.
     stability_time_required: float = 0.3
-    # Pixel movement tolerance used by the stability tracker.
     position_tolerance: int = 200
-    # Remove stale tracks after this many seconds.
     track_stale_seconds: float = 5.0
-    # Smooth quality jitter per active track using a short moving window.
-    quality_temporal_smoothing_enabled: bool = True
-    quality_temporal_smoothing_window: int = 5
-    # Adapt selected quality weights based on detection confidence and landmark quality source.
-    quality_confidence_weighting_enabled: bool = True
-    quality_confidence_weight_floor: float = 0.55
-    quality_confidence_weight_approx_factor: float = 0.75
-    quality_confidence_detection_weight_boost: float = 0.35
-    # Hybrid gate controls: hard reject extreme failures, soft-penalize borderline low scores.
-    quality_hard_gate_enabled: bool = True
-    quality_hard_gate_min_face_area: int = 34 * 34
-    quality_hard_gate_min_laplacian: float = 20.0
-    quality_hard_gate_min_dynamic_range: float = 18.0
-    quality_hard_gate_max_shadow_clip_ratio: float = 0.70
-    quality_hard_gate_max_highlight_clip_ratio: float = 0.70
-    quality_soft_gate_enabled: bool = True
-    quality_soft_gate_floor: float = 0.45
-    quality_soft_gate_min_multiplier: float = 0.60
-    # Keep explainability off in the real-time loop; enable explicitly for tuning runs.
-    quality_explainability_enabled: bool = False
-    quality_explainability_top_k: int = 3
-
-    # ---------------------------
-    # Quality metric thresholds
-    # ---------------------------
-    # Tuning guide:
-    # 1) Start with acceptance gates (`*_hard_min`, `*_bad`).
-    # 2) Then tune scoring ranges (`*_low`/`*_high`).
-    # 3) Validate on day/night and front/side samples before deploying.
-    #
-    # Naming guide:
-    # - `*_low` / `*_high`: score interpolation anchors.
-    # - `*_good` / `*_bad`: ratio targets for favorable/unfavorable conditions.
-
-    # Face size and detector confidence.
-    # Raise these to be stricter when small or uncertain detections are noisy.
-    quality_face_area_hard_min: int = 36 * 36
     quality_face_area_low: int = 50 * 50
     quality_face_area_high: int = 130 * 130
-    quality_size_curve_exponent: float = 1.8
     quality_detection_confidence_low: float = 0.35
     quality_detection_confidence_high: float = 0.80
-
-    # Detail/texture quality (focus and edges).
-    # Increase lows if blur frequently passes quality checks.
     quality_sharpness_low: float = 80.0
     quality_sharpness_high: float = 250.0
-    quality_canny_low: int = 50
-    quality_canny_high: int = 150
-    quality_edge_magnitude_threshold: float = 18.0
-    quality_edge_density_low: float = 0.03
-    quality_edge_density_high: float = 0.12
-    quality_low_detail_std_threshold: float = 12.0
-    quality_low_detail_ratio_good: float = 0.20
-    quality_low_detail_ratio_bad: float = 0.65
-
-    # Exposure and tonal range.
-    # If low-light scenes are over-rejected, relax dark/clip bad ratios first.
     quality_contrast_low: float = 20.0
     quality_contrast_high: float = 60.0
     quality_dark_intensity_threshold: int = 40
@@ -168,15 +49,13 @@ class AppConfig:
     quality_bright_ratio_bad: float = 0.28
     quality_dynamic_range_low: float = 30.0
     quality_dynamic_range_high: float = 90.0
-    quality_shadow_clip_intensity_threshold: int = 12
-    quality_highlight_clip_intensity_threshold: int = 245
-    quality_shadow_clip_ratio_good: float = 0.02
-    quality_shadow_clip_ratio_bad: float = 0.20
-    quality_highlight_clip_ratio_good: float = 0.02
-    quality_highlight_clip_ratio_bad: float = 0.20
-
-    # Geometric alignment and pose stability.
-    # Tighten `*_bad` values to reject off-angle or poorly aligned faces earlier.
+    quality_canny_low: int = 50
+    quality_canny_high: int = 150
+    quality_edge_density_low: float = 0.03
+    quality_edge_density_high: float = 0.12
+    quality_low_detail_std_threshold: float = 12.0
+    quality_low_detail_ratio_good: float = 0.20
+    quality_low_detail_ratio_bad: float = 0.65
     quality_eye_tilt_good_ratio: float = 0.08
     quality_eye_tilt_bad_ratio: float = 0.20
     quality_pose_good_ratio: float = 0.10
@@ -186,11 +65,6 @@ class AppConfig:
     quality_pose_balance_good: float = 0.15
     quality_pose_balance_bad: float = 0.45
 
-    # ---------------------------
-    # Quality score weights
-    # ---------------------------
-    # Combined quality score is a weighted blend of features.
-    # Increase a weight to make that feature influence quality more.
     quality_weight_size: float = 0.22
     quality_weight_sharpness: float = 0.24
     quality_weight_detection_confidence: float = 0.20
@@ -200,9 +74,6 @@ class AppConfig:
     quality_weight_contrast: float = 0.03
     quality_weight_occlusion: float = 0.02
 
-    # ---------------------------
-    # Device selection
-    # ---------------------------
     torch_device_index: int = 0
     tf_use_gpu: bool = True
 

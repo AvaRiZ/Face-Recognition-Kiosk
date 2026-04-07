@@ -18,6 +18,7 @@ class User:
     id: int
     name: str
     sr_code: str
+    gender: str = ""
     course: str = ""
     embeddings: EmbeddingMap = field(default_factory=dict)
     image_paths: list[str] = field(default_factory=list)
@@ -80,6 +81,7 @@ def recognized_user_payload(result: RecognitionResult) -> dict[str, str]:
     return {
         "name": result.user.name,
         "sr_code": result.user.sr_code,
+        "gender": result.user.gender,
         "course": result.user.course,
         "confidence": f"{result.confidence:.2%}",
         "distance": f"{result.distance:.4f}",

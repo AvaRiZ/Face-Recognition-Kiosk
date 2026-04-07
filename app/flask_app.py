@@ -41,6 +41,8 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
         "remove_user_embedding": state.remove_user,
         "replace_user": state.replace_user,
         "render_markdown_as_html": render_markdown_as_html,
+        "yolo_model": cli.yolo_model if cli else None,
+        "yolo_device": cli.yolo_device if cli else "cpu",
         "pause_detection": cli.pause_detection if cli else (lambda: None),
         "resume_detection": cli.resume_detection if cli else (lambda: None),
         "detection_paused": cli.detection_paused if cli else (lambda: False),
@@ -58,10 +60,7 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
             return None
         if request.path.startswith("/static") or request.path.startswith("/api/detection/"):
             return None
-        if request.path == "/register" or request.path.startswith("/api/register"):
-            cli.pause_detection()
-        else:
-            cli.resume_detection()
+        cli.resume_detection()
         return None
 
     @app.route("/")

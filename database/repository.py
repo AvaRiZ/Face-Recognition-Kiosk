@@ -29,6 +29,7 @@ class UserRepository:
                 user_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
                 sr_code TEXT UNIQUE,
+                gender TEXT,
                 course TEXT,
                 embeddings BLOB NOT NULL,
                 image_paths TEXT NOT NULL,
@@ -66,6 +67,8 @@ class UserRepository:
                 c.execute(f"ALTER TABLE recognition_log ADD COLUMN {col_name} {col_type}")
 
         existing_columns = table_columns(conn, "users")
+        if "gender" not in existing_columns:
+            c.execute("ALTER TABLE users ADD COLUMN gender TEXT")
         if "archived_at" not in existing_columns:
             c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
 
@@ -77,7 +80,7 @@ class UserRepository:
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, embeddings, image_paths, embedding_dim
+            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim
             FROM users
             WHERE archived_at IS NULL
             """
@@ -86,7 +89,7 @@ class UserRepository:
         conn.close()
 
         users: list[User] = []
-        for user_id, name, sr_code, course, emb_blob, image_paths_raw, embedding_dim in rows:
+        for user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim in rows:
             embeddings = {}
             if emb_blob:
                 embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob))
@@ -97,6 +100,7 @@ class UserRepository:
                     id=user_id,
                     name=name or "",
                     sr_code=sr_code or "",
+                    gender=gender or "",
                     course=course or "",
                     embeddings=embeddings,
                     image_paths=image_paths,
@@ -110,7 +114,7 @@ class UserRepository:
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, embeddings, image_paths, embedding_dim
+            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim
             FROM users
             WHERE sr_code = ?
             """,
@@ -121,13 +125,14 @@ class UserRepository:
         if not row:
             return None
 
-        user_id, name, sr_code, course, emb_blob, image_paths_raw, embedding_dim = row
+        user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim = row
         embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob)) if emb_blob else {}
         image_paths = image_paths_raw.split(";") if image_paths_raw else []
         return User(
             id=user_id,
             name=name or "",
             sr_code=sr_code or "",
+            gender=gender or "",
             course=course or "",
             embeddings=embeddings,
             image_paths=image_paths,
@@ -139,7 +144,7 @@ class UserRepository:
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, embeddings, image_paths, embedding_dim
+            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim
             FROM users
             WHERE user_id = ?
             """,
@@ -150,13 +155,14 @@ class UserRepository:
         if not row:
             return None
 
-        user_id, name, sr_code, course, emb_blob, image_paths_raw, embedding_dim = row
+        user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim = row
         embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob)) if emb_blob else {}
         image_paths = image_paths_raw.split(";") if image_paths_raw else []
         return User(
             id=user_id,
             name=name or "",
             sr_code=sr_code or "",
+            gender=gender or "",
             course=course or "",
             embeddings=embeddings,
             image_paths=image_paths,
@@ -180,6 +186,7 @@ class UserRepository:
                 """
                 UPDATE users
                 SET name = ?,
+                    gender = ?,
                     course = ?,
                     embeddings = ?,
                     image_paths = ?,
@@ -189,6 +196,7 @@ class UserRepository:
                 """,
                 (
                     user.name,
+                    user.gender,
                     user.course,
                     pickle.dumps(merged_embeddings),
                     ";".join(merged_paths),
@@ -200,13 +208,14 @@ class UserRepository:
             if getattr(conn, "dialect", "sqlite") == "postgres":
                 c.execute(
                     """
-                    INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO users (name, sr_code, gender, course, embeddings, image_paths, embedding_dim)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     RETURNING user_id
                     """,
                     (
                         user.name,
                         user.sr_code,
+                        user.gender,
                         user.course,
                         pickle.dumps(normalized_embeddings),
                         ";".join(user.image_paths),
@@ -217,12 +226,13 @@ class UserRepository:
             else:
                 c.execute(
                     """
-                    INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO users (name, sr_code, gender, course, embeddings, image_paths, embedding_dim)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user.name,
                         user.sr_code,
+                        user.gender,
                         user.course,
                         pickle.dumps(normalized_embeddings),
                         ";".join(user.image_paths),
@@ -240,7 +250,7 @@ class UserRepository:
         c = conn.cursor()
         c.execute(
             """
-            SELECT name, sr_code, course, embeddings, image_paths, embedding_dim
+            SELECT name, sr_code, gender, course, embeddings, image_paths, embedding_dim
             FROM users
             WHERE user_id = ?
             """,
@@ -251,7 +261,7 @@ class UserRepository:
             conn.close()
             return None
 
-        name, sr_code, course, existing_emb_blob, existing_paths_str, _ = row
+        name, sr_code, gender, course, existing_emb_blob, existing_paths_str, _ = row
         existing_embeddings = normalize_embeddings_by_model(pickle.loads(existing_emb_blob)) if existing_emb_blob else {}
         merged_embeddings = merge_embeddings_by_model(existing_embeddings, new_embeddings)
         image_paths = existing_paths_str.split(";") if existing_paths_str else []
@@ -278,63 +288,11 @@ class UserRepository:
             id=user_id,
             name=name or "",
             sr_code=sr_code or "",
+            gender=gender or "",
             course=course or "",
             embeddings=merged_embeddings,
             image_paths=image_paths,
             embedding_dim=infer_embedding_dim(merged_embeddings),
-        )
-
-    def overwrite_embeddings(
-        self,
-        user_id: int,
-        embeddings_by_model: dict[str, list[np.ndarray]],
-        image_path: str | None = None,
-    ) -> User | None:
-        conn = db_connect(self.db_path)
-        c = conn.cursor()
-        c.execute(
-            """
-            SELECT name, sr_code, course, image_paths
-            FROM users
-            WHERE user_id = ?
-            """,
-            (user_id,),
-        )
-        row = c.fetchone()
-        if not row:
-            conn.close()
-            return None
-
-        name, sr_code, course, existing_paths_str = row
-        normalized_embeddings = normalize_embeddings_by_model(embeddings_by_model)
-        image_paths = existing_paths_str.split(";") if existing_paths_str else []
-        if image_path:
-            image_paths.append(image_path)
-
-        c.execute(
-            """
-            UPDATE users
-            SET embeddings = ?, image_paths = ?, embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-            """,
-            (
-                pickle.dumps(normalized_embeddings),
-                ";".join(image_paths),
-                infer_embedding_dim(normalized_embeddings),
-                user_id,
-            ),
-        )
-        conn.commit()
-        conn.close()
-
-        return User(
-            id=user_id,
-            name=name or "",
-            sr_code=sr_code or "",
-            course=course or "",
-            embeddings=normalized_embeddings,
-            image_paths=image_paths,
-            embedding_dim=infer_embedding_dim(normalized_embeddings),
         )
 
     def delete_user(self, user_id: int) -> None:
