@@ -4,6 +4,7 @@ import os
 import statistics
 import time
 from collections import deque
+from typing import Any
 
 import cv2
 import numpy as np
@@ -31,25 +32,89 @@ class FaceRecognitionService:
         self.detector_dataset_service = DetectorDatasetService(config)
         self.recognition_history: dict[int, deque[float]] = {}
         self.confidence_smoothing: dict[int, deque[float]] = {}
+        self._vector_indexes: dict[str, dict[str, Any]] = {}
+        self._index_signature: tuple[tuple[int, int, int], ...] | None = None
 
-    def calculate_dynamic_threshold(self, user_id: int, face_quality: float) -> float:
-        base_threshold = self.state.base_threshold
+    def _compute_index_signature(self) -> tuple[tuple[int, int, int], ...]:
+        signature: list[tuple[int, int, int]] = []
+        for user in self.state.users:
+            primary_count = len(user.embeddings.get(self.config.primary_model, []))
+            secondary_count = len(user.embeddings.get(self.config.secondary_model, []))
+            signature.append((int(user.id), int(primary_count), int(secondary_count)))
+        signature.sort(key=lambda item: item[0])
+        return tuple(signature)
 
-        if face_quality < 0.5:
-            quality_adjustment = 0.1
-        elif face_quality < 0.7:
-            quality_adjustment = 0.05
+    def _normalize_vector(self, vector: np.ndarray) -> np.ndarray | None:
+        if not isinstance(vector, np.ndarray):
+            return None
+        if vector.ndim != 1 or vector.size == 0:
+            return None
+        vec = vector.astype(np.float32, copy=False)
+        norm = float(np.linalg.norm(vec))
+        if norm <= 0:
+            return None
+        return vec / norm
+
+    def _build_index_for_model(self, model_name: str) -> dict[str, Any]:
+        vectors: list[np.ndarray] = []
+        user_ids: list[int] = []
+        dim: int | None = None
+
+        for user in self.state.users:
+            for embedding in user.embeddings.get(model_name, []):
+                emb = self._normalize_vector(embedding)
+                if emb is None:
+                    continue
+                if dim is None:
+                    dim = int(emb.shape[0])
+                if emb.shape[0] != dim:
+                    continue
+                vectors.append(emb)
+                user_ids.append(int(user.id))
+
+        if not vectors or dim is None:
+            return {"vectors": None, "user_ids": [], "dim": None}
+
+        matrix = np.vstack(vectors).astype(np.float32, copy=False)
+        return {"vectors": matrix, "user_ids": user_ids, "dim": dim}
+
+    def _ensure_vector_indexes(self) -> None:
+        signature = self._compute_index_signature()
+        if signature == self._index_signature:
+            return
+
+        self._vector_indexes = {
+            self.config.primary_model: self._build_index_for_model(self.config.primary_model),
+            self.config.secondary_model: self._build_index_for_model(self.config.secondary_model),
+        }
+        self._index_signature = signature
+
+    def _query_candidate_user_ids(self, model_name: str, query_emb: np.ndarray) -> set[int]:
+        index = self._vector_indexes.get(model_name, {})
+        matrix = index.get("vectors")
+        user_ids = index.get("user_ids") or []
+        dim = index.get("dim")
+        if matrix is None or dim is None or not user_ids:
+            return set()
+        if query_emb.shape[0] != dim:
+            return set()
+
+        configured_top_k = max(1, int(self.config.vector_index_top_k))
+        neighbor_count = min(configured_top_k, len(user_ids))
+        if neighbor_count <= 0:
+            return set()
+
+        scores = matrix @ query_emb
+        if scores.size == 0:
+            return set()
+
+        if neighbor_count >= scores.shape[0]:
+            indices = np.argsort(-scores)
         else:
-            quality_adjustment = -0.05
+            top_idx = np.argpartition(-scores, neighbor_count - 1)[:neighbor_count]
+            indices = top_idx[np.argsort(-scores[top_idx])]
 
-        if user_id in self.recognition_history and len(self.recognition_history[user_id]) > 0:
-            avg_confidence = statistics.mean(self.recognition_history[user_id])
-            history_adjustment = (0.5 - avg_confidence) * 0.2
-        else:
-            history_adjustment = 0.0
-
-        dynamic_threshold = base_threshold + quality_adjustment + history_adjustment
-        return max(0.2, min(0.6, dynamic_threshold))
+        return {int(user_ids[int(idx)]) for idx in indices if 0 <= int(idx) < len(user_ids)}
 
     def smooth_confidence(self, user_id: int, confidence: float) -> float:
         if user_id not in self.confidence_smoothing:
@@ -67,10 +132,24 @@ class FaceRecognitionService:
         if primary_emb is None or secondary_emb is None:
             return None
 
+        primary_emb = self._normalize_vector(primary_emb)
+        secondary_emb = self._normalize_vector(secondary_emb)
+        if primary_emb is None or secondary_emb is None:
+            return None
+
+        self._ensure_vector_indexes()
+
+        primary_candidates = self._query_candidate_user_ids(self.config.primary_model, primary_emb)
+        secondary_candidates = self._query_candidate_user_ids(self.config.secondary_model, secondary_emb)
+        candidate_user_ids = primary_candidates | secondary_candidates
+
         best_match: RecognitionResult | None = None
 
         users = self.state.users
         for user_idx, user in enumerate(users):
+            if candidate_user_ids and user.id not in candidate_user_ids:
+                continue
+
             user_embeddings_by_model = user.embeddings
             if self.config.primary_model not in user_embeddings_by_model:
                 continue
@@ -79,24 +158,22 @@ class FaceRecognitionService:
 
             primary_best_dist = float("inf")
             for user_embedding in user_embeddings_by_model.get(self.config.primary_model, []):
-                if not isinstance(user_embedding, np.ndarray):
+                normalized_user_embedding = self._normalize_vector(user_embedding)
+                if normalized_user_embedding is None:
                     continue
-                if user_embedding.size == 0 or user_embedding.ndim != 1:
+                if primary_emb.shape != normalized_user_embedding.shape:
                     continue
-                if primary_emb.shape != user_embedding.shape:
-                    continue
-                distance = 1 - float(np.dot(primary_emb, user_embedding))
+                distance = 1 - float(np.dot(primary_emb, normalized_user_embedding))
                 primary_best_dist = min(primary_best_dist, distance)
 
             secondary_best_dist = float("inf")
             for user_embedding in user_embeddings_by_model.get(self.config.secondary_model, []):
-                if not isinstance(user_embedding, np.ndarray):
+                normalized_user_embedding = self._normalize_vector(user_embedding)
+                if normalized_user_embedding is None:
                     continue
-                if user_embedding.size == 0 or user_embedding.ndim != 1:
+                if secondary_emb.shape != normalized_user_embedding.shape:
                     continue
-                if secondary_emb.shape != user_embedding.shape:
-                    continue
-                distance = 1 - float(np.dot(secondary_emb, user_embedding))
+                distance = 1 - float(np.dot(secondary_emb, normalized_user_embedding))
                 secondary_best_dist = min(secondary_best_dist, distance)
 
             if primary_best_dist == float("inf") or secondary_best_dist == float("inf"):
@@ -105,9 +182,8 @@ class FaceRecognitionService:
             primary_confidence = 1 - primary_best_dist
             secondary_confidence = 1 - secondary_best_dist
 
-            dynamic_threshold = self.calculate_dynamic_threshold(user.id, face_quality)
-            primary_threshold = max(self.config.primary_threshold, dynamic_threshold)
-            secondary_threshold = max(self.config.secondary_threshold, dynamic_threshold)
+            primary_threshold = max(self.config.primary_threshold, self.state.base_threshold)
+            secondary_threshold = max(self.config.secondary_threshold, self.state.base_threshold)
 
             primary_pass = primary_confidence >= primary_threshold
             secondary_pass = secondary_confidence >= secondary_threshold
@@ -231,6 +307,9 @@ class FaceRecognitionService:
             else:
                 self.state.replace_user(best_match.user)
                 active_user = best_match.user
+
+            # Force index rebuild after online learning updates the embedding bank.
+            self._index_signature = None
 
             total_embeddings = count_embeddings(active_user.embeddings)
             print(

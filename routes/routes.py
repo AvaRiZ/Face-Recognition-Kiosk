@@ -509,9 +509,17 @@ def create_routes_blueprint(deps):
         if request.method == "POST":
             deps["set_thresholds"](
                 float(request.form.get("threshold", deps["get_thresholds"]()[0])),
-                request.form.get("adaptive_threshold") == "on",
-                float(request.form.get("quality_threshold", deps["get_thresholds"]()[2])),
+                float(request.form.get("quality_threshold", deps["get_thresholds"]()[1])),
             )
+            vector_index_top_k_raw = request.form.get("vector_index_top_k", "").strip()
+            if vector_index_top_k_raw:
+                try:
+                    vector_index_top_k = max(1, int(vector_index_top_k_raw))
+                except ValueError:
+                    vector_index_top_k = 20
+                deps["config"].vector_index_top_k = vector_index_top_k
+                _set_setting(deps["db_path"], "vector_index_top_k", vector_index_top_k)
+
             max_occupancy_raw = request.form.get("max_occupancy", "").strip()
             if max_occupancy_raw:
                 try:
@@ -1087,9 +1095,18 @@ def create_routes_blueprint(deps):
             payload = request.get_json(silent=True) or {}
             deps["set_thresholds"](
                 float(payload.get("threshold", deps["get_thresholds"]()[0])),
-                bool(payload.get("adaptive_threshold")),
-                float(payload.get("quality_threshold", deps["get_thresholds"]()[2])),
+                float(payload.get("quality_threshold", deps["get_thresholds"]()[1])),
             )
+
+            vector_index_top_k_raw = str(payload.get("vector_index_top_k", "")).strip()
+            if vector_index_top_k_raw:
+                try:
+                    vector_index_top_k = max(1, int(vector_index_top_k_raw))
+                except ValueError:
+                    vector_index_top_k = 20
+                deps["config"].vector_index_top_k = vector_index_top_k
+                _set_setting(deps["db_path"], "vector_index_top_k", vector_index_top_k)
+
             max_occupancy_raw = str(payload.get("max_occupancy", "")).strip()
             if max_occupancy_raw:
                 try:
@@ -1098,7 +1115,18 @@ def create_routes_blueprint(deps):
                     max_occupancy_value = 300
                 _set_setting(deps["db_path"], "max_occupancy", max_occupancy_value)
 
-        threshold, adaptive_threshold, quality_threshold = deps["get_thresholds"]()
+        threshold, quality_threshold = deps["get_thresholds"]()
+        vector_index_top_k_setting = _get_setting(
+            deps["db_path"],
+            "vector_index_top_k",
+            str(deps["config"].vector_index_top_k),
+        )
+        try:
+            vector_index_top_k = max(1, int(vector_index_top_k_setting))
+        except (TypeError, ValueError):
+            vector_index_top_k = max(1, int(deps["config"].vector_index_top_k))
+        deps["config"].vector_index_top_k = vector_index_top_k
+
         max_occupancy_setting = _get_setting(deps["db_path"], "max_occupancy", "300")
         try:
             max_occupancy = int(max_occupancy_setting)
@@ -1108,8 +1136,8 @@ def create_routes_blueprint(deps):
             {
                 "user_count": deps["get_user_count"](),
                 "threshold": threshold,
-                "adaptive_threshold": adaptive_threshold,
                 "quality_threshold": quality_threshold,
+                "vector_index_top_k": vector_index_top_k,
                 "max_occupancy": max_occupancy,
             }
         )

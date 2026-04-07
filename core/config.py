@@ -56,7 +56,7 @@ class AppConfig:
     primary_threshold: float = 0.7
     secondary_threshold: float = 0.6
     base_threshold: float = 0.5
-    adaptive_threshold_enabled: bool = True
+    vector_index_top_k: int = 20
 
     # ------------------------------------------------------------------
     # Overall face quality decisions

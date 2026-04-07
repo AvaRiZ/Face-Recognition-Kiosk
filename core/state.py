@@ -22,7 +22,6 @@ class AppStateManager:
         self._face_stability: dict[int, FaceStabilityState] = {}
 
         self._base_threshold = float(config.base_threshold)
-        self._adaptive_threshold_enabled = bool(config.adaptive_threshold_enabled)
         self._face_quality_threshold = float(config.face_quality_threshold)
 
     @property
@@ -54,19 +53,14 @@ class AppStateManager:
         return self._base_threshold
 
     @property
-    def adaptive_threshold_enabled(self) -> bool:
-        return self._adaptive_threshold_enabled
-
-    @property
     def face_quality_threshold(self) -> float:
         return self._face_quality_threshold
 
-    def get_thresholds(self) -> tuple[float, bool, float]:
-        return self._base_threshold, self._adaptive_threshold_enabled, self._face_quality_threshold
+    def get_thresholds(self) -> tuple[float, float]:
+        return self._base_threshold, self._face_quality_threshold
 
-    def set_thresholds(self, threshold: float, adaptive_enabled: bool, quality_threshold: float) -> None:
+    def set_thresholds(self, threshold: float, quality_threshold: float) -> None:
         self._base_threshold = float(threshold)
-        self._adaptive_threshold_enabled = bool(adaptive_enabled)
         self._face_quality_threshold = float(quality_threshold)
 
     def load_users(self, users: list[User]) -> None:
