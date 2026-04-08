@@ -108,7 +108,8 @@ def create_routes_blueprint(deps):
     def _registration_sample_previews(reg_state):
         samples = reg_state.pending_registration or reg_state.captured_samples or []
         previews = []
-        for index, sample in enumerate(samples[: reg_state.max_captures]):
+        preview_limit = reg_state.total_retained_samples if reg_state.pending_registration else reg_state.max_captures
+        for index, sample in enumerate(samples[:preview_limit]):
             face_crop = getattr(sample, "face_crop", None)
             if face_crop is None or getattr(face_crop, "size", 0) == 0:
                 continue
@@ -126,11 +127,36 @@ def create_routes_blueprint(deps):
             previews.append(
                 {
                     "id": index,
+                    "pose": getattr(sample, "pose", None),
                     "quality_score": round(float(getattr(sample, "quality", 0.0)), 2),
                     "image_url": "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii"),
                 }
             )
         return previews
+
+    def _registration_status_payload(reg_state):
+        progress = deps["get_registration_progress"]()
+        total_progress = progress.get("total_progress", {})
+        captured_total = int(total_progress.get("captured", reg_state.capture_count))
+        return {
+            "capture_count": captured_total,
+            "max_captures": reg_state.max_captures,
+            "has_pending_registration": bool(reg_state.pending_registration),
+            "is_in_progress": reg_state.in_progress,
+            "detection_paused": bool(deps["detection_paused"]()),
+            "sample_previews": _registration_sample_previews(reg_state),
+            "required_poses": progress["required_poses"],
+            "current_pose": progress["current_pose"],
+            "current_pose_index": progress["current_pose_index"],
+            "pose_progress": progress["pose_progress"],
+            "total_progress": progress["total_progress"],
+            "ready_to_submit": progress["ready_to_submit"],
+        }
+
+    def _registration_error_payload(reg_state, message: str, **extra):
+        payload = _registration_status_payload(reg_state)
+        payload.update({"success": False, "message": message, **extra})
+        return payload
 
     def _extract_largest_face(image):
         if image is None or image.size == 0:
@@ -797,17 +823,7 @@ def create_routes_blueprint(deps):
     @bp.route("/api/register-info", methods=["GET"], endpoint="api_register_info")
     def api_register_info():
         reg_state = deps["get_registration_state"]()
-        pending_count = len(reg_state.pending_registration or [])
-        return jsonify(
-            {
-                "capture_count": pending_count or reg_state.capture_count,
-                "max_captures": reg_state.max_captures,
-                "has_pending_registration": bool(reg_state.pending_registration),
-                "is_in_progress": reg_state.in_progress,
-                "detection_paused": bool(deps["detection_paused"]()),
-                "sample_previews": _registration_sample_previews(reg_state),
-            }
-        )
+        return jsonify(_registration_status_payload(reg_state))
 
     @bp.route("/api/detection/pause", methods=["POST"], endpoint="api_detection_pause")
     def api_detection_pause():
@@ -823,69 +839,93 @@ def create_routes_blueprint(deps):
     def api_register_reset():
         deps["reset_registration_state"]()
         reg_state = deps["get_registration_state"]()
-        return jsonify(
+        payload = _registration_status_payload(reg_state)
+        payload.update(
             {
                 "success": True,
                 "message": "Registration capture session reset.",
-                "capture_count": reg_state.capture_count,
-                "max_captures": reg_state.max_captures,
             }
         )
+        return jsonify(payload)
 
     @bp.route("/api/register-capture", methods=["POST"], endpoint="api_register_capture")
     def api_register_capture():
         reg_state = deps["get_registration_state"]()
         if reg_state.in_progress and reg_state.pending_registration:
+            payload = _registration_error_payload(
+                reg_state,
+                "Required pose samples already captured. Complete the registration form or reset the session.",
+            )
             return jsonify(
-                {
-                    "success": False,
-                    "message": "Required samples already captured. Complete the registration form or reset the session.",
-                    "capture_count": len(reg_state.pending_registration),
-                    "max_captures": reg_state.max_captures,
-                }
+                payload
             ), 400
 
         image = _decode_uploaded_image(request.files.get("frame"))
         if image is None:
-            return jsonify({"success": False, "message": "No camera frame was received."}), 400
+            return jsonify(_registration_error_payload(reg_state, "No camera frame was received.")), 400
 
         face_crop, detection_confidence = _extract_largest_face(image)
         if face_crop is None:
-            return jsonify({"success": False, "message": "No clear face detected. Center your face and try again."}), 400
+            payload = _registration_error_payload(
+                reg_state,
+                "No clear face detected. Center your face and try again.",
+            )
+            return jsonify(payload), 400
 
         quality_score, quality_status, _ = deps["quality_service"].assess_face_quality(
             face_crop,
             detection_confidence=detection_confidence,
         )
         if quality_score < deps["config"].face_quality_threshold:
+            payload = _registration_error_payload(
+                reg_state,
+                f"Face quality is too low ({quality_status}). Improve lighting and keep still.",
+                quality_score=round(quality_score, 2),
+                quality_status=quality_status,
+            )
             return jsonify(
-                {
-                    "success": False,
-                    "message": f"Face quality is too low ({quality_status}). Improve lighting and keep still.",
-                    "quality_score": round(quality_score, 2),
-                    "quality_status": quality_status,
-                }
+                payload
             ), 400
 
         embeddings = deps["embedding_service"].extract_embedding_ensemble(face_crop)
         if not embeddings:
-            return jsonify({"success": False, "message": "Unable to extract face embeddings from this capture."}), 400
+            payload = _registration_error_payload(
+                reg_state,
+                "Unable to extract face embeddings from this capture.",
+            )
+            return jsonify(payload), 400
 
-        sample = RegistrationSample(face_crop=face_crop, embeddings=embeddings, quality=quality_score)
+        current_pose = deps["get_current_registration_pose"]() or "front"
+        sample = RegistrationSample(face_crop=face_crop, embeddings=embeddings, quality=quality_score, pose=current_pose)
         captured_count = deps["capture_registration_sample"](sample)
 
         reg_state = deps["get_registration_state"]()
-        return jsonify(
+        payload = _registration_status_payload(reg_state)
+        next_pose = payload.get("current_pose")
+        completed_pose = current_pose if next_pose != current_pose else None
+        if completed_pose and next_pose:
+            message = (
+                f"Captured {reg_state.samples_per_pose_target} samples for {completed_pose}. "
+                f"Next pose: {next_pose}."
+            )
+        elif completed_pose and not next_pose:
+            message = "All pose captures complete. You can now submit registration."
+        else:
+            pose_progress = payload.get("pose_progress", {}).get(current_pose, {})
+            pose_captured = pose_progress.get("captured", 0)
+            pose_required = pose_progress.get("required", reg_state.samples_per_pose_target)
+            message = f"Captured {pose_captured}/{pose_required} for pose {current_pose}."
+
+        payload.update(
             {
                 "success": True,
-                "message": f"Sample {captured_count}/{reg_state.max_captures} captured.",
-                "capture_count": len(reg_state.pending_registration or []) or reg_state.capture_count,
-                "max_captures": reg_state.max_captures,
+                "message": message,
                 "quality_score": round(quality_score, 2),
                 "quality_status": quality_status,
-                "ready_to_submit": bool(reg_state.pending_registration),
+                "captured_count_total": captured_count,
             }
         )
+        return jsonify(payload)
 
     @bp.route("/register", methods=["POST"], endpoint="register_submit")
     def register_submit():

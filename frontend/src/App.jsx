@@ -89,7 +89,10 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        if (payload?.has_pending_registration && location.pathname !== '/register') {
+        const registrationReady = Boolean(
+          payload?.ready_to_submit || payload?.has_pending_registration || payload?.is_in_progress
+        );
+        if (registrationReady && location.pathname !== '/register') {
           navigate('/register', { replace: true });
         }
       } catch {

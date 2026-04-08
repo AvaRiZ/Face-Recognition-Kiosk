@@ -17,12 +17,113 @@ class AppStateManager:
     def __init__(self, config: AppConfig):
         self._users: list[User] = []
         self._recognized_user: Optional[dict[str, str]] = None
-        self._registration_state = RegistrationState(max_captures=10)
+        self._registration_state = RegistrationState()
         self._tracked_faces: dict[int, TrackingState] = {}
         self._face_stability: dict[int, FaceStabilityState] = {}
 
         self._base_threshold = float(config.base_threshold)
         self._face_quality_threshold = float(config.face_quality_threshold)
+        self._reset_registration_collections()
+
+    def _refresh_registration_limits(self) -> None:
+        self._registration_state.max_captures = self._registration_state.total_required_captures
+
+    def _registration_samples_flattened(self) -> list[RegistrationSample]:
+        samples: list[RegistrationSample] = []
+        for pose in self._registration_state.required_poses:
+            samples.extend(self._registration_state.samples_by_pose.get(pose, []))
+        return samples
+
+    def _sync_flat_captured_samples(self) -> None:
+        self._registration_state.captured_samples = self._registration_samples_flattened()
+
+    def _reset_registration_collections(self) -> None:
+        state = self._registration_state
+        state.pending_registration = None
+        state.in_progress = False
+        state.current_pose_index = 0
+        state.samples_by_pose = {pose: [] for pose in state.required_poses}
+        state.pose_capture_counts = {pose: 0 for pose in state.required_poses}
+        state.captured_samples = []
+        self._refresh_registration_limits()
+
+    def get_current_registration_pose(self) -> Optional[str]:
+        return self._registration_state.current_pose
+
+    def get_pose_capture_count(self, pose: Optional[str] = None) -> int:
+        target_pose = pose or self.get_current_registration_pose()
+        if target_pose is None:
+            return 0
+        return int(self._registration_state.pose_capture_counts.get(target_pose, 0))
+
+    def current_pose_has_enough_samples(self) -> bool:
+        current_pose = self.get_current_registration_pose()
+        if current_pose is None:
+            return bool(self._registration_state.in_progress and self._registration_state.pending_registration)
+        return self.get_pose_capture_count(current_pose) >= self._registration_state.samples_per_pose_target
+
+    def select_top_samples_for_pose(self, pose: str) -> list[RegistrationSample]:
+        pose_samples = list(self._registration_state.samples_by_pose.get(pose, []))
+        if not pose_samples:
+            self._registration_state.samples_by_pose[pose] = []
+            return []
+
+        pose_samples.sort(key=lambda sample: float(sample.quality), reverse=True)
+        retained = pose_samples[: self._registration_state.retained_samples_per_pose]
+        self._registration_state.samples_by_pose[pose] = retained
+        return retained
+
+    def advance_registration_pose(self) -> bool:
+        state = self._registration_state
+        if state.current_pose is None:
+            return False
+        state.current_pose_index += 1
+        if state.current_pose_index >= len(state.required_poses):
+            final_samples = self._registration_samples_flattened()
+            state.pending_registration = list(final_samples)
+            state.in_progress = True
+            self._sync_flat_captured_samples()
+            return False
+        self._sync_flat_captured_samples()
+        return True
+
+    def is_registration_ready(self) -> bool:
+        state = self._registration_state
+        return bool(state.in_progress and state.pending_registration)
+
+    def get_registration_progress(self) -> dict[str, object]:
+        state = self._registration_state
+        poses_progress: dict[str, dict[str, object]] = {}
+        required_total = state.total_required_captures
+        captured_total = state.capture_count
+
+        for idx, pose in enumerate(state.required_poses):
+            captured = int(state.pose_capture_counts.get(pose, 0))
+            retained = len(state.samples_by_pose.get(pose, []))
+            completed = idx < state.current_pose_index or (
+                idx == state.current_pose_index and state.current_pose is None and state.in_progress
+            )
+            poses_progress[pose] = {
+                "captured": captured,
+                "required": state.samples_per_pose_target,
+                "retained": retained,
+                "retained_target": state.retained_samples_per_pose,
+                "completed": completed,
+            }
+
+        return {
+            "required_poses": list(state.required_poses),
+            "current_pose": state.current_pose,
+            "current_pose_index": int(state.current_pose_index),
+            "pose_progress": poses_progress,
+            "total_progress": {
+                "captured": captured_total,
+                "required": required_total,
+                "retained": len(state.pending_registration or self._registration_samples_flattened()),
+                "retained_required": state.total_retained_samples,
+            },
+            "ready_to_submit": self.is_registration_ready(),
+        }
 
     @property
     def users(self) -> list[User]:
@@ -90,9 +191,7 @@ class AppStateManager:
 
     def reset_registration_state(self) -> None:
         self._recognized_user = None
-        self._registration_state.pending_registration = None
-        self._registration_state.in_progress = False
-        self._registration_state.captured_samples = []
+        self._reset_registration_collections()
         self._registration_state.manual_requested = False
         self._registration_state.manual_active = False
         self._registration_state.manual_track_id = None
@@ -104,24 +203,31 @@ class AppStateManager:
         self._face_stability = {}
 
     def capture_registration_sample(self, sample: RegistrationSample) -> int:
-        if self._registration_state.in_progress:
-            return self._registration_state.capture_count
-        if self._registration_state.capture_count >= self._registration_state.max_captures:
-            return self._registration_state.capture_count
+        state = self._registration_state
+        if state.in_progress:
+            return state.capture_count
 
-        self._registration_state.captured_samples.append(sample)
-        if self._registration_state.capture_count >= self._registration_state.max_captures:
-            self._registration_state.pending_registration = list(self._registration_state.captured_samples)
-            self._registration_state.in_progress = True
-        return self._registration_state.capture_count
+        current_pose = self.get_current_registration_pose()
+        if current_pose is None:
+            return state.capture_count
+
+        sample.pose = current_pose
+        pose_samples = state.samples_by_pose.setdefault(current_pose, [])
+        pose_samples.append(sample)
+        state.pose_capture_counts[current_pose] = state.pose_capture_counts.get(current_pose, 0) + 1
+
+        if self.current_pose_has_enough_samples():
+            self.select_top_samples_for_pose(current_pose)
+            self.advance_registration_pose()
+
+        self._sync_flat_captured_samples()
+        return state.capture_count
 
     def clear_captured_samples(self) -> None:
-        self._registration_state.captured_samples = []
+        self._reset_registration_collections()
 
     def complete_registration(self) -> None:
-        self._registration_state.pending_registration = None
-        self._registration_state.in_progress = False
-        self._registration_state.captured_samples = []
+        self._reset_registration_collections()
         self._registration_state.manual_requested = False
         self._registration_state.manual_active = False
         self._registration_state.manual_track_id = None
@@ -130,19 +236,21 @@ class AppStateManager:
         self._registration_state.manual_requested = True
         self._registration_state.manual_active = False
         self._registration_state.manual_track_id = None
-        self._registration_state.captured_samples = []
+        self._reset_registration_collections()
 
     def start_manual_registration(self, track_id: int) -> None:
         self._registration_state.manual_requested = False
         self._registration_state.manual_active = True
         self._registration_state.manual_track_id = track_id
-        self._registration_state.captured_samples = []
+        self._reset_registration_collections()
 
     def stop_manual_registration(self) -> None:
         self._registration_state.manual_requested = False
         self._registration_state.manual_active = False
         self._registration_state.manual_track_id = None
-        self._registration_state.captured_samples = []
+        # Keep finalized pending samples intact so web registration can continue.
+        if not self.is_registration_ready():
+            self._reset_registration_collections()
 
     def initialize_track_state(self, track_id: int, current_time: float) -> TrackingState:
         if track_id not in self._tracked_faces:

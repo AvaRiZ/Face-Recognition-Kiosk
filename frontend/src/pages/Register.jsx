@@ -20,9 +20,10 @@ const DEFAULT_PROGRAM_OPTIONS = [
 
 const INITIAL_INFO = {
   capture_count: 0,
-  max_captures: 10,
+  max_captures: 30,
   has_pending_registration: false,
   is_in_progress: false,
+  ready_to_submit: false,
   sample_previews: []
 };
 
@@ -119,7 +120,8 @@ export default function RegisterPage() {
         capture_count: payload.capture_count ?? 0,
         max_captures: payload.max_captures ?? prev.max_captures,
         has_pending_registration: false,
-        is_in_progress: false
+        is_in_progress: false,
+        ready_to_submit: false
       }));
     } catch {
       setCaptureError('Unable to reset the current capture session.');
@@ -177,7 +179,7 @@ export default function RegisterPage() {
   const progressPercent = info.max_captures
     ? Math.min(100, Math.round((info.capture_count / info.max_captures) * 100))
     : 0;
-  const readyToSubmit = Boolean(info.has_pending_registration || info.is_in_progress);
+  const readyToSubmit = Boolean(info.ready_to_submit || info.has_pending_registration || info.is_in_progress);
 
   if (loading) {
     return (
@@ -242,7 +244,7 @@ export default function RegisterPage() {
                       <div className="alert alert-info mb-4" role="alert">
                         <div className="fw-semibold mb-1">Waiting for CLI capture</div>
                         <div className="small">
-                          Press <strong>N</strong> in the CCTV window and let the CLI capture {info.max_captures} stable samples. This page will unlock automatically once capture is complete.
+                          Capture samples from the live camera flow until completion. This page will unlock automatically once all required captures are complete.
                         </div>
                       </div>
                     ) : (

@@ -327,9 +327,18 @@ class FaceRecognitionService:
             return True
 
         if allow_registration and not reg_state.in_progress and reg_state.capture_count < reg_state.max_captures:
-            sample = RegistrationSample(face_crop=face_crop, embeddings=embeddings, quality=quality_score)
+            current_pose = self.state.get_current_registration_pose() or "front"
+            sample = RegistrationSample(
+                face_crop=face_crop,
+                embeddings=embeddings,
+                quality=quality_score,
+                pose=current_pose,
+            )
             captured_count = self.state.capture_registration_sample(sample)
-            print(f"  Captured face {captured_count}/{reg_state.max_captures} for registration")
+            print(
+                f"  Captured registration sample for pose '{current_pose}' "
+                f"({captured_count}/{reg_state.max_captures} valid captures)"
+            )
 
             if reg_state.in_progress and reg_state.pending_registration:
                 print(
