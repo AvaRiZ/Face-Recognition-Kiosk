@@ -160,7 +160,7 @@ def create_routes_blueprint(deps):
 
     def _extract_largest_face(image):
         if image is None or image.size == 0:
-            return None, None, None
+            return None, None, None, 0
 
         yolo_model = deps.get("yolo_model")
         if yolo_model is not None:
@@ -216,7 +216,8 @@ def create_routes_blueprint(deps):
                             detection_confidence = (
                                 float(best_box.conf[0]) if best_box.conf is not None else None
                             )
-                            return face_crop, detection_confidence, landmarks
+                            selected_area = int(face_crop.shape[0] * face_crop.shape[1])
+                            return face_crop, detection_confidence, landmarks, selected_area
             except Exception:
                 pass
 
@@ -225,7 +226,7 @@ def create_routes_blueprint(deps):
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
         if classifier.empty():
-            return None, None, None
+            return None, None, None, 0
 
         faces = classifier.detectMultiScale(
             gray,
@@ -234,15 +235,16 @@ def create_routes_blueprint(deps):
             minSize=(deps["config"].min_face_size, deps["config"].min_face_size),
         )
         if len(faces) == 0:
-            return None, None, None
+            return None, None, None, 0
 
         x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
         face_crop, _clamped_bbox = crop_face_region(image, x, y, x + w, y + h)
         if face_crop is None:
-            return None, None, None
+            return None, None, None, 0
 
         detection_confidence = min(1.0, max(0.35, float((w * h) / max(image.shape[0] * image.shape[1], 1))))
-        return face_crop, detection_confidence, None
+        selected_area = int(face_crop.shape[0] * face_crop.shape[1])
+        return face_crop, detection_confidence, None, selected_area
 
     def _ensure_settings_table(db_path):
         conn = db_connect(db_path)
@@ -886,11 +888,25 @@ def create_routes_blueprint(deps):
         if image is None:
             return jsonify(_registration_error_payload(reg_state, "No camera frame was received.")), 400
 
-        face_crop, detection_confidence, landmarks = _extract_largest_face(image)
+        face_crop, detection_confidence, landmarks, selected_face_area = _extract_largest_face(image)
         if face_crop is None:
             payload = _registration_error_payload(
                 reg_state,
                 "No clear face detected. Center your face and try again.",
+            )
+            return jsonify(payload), 400
+
+        min_registration_face_area = max(
+            int(deps["config"].registration_min_face_area),
+            int(deps["config"].min_face_size) * int(deps["config"].min_face_size),
+        )
+        if selected_face_area < min_registration_face_area:
+            min_edge = int(math.sqrt(min_registration_face_area))
+            payload = _registration_error_payload(
+                reg_state,
+                f"Move closer to the camera. Registration requires a face size of at least {min_edge}px x {min_edge}px.",
+                selected_face_area=selected_face_area,
+                required_face_area=min_registration_face_area,
             )
             return jsonify(payload), 400
 

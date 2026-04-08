@@ -190,6 +190,7 @@ class CLIApplication:
                 continue
 
             frame = cv2.resize(frame, (frame_width, frame_height))
+            frame = cv2.flip(frame, 1)
             current_time = time.time()
             frame_index += 1
 
@@ -476,7 +477,7 @@ class CLIApplication:
                 2,
             )
 
-            cv2.imshow("CCTV Face Recognition", cv2.flip(frame, 1))
+            cv2.imshow("CCTV Face Recognition", frame)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):

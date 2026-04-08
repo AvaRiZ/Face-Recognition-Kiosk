@@ -186,6 +186,11 @@ class AppConfig:
     registration_pose_front_max_yaw_ratio: float = 0.20
     registration_pose_side_min_yaw_ratio: float = 0.30
 
+    # Registration distance gate (face-size proxy).
+    # The closest detected face is selected for registration; this threshold
+    # ensures that selected face is close enough to camera before capture.
+    registration_min_face_area: int = 120 * 120
+
     # ------------------------------------------------------------------
     # Device configuration
     # ------------------------------------------------------------------
