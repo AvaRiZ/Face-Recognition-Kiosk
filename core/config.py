@@ -88,6 +88,13 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Runtime behavior
     # ------------------------------------------------------------------
+    # Registration capture counts:
+    # - `registration_samples_per_pose_target` controls how many valid images
+    #   are captured for each required pose during registration.
+    # - `registration_retained_samples_per_pose` controls how many top-quality
+    #   images per pose are kept for final enrollment.
+    registration_samples_per_pose_target: int = 5
+    registration_retained_samples_per_pose: int = 5
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 2
     recognition_cooldown_seconds: int = 1
@@ -124,8 +131,8 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_sharpness_min` to be stricter against blur.
     # - Lower it if motion blur is common but recognition still works.
-    quality_sharpness_min: float = 25.0
-    quality_sharpness_good: float = 35.0
+    quality_sharpness_min: float = 60.0
+    quality_sharpness_good: float = 128.0
 
     # ------------------------------------------------------------------
     # Quality scoring: brightness / exposure
@@ -158,20 +165,26 @@ class AppConfig:
     # Eye tilt:
     # - Lower values mean a more level face.
     # - Lower the thresholds to become stricter about roll / alignment.
-    quality_pose_eye_tilt_good: float = 0.05
-    quality_pose_eye_tilt_max: float = 0.14
+    quality_pose_eye_tilt_good: float = 0.15
+    quality_pose_eye_tilt_max: float = 0.50
 
     # Yaw:
     # - Based on nose offset from the eye midpoint.
     # - Lower the thresholds to prefer more front-facing faces.
-    quality_pose_yaw_good: float = 0.08
-    quality_pose_yaw_max: float = 0.20
+    quality_pose_yaw_good: float = 0.35
+    quality_pose_yaw_max: float = 0.70
 
     # Landmark margin:
     # - Measures how close key landmarks are to the crop edges.
     # - Raise these to be stricter about cut-off / partially cropped faces.
     quality_landmark_margin_good: float = 0.10
     quality_landmark_margin_min: float = 0.04
+
+    # Registration pose classifier thresholds.
+    # These are used to classify the current head pose as front/left/right
+    # using landmark yaw measured as nose offset from eye midpoint.
+    registration_pose_front_max_yaw_ratio: float = 0.20
+    registration_pose_side_min_yaw_ratio: float = 0.30
 
     # ------------------------------------------------------------------
     # Device configuration

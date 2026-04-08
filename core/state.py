@@ -17,7 +17,10 @@ class AppStateManager:
     def __init__(self, config: AppConfig):
         self._users: list[User] = []
         self._recognized_user: Optional[dict[str, str]] = None
-        self._registration_state = RegistrationState()
+        self._registration_state = RegistrationState(
+            samples_per_pose_target=int(config.registration_samples_per_pose_target),
+            retained_samples_per_pose=int(config.registration_retained_samples_per_pose),
+        )
         self._tracked_faces: dict[int, TrackingState] = {}
         self._face_stability: dict[int, FaceStabilityState] = {}
 

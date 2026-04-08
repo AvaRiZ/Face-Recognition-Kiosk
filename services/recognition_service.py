@@ -328,6 +328,14 @@ class FaceRecognitionService:
 
         if allow_registration and not reg_state.in_progress and reg_state.capture_count < reg_state.max_captures:
             current_pose = self.state.get_current_registration_pose() or "front"
+            detected_pose = quality_service.detect_face_pose(face_crop, landmarks=landmarks)
+            if detected_pose != current_pose:
+                pose_label = detected_pose or "unknown"
+                print(
+                    f"  Skipped registration sample: expected pose '{current_pose}', detected '{pose_label}'"
+                )
+                return False
+
             sample = RegistrationSample(
                 face_crop=face_crop,
                 embeddings=embeddings,

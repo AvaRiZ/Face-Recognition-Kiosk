@@ -160,7 +160,7 @@ def create_routes_blueprint(deps):
 
     def _extract_largest_face(image):
         if image is None or image.size == 0:
-            return None, None
+            return None, None, None
 
         yolo_model = deps.get("yolo_model")
         if yolo_model is not None:
@@ -175,8 +175,9 @@ def create_routes_blueprint(deps):
                         continue
 
                     best_box = None
+                    best_index = -1
                     best_area = -1
-                    for box in result.boxes:
+                    for idx, box in enumerate(result.boxes):
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         w = x2 - x1
                         h = y2 - y1
@@ -186,15 +187,36 @@ def create_routes_blueprint(deps):
                         if area > best_area:
                             best_area = area
                             best_box = box
+                            best_index = idx
 
                     if best_box is not None:
                         x1, y1, x2, y2 = map(int, best_box.xyxy[0])
                         face_crop, _clamped_bbox = crop_face_region(image, x1, y1, x2, y2)
                         if face_crop is not None:
+                            landmarks = None
+                            keypoints_xy = getattr(getattr(result, "keypoints", None), "xy", None)
+                            if keypoints_xy is not None and best_index >= 0:
+                                try:
+                                    if hasattr(keypoints_xy, "detach"):
+                                        keypoints_xy = keypoints_xy.detach().cpu().numpy()
+                                    else:
+                                        keypoints_xy = keypoints_xy.cpu().numpy() if hasattr(keypoints_xy, "cpu") else keypoints_xy
+                                    if best_index < len(keypoints_xy):
+                                        points = keypoints_xy[best_index]
+                                        landmarks = {
+                                            "left_eye": (float(points[0][0] - x1), float(points[0][1] - y1)) if len(points) > 0 else None,
+                                            "right_eye": (float(points[1][0] - x1), float(points[1][1] - y1)) if len(points) > 1 else None,
+                                            "nose": (float(points[2][0] - x1), float(points[2][1] - y1)) if len(points) > 2 else None,
+                                            "mouth_left": (float(points[3][0] - x1), float(points[3][1] - y1)) if len(points) > 3 else None,
+                                            "mouth_right": (float(points[4][0] - x1), float(points[4][1] - y1)) if len(points) > 4 else None,
+                                        }
+                                except Exception:
+                                    landmarks = None
+
                             detection_confidence = (
                                 float(best_box.conf[0]) if best_box.conf is not None else None
                             )
-                            return face_crop, detection_confidence
+                            return face_crop, detection_confidence, landmarks
             except Exception:
                 pass
 
@@ -203,7 +225,7 @@ def create_routes_blueprint(deps):
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
         if classifier.empty():
-            return None, None
+            return None, None, None
 
         faces = classifier.detectMultiScale(
             gray,
@@ -212,15 +234,15 @@ def create_routes_blueprint(deps):
             minSize=(deps["config"].min_face_size, deps["config"].min_face_size),
         )
         if len(faces) == 0:
-            return None, None
+            return None, None, None
 
         x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
         face_crop, _clamped_bbox = crop_face_region(image, x, y, x + w, y + h)
         if face_crop is None:
-            return None, None
+            return None, None, None
 
         detection_confidence = min(1.0, max(0.35, float((w * h) / max(image.shape[0] * image.shape[1], 1))))
-        return face_crop, detection_confidence
+        return face_crop, detection_confidence, None
 
     def _ensure_settings_table(db_path):
         conn = db_connect(db_path)
@@ -864,7 +886,7 @@ def create_routes_blueprint(deps):
         if image is None:
             return jsonify(_registration_error_payload(reg_state, "No camera frame was received.")), 400
 
-        face_crop, detection_confidence = _extract_largest_face(image)
+        face_crop, detection_confidence, landmarks = _extract_largest_face(image)
         if face_crop is None:
             payload = _registration_error_payload(
                 reg_state,
@@ -875,6 +897,7 @@ def create_routes_blueprint(deps):
         quality_score, quality_status, _ = deps["quality_service"].assess_face_quality(
             face_crop,
             detection_confidence=detection_confidence,
+            landmarks=landmarks,
         )
         if quality_score < deps["config"].face_quality_threshold:
             payload = _registration_error_payload(
@@ -896,6 +919,16 @@ def create_routes_blueprint(deps):
             return jsonify(payload), 400
 
         current_pose = deps["get_current_registration_pose"]() or "front"
+        detected_pose = deps["quality_service"].detect_face_pose(face_crop, landmarks=landmarks)
+        if detected_pose != current_pose:
+            payload = _registration_error_payload(
+                reg_state,
+                f"Pose mismatch. Please face {current_pose} before capturing.",
+                expected_pose=current_pose,
+                detected_pose=detected_pose or "unknown",
+            )
+            return jsonify(payload), 400
+
         sample = RegistrationSample(face_crop=face_crop, embeddings=embeddings, quality=quality_score, pose=current_pose)
         captured_count = deps["capture_registration_sample"](sample)
 

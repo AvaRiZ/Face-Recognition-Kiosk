@@ -102,6 +102,48 @@ class CLIApplication:
         if camera is None:
             return
 
+        def _extract_landmarks_from_result(result_obj, detection_index: int, bbox):
+            if result_obj is None or getattr(result_obj, "keypoints", None) is None:
+                return None
+
+            keypoints_xy = getattr(result_obj.keypoints, "xy", None)
+            if keypoints_xy is None:
+                return None
+
+            try:
+                if hasattr(keypoints_xy, "detach"):
+                    keypoints_xy = keypoints_xy.detach().cpu().numpy()
+                else:
+                    keypoints_xy = keypoints_xy.cpu().numpy() if hasattr(keypoints_xy, "cpu") else keypoints_xy
+            except Exception:
+                return None
+
+            if detection_index < 0 or detection_index >= len(keypoints_xy):
+                return None
+
+            points = keypoints_xy[detection_index]
+            if points is None or len(points) < 3:
+                return None
+
+            x1, y1, _x2, _y2 = bbox
+
+            def _to_crop_pt(idx):
+                if idx >= len(points):
+                    return None
+                px, py = points[idx][:2]
+                return float(px - x1), float(py - y1)
+
+            landmarks = {
+                "left_eye": _to_crop_pt(0),
+                "right_eye": _to_crop_pt(1),
+                "nose": _to_crop_pt(2),
+                "mouth_left": _to_crop_pt(3),
+                "mouth_right": _to_crop_pt(4),
+            }
+            if any(value is not None for value in landmarks.values()):
+                return landmarks
+            return None
+
         print("\n" + "=" * 50)
         print("CCTV FACE RECOGNITION SYSTEM")
         print("=" * 50)
@@ -179,7 +221,7 @@ class CLIApplication:
                 if result.boxes is None:
                     continue
 
-                for box in result.boxes:
+                for detection_index, box in enumerate(result.boxes):
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     detection_confidence = float(box.conf[0]) if box.conf is not None else None
 
@@ -190,10 +232,12 @@ class CLIApplication:
                     if face_crop is None or clamped_bbox is None:
                         continue
                     x1, y1, x2, y2 = clamped_bbox
+                    landmarks = _extract_landmarks_from_result(result, detection_index, clamped_bbox)
 
                     quality_score, quality_status, quality_debug = self.quality_service.assess_face_quality(
                         face_crop,
                         detection_confidence=detection_confidence,
+                        landmarks=landmarks,
                     )
                     face_crops.append(face_crop)
                     face_qualities.append((quality_score, quality_status))
@@ -215,6 +259,7 @@ class CLIApplication:
                                 face_crop,
                                 face_id,
                                 detection_confidence,
+                                landmarks,
                                 (quality_score, quality_status, quality_debug),
                             )
                         )
@@ -277,7 +322,7 @@ class CLIApplication:
 
             self.tracking_service.cleanup_stale_tracks(current_time)
 
-            for face_crop, face_id, detection_confidence, quality_tuple in stable_faces:
+            for face_crop, face_id, detection_confidence, landmarks, quality_tuple in stable_faces:
                 if face_id is None:
                     continue
 
@@ -312,6 +357,7 @@ class CLIApplication:
                     face_id=face_id,
                     allow_registration=reg_state.manual_active and face_id == reg_state.manual_track_id,
                     detection_confidence=detection_confidence,
+                    landmarks=landmarks,
                     precomputed_quality=quality_tuple,
                 )
 
@@ -430,7 +476,7 @@ class CLIApplication:
                 2,
             )
 
-            cv2.imshow("CCTV Face Recognition", frame)
+            cv2.imshow("CCTV Face Recognition", cv2.flip(frame, 1))
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):

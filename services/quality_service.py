@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from typing import Optional
 
 from core.config import AppConfig
 
@@ -73,6 +74,35 @@ def _normalize_landmarks(landmarks):
 class FaceQualityService:
     def __init__(self, config: AppConfig):
         self.config = config
+
+    def classify_face_pose(self, landmarks, width: int, height: int) -> Optional[str]:
+        normalized = _normalize_landmarks(landmarks)
+        if normalized is None:
+            return None
+
+        left_eye = normalized.get("left_eye")
+        right_eye = normalized.get("right_eye")
+        nose = normalized.get("nose")
+        if left_eye is None or right_eye is None or nose is None:
+            return None
+
+        eye_mid_x = (left_eye[0] + right_eye[0]) * 0.5
+        half_eye_span = max(abs(right_eye[0] - left_eye[0]) * 0.5, 1.0)
+        signed_yaw_ratio = float((nose[0] - eye_mid_x) / half_eye_span)
+        abs_yaw_ratio = abs(signed_yaw_ratio)
+
+        if abs_yaw_ratio <= self.config.registration_pose_front_max_yaw_ratio:
+            return "front"
+        if abs_yaw_ratio < self.config.registration_pose_side_min_yaw_ratio:
+            return None
+        # Signed yaw is measured in image coordinates.
+        return "left" if signed_yaw_ratio < 0 else "right"
+
+    def detect_face_pose(self, face_crop, landmarks=None) -> Optional[str]:
+        h, w = (face_crop.shape[:2] if face_crop is not None and getattr(face_crop, "size", 0) != 0 else (0, 0))
+        if h <= 0 or w <= 0:
+            return None
+        return self.classify_face_pose(landmarks, w, h)
 
     @staticmethod
     def _describe_check(check_name):
