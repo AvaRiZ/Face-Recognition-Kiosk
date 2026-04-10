@@ -13,6 +13,7 @@ export default function Header() {
   const { session, refresh } = useSession();
   const displayName = session?.full_name || session?.username || 'Admin';
   const initials = getInitials(displayName);
+  const isAdmin = session?.role === 'super_admin' || session?.role === 'library_admin';
 
   async function handleLogout(ev) {
     ev.preventDefault();
@@ -59,6 +60,19 @@ export default function Header() {
               <li>
                 <hr className="dropdown-divider" />
               </li>
+              {isAdmin ? (
+                <>
+                  <li>
+                    <a className="dropdown-item d-flex align-items-center" href="/route-list">
+                      <i className="bi bi-diagram-3"></i>
+                      <span>Route List</span>
+                    </a>
+                  </li>
+                  <li>
+                    <hr className="dropdown-divider" />
+                  </li>
+                </>
+              ) : null}
               {session?.role === 'super_admin' ? (
                 <>
                   <li>

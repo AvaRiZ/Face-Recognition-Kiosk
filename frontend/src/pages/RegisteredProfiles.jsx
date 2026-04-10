@@ -8,7 +8,7 @@ export default function RegisteredProfilesPage() {
   const [search, setSearch] = React.useState('');
   const [pageSize, setPageSize] = React.useState('10');
   const [sortBy, setSortBy] = React.useState('name_asc');
-  const [courseFilter, setCourseFilter] = React.useState('');
+  const [programFilter, setProgramFilter] = React.useState('');
 
   React.useEffect(() => {
     fetchJson('/api/registered-profiles')
@@ -17,11 +17,11 @@ export default function RegisteredProfilesPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const courses = React.useMemo(() => {
+  const programs = React.useMemo(() => {
     const set = {};
     rows.forEach((r) => {
-      if (r.course && r.course !== '-') {
-        set[r.course] = true;
+      if (r.program && r.program !== '-') {
+        set[r.program] = true;
       }
     });
     return Object.keys(set).sort();
@@ -31,8 +31,8 @@ export default function RegisteredProfilesPage() {
     const searchValue = (search || '').toLowerCase();
     const filteredRows = rows.filter((r) => {
       const nameMatch = r.name.toLowerCase().includes(searchValue);
-      const courseMatch = !courseFilter || r.course === courseFilter;
-      return nameMatch && courseMatch;
+      const programMatch = !programFilter || r.program === programFilter;
+      return nameMatch && programMatch;
     });
 
     if (sortBy === 'name_asc') filteredRows.sort((a, b) => a.name.localeCompare(b.name));
@@ -41,7 +41,7 @@ export default function RegisteredProfilesPage() {
     if (sortBy === 'created_asc') filteredRows.sort((a, b) => a.created_at.localeCompare(b.created_at));
 
     return filteredRows;
-  }, [rows, search, sortBy, courseFilter]);
+  }, [rows, search, sortBy, programFilter]);
 
   const pageLimit = parseInt(pageSize, 10) || 10;
   const pageRows = filtered.slice(0, pageLimit);
@@ -126,15 +126,15 @@ export default function RegisteredProfilesPage() {
             </div>
             <div className="col-auto">
               <select
-                id="courseFilter"
+                id="programFilter"
                 className="form-select"
-                value={courseFilter}
-                onChange={(ev) => setCourseFilter(ev.target.value)}
+                value={programFilter}
+                onChange={(ev) => setProgramFilter(ev.target.value)}
               >
-                <option value="">All Courses</option>
-                {courses.map((course) => (
-                  <option key={course} value={course}>
-                    {course}
+                <option value="">All Programs</option>
+                {programs.map((program) => (
+                  <option key={program} value={program}>
+                    {program}
                   </option>
                 ))}
               </select>
@@ -149,7 +149,7 @@ export default function RegisteredProfilesPage() {
                   <th>Name</th>
                   <th>SR Code</th>
                   <th>Gender</th>
-                  <th>Course</th>
+                  <th>Program</th>
                   <th>Created</th>
                   <th>Last Updated</th>
                 </tr>
@@ -162,7 +162,7 @@ export default function RegisteredProfilesPage() {
                       <td>{row.name}</td>
                       <td>{row.sr_code}</td>
                       <td>{row.gender}</td>
-                      <td>{row.course}</td>
+                      <td>{row.program}</td>
                       <td>{row.created_at}</td>
                       <td>{row.last_updated}</td>
                     </tr>

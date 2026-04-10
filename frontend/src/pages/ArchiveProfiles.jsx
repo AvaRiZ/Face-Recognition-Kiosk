@@ -7,7 +7,7 @@ export default function ArchiveProfilesPage() {
   const [search, setSearch] = React.useState('');
   const [pageSize, setPageSize] = React.useState('10');
   const [sortBy, setSortBy] = React.useState('name_asc');
-  const [courseFilter, setCourseFilter] = React.useState('');
+  const [programFilter, setProgramFilter] = React.useState('');
   const [selectMode, setSelectMode] = React.useState(false);
   const [selected, setSelected] = React.useState({});
 
@@ -23,11 +23,11 @@ export default function ArchiveProfilesPage() {
     loadRows();
   }, [loadRows]);
 
-  const courses = React.useMemo(() => {
+  const programs = React.useMemo(() => {
     const set = {};
     rows.forEach((r) => {
-      if (r.course && r.course !== '-') {
-        set[r.course] = true;
+      if (r.program && r.program !== '-') {
+        set[r.program] = true;
       }
     });
     return Object.keys(set).sort();
@@ -37,8 +37,8 @@ export default function ArchiveProfilesPage() {
     const searchValue = (search || '').toLowerCase();
     const filteredRows = rows.filter((r) => {
       const nameMatch = r.name.toLowerCase().includes(searchValue);
-      const courseMatch = !courseFilter || r.course === courseFilter;
-      return nameMatch && courseMatch;
+      const programMatch = !programFilter || r.program === programFilter;
+      return nameMatch && programMatch;
     });
 
     if (sortBy === 'name_asc') filteredRows.sort((a, b) => a.name.localeCompare(b.name));
@@ -47,7 +47,7 @@ export default function ArchiveProfilesPage() {
     if (sortBy === 'created_asc') filteredRows.sort((a, b) => a.created_at.localeCompare(b.created_at));
 
     return filteredRows;
-  }, [rows, search, sortBy, courseFilter]);
+  }, [rows, search, sortBy, programFilter]);
 
   const pageLimit = parseInt(pageSize, 10) || 10;
   const pageRows = filtered.slice(0, pageLimit);
@@ -198,15 +198,15 @@ export default function ArchiveProfilesPage() {
             </div>
             <div className="col-auto">
               <select
-                id="courseFilter"
+                id="programFilter"
                 className="form-select"
-                value={courseFilter}
-                onChange={(ev) => setCourseFilter(ev.target.value)}
+                value={programFilter}
+                onChange={(ev) => setProgramFilter(ev.target.value)}
               >
-                <option value="">All Courses</option>
-                {courses.map((course) => (
-                  <option key={course} value={course}>
-                    {course}
+                <option value="">All Programs</option>
+                {programs.map((program) => (
+                  <option key={program} value={program}>
+                    {program}
                   </option>
                 ))}
               </select>
@@ -237,7 +237,7 @@ export default function ArchiveProfilesPage() {
                   <th>#</th>
                   <th>Name</th>
                   <th>SR Code</th>
-                  <th>Course</th>
+                  <th>Program</th>
                   <th>Created</th>
                   <th>Last Updated</th>
                   <th className="text-center">Archive</th>
@@ -263,7 +263,7 @@ export default function ArchiveProfilesPage() {
                         <td className="row-index">{String(idx + 1)}</td>
                         <td>{row.name}</td>
                         <td>{row.sr_code}</td>
-                        <td>{row.course}</td>
+                        <td>{row.program}</td>
                         <td>{row.created_at}</td>
                         <td>{row.last_updated}</td>
                         <td className="text-center">

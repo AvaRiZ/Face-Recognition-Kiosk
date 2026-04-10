@@ -369,8 +369,8 @@ def create_routes_blueprint(deps):
             ORDER BY count DESC
             LIMIT 8
         """)
-        course_distribution = [
-            {"course": row[0], "count": row[1]}
+        program_distribution = [
+            {"program": row[0], "count": row[1]}
             for row in c.fetchall()
         ]
 
@@ -476,7 +476,7 @@ def create_routes_blueprint(deps):
             # ── New fields for enhanced dashboard ──────────────────
             "total_students": total_students,
             "daily_visitors": daily_visitors,
-            "course_distribution": course_distribution,
+            "program_distribution": program_distribution,
             "peak_hours": peak_hours,
             "top_visitors": top_visitors,
             "weekly_heatmap": weekly_heatmap,
@@ -986,12 +986,22 @@ def create_routes_blueprint(deps):
         name = request.form.get("name", "").strip()
         sr_code = request.form.get("sr_code", "").strip()
         gender = request.form.get("gender", "").strip()
-        course = request.form.get("course", "").strip()
-        if not name or not sr_code or not gender or not course:
-            return jsonify({"success": False, "message": "Name, SR Code, gender, and course are required."}), 400
+        program = request.form.get("program", "").strip()
+        if not name or not sr_code or not gender or not program:
+            return jsonify({"success": False, "message": "Name, SR Code, gender, and program are required."}), 400
 
         repository = deps["repository"]
         existing = repository.get_user_by_sr_code(sr_code)
+        if existing is not None:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": f"SR Code {sr_code} is already registered to {existing.name}. Use a different SR Code.",
+                    }
+                ),
+                409,
+            )
 
         all_embeddings = {}
         image_paths = []
@@ -1008,11 +1018,11 @@ def create_routes_blueprint(deps):
 
         user_id = repository.save_user(
             User(
-                id=existing.id if existing else 0,
+                id=0,
                 name=name,
                 sr_code=sr_code,
                 gender=gender,
-                course=course,
+                program=program,
                 embeddings=all_embeddings,
                 image_paths=image_paths,
                 embedding_dim=0,
@@ -1037,18 +1047,16 @@ def create_routes_blueprint(deps):
                 "name": saved_user.name,
                 "sr_code": saved_user.sr_code,
                 "gender": saved_user.gender,
-                "course": saved_user.course,
+                "program": saved_user.program,
             }
         return jsonify(
             {
                 "success": True,
                 "user_id": user_id,
-                "updated": existing is not None,
+                "updated": False,
                 "embedding_count": total_embeddings,
                 "message": (
-                    f"Profile updated for {saved_user.name}."
-                    if existing is not None and saved_user
-                    else f"Profile registered for {saved_user.name}."
+                    f"Profile registered for {saved_user.name}."
                     if saved_user
                     else "Registration saved successfully."
                 ),
@@ -1156,11 +1164,11 @@ def create_routes_blueprint(deps):
  
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['Name', 'SR Code', 'Course', 'Confidence (%)', 'Timestamp'])
-        for name, sr_code, course, confidence, timestamp in logs:
+        writer.writerow(['Name', 'SR Code', 'Program', 'Confidence (%)', 'Timestamp'])
+        for name, sr_code, program, confidence, timestamp in logs:
             confidence = _coerce_confidence(confidence)
             conf_value = f"{confidence * 100:.1f}" if isinstance(confidence, (int, float)) else ""
-            writer.writerow([name, sr_code, course, conf_value, timestamp])
+            writer.writerow([name, sr_code, program, conf_value, timestamp])
  
         response = make_response(output.getvalue())
         filename = f"library_logs_{date_for_name.strftime('%m-%d-%Y')}.csv"
@@ -1239,7 +1247,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, created_at, last_updated
+            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated
             FROM users
             ORDER BY created_at DESC
             """
@@ -1250,7 +1258,7 @@ def create_routes_blueprint(deps):
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
-                "course": row[4] or "-",
+                "program": row[4] or "-",
                 "created_at": row[5] or "-",
                 "last_updated": row[6] or "-",
             }
@@ -1267,7 +1275,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, created_at, last_updated
+            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated
             FROM users
             WHERE archived_at IS NULL
             ORDER BY created_at DESC
@@ -1279,7 +1287,7 @@ def create_routes_blueprint(deps):
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
-                "course": row[4] or "-",
+                "program": row[4] or "-",
                 "created_at": row[5] or "-",
                 "last_updated": row[6] or "-",
             }
@@ -1321,7 +1329,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, created_at, last_updated, archived_at
+            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated, archived_at
             FROM users
             WHERE archived_at IS NOT NULL
             ORDER BY archived_at DESC
@@ -1333,7 +1341,7 @@ def create_routes_blueprint(deps):
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
-                "course": row[4] or "-",
+                "program": row[4] or "-",
                 "created_at": row[5] or "-",
                 "last_updated": row[6] or "-",
                 "archived_at": row[7] or "-",

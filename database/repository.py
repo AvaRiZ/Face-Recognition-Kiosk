@@ -89,7 +89,7 @@ class UserRepository:
         conn.close()
 
         users: list[User] = []
-        for user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim in rows:
+        for user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim in rows:
             embeddings = {}
             if emb_blob:
                 embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob))
@@ -101,7 +101,7 @@ class UserRepository:
                     name=name or "",
                     sr_code=sr_code or "",
                     gender=gender or "",
-                    course=course or "",
+                    program=program or "",
                     embeddings=embeddings,
                     image_paths=image_paths,
                     embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
@@ -125,7 +125,7 @@ class UserRepository:
         if not row:
             return None
 
-        user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim = row
+        user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim = row
         embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob)) if emb_blob else {}
         image_paths = image_paths_raw.split(";") if image_paths_raw else []
         return User(
@@ -133,7 +133,7 @@ class UserRepository:
             name=name or "",
             sr_code=sr_code or "",
             gender=gender or "",
-            course=course or "",
+            program=program or "",
             embeddings=embeddings,
             image_paths=image_paths,
             embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
@@ -155,7 +155,7 @@ class UserRepository:
         if not row:
             return None
 
-        user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim = row
+        user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim = row
         embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob)) if emb_blob else {}
         image_paths = image_paths_raw.split(";") if image_paths_raw else []
         return User(
@@ -163,7 +163,7 @@ class UserRepository:
             name=name or "",
             sr_code=sr_code or "",
             gender=gender or "",
-            course=course or "",
+            program=program or "",
             embeddings=embeddings,
             image_paths=image_paths,
             embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
@@ -197,7 +197,7 @@ class UserRepository:
                 (
                     user.name,
                     user.gender,
-                    user.course,
+                    user.program,
                     pickle.dumps(merged_embeddings),
                     ";".join(merged_paths),
                     infer_embedding_dim(merged_embeddings),
@@ -216,7 +216,7 @@ class UserRepository:
                         user.name,
                         user.sr_code,
                         user.gender,
-                        user.course,
+                        user.program,
                         pickle.dumps(normalized_embeddings),
                         ";".join(user.image_paths),
                         infer_embedding_dim(normalized_embeddings),
@@ -233,7 +233,7 @@ class UserRepository:
                         user.name,
                         user.sr_code,
                         user.gender,
-                        user.course,
+                        user.program,
                         pickle.dumps(normalized_embeddings),
                         ";".join(user.image_paths),
                         infer_embedding_dim(normalized_embeddings),
@@ -261,7 +261,7 @@ class UserRepository:
             conn.close()
             return None
 
-        name, sr_code, gender, course, existing_emb_blob, existing_paths_str, _ = row
+        name, sr_code, gender, program, existing_emb_blob, existing_paths_str, _ = row
         existing_embeddings = normalize_embeddings_by_model(pickle.loads(existing_emb_blob)) if existing_emb_blob else {}
         merged_embeddings = merge_embeddings_by_model(existing_embeddings, new_embeddings)
         image_paths = existing_paths_str.split(";") if existing_paths_str else []
@@ -289,7 +289,7 @@ class UserRepository:
             name=name or "",
             sr_code=sr_code or "",
             gender=gender or "",
-            course=course or "",
+            program=program or "",
             embeddings=merged_embeddings,
             image_paths=image_paths,
             embedding_dim=infer_embedding_dim(merged_embeddings),

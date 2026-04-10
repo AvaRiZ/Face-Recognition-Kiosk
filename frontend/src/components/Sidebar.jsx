@@ -27,7 +27,6 @@ export default function Sidebar() {
         {isAdmin ? (
           <>
             <NavItem to="/registered-profiles" icon="bi bi-people-fill" label="Registered Profiles" />
-            <NavItem to="/route-list" icon="bi bi-diagram-3" label="Route List" />
             <NavItem to="/analytics-reports" icon="bi bi-graph-up" label="Analytics & Reports" />
             <NavItem to="/policy" icon="bi bi-shield-check" label="Policy" />
           </>

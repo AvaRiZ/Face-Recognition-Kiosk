@@ -43,7 +43,7 @@ def init_db(db_path):
     conn.close()
 
 
-def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, name, sr_code, course):
+def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, name, sr_code, program):
     conn = db_connect(db_path)
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE sr_code = ?", (sr_code,))
@@ -67,7 +67,7 @@ def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, na
                 embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
             WHERE user_id = ?
             """,
-            (name, course, embeddings_blob, ";".join(image_paths), len(embeddings_list[0]), user_id),
+            (name, program, embeddings_blob, ";".join(image_paths), len(embeddings_list[0]), user_id),
         )
     else:
         embeddings_blob = pickle.dumps(embeddings_list)
@@ -79,7 +79,7 @@ def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, na
                 VALUES (?, ?, ?, ?, ?, ?)
                 RETURNING user_id
                 """,
-                (name, sr_code, course, embeddings_blob, ";".join(image_paths), embedding_dim),
+                (name, sr_code, program, embeddings_blob, ";".join(image_paths), embedding_dim),
             )
             user_id = c.fetchone()[0]
         else:
@@ -88,7 +88,7 @@ def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, na
                 INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (name, sr_code, course, embeddings_blob, ";".join(image_paths), embedding_dim),
+                (name, sr_code, program, embeddings_blob, ";".join(image_paths), embedding_dim),
             )
             user_id = c.lastrowid
 

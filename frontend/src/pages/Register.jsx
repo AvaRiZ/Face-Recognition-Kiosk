@@ -112,15 +112,71 @@ const INITIAL_INFO = {
   sample_previews: []
 };
 
+function StatusAlert({ tone, icon, title, children }) {
+  const variants = {
+    danger: { className: 'alert-danger', iconClass: 'bi bi-exclamation-triangle-fill' },
+    success: { className: 'alert-success', iconClass: 'bi bi-check-circle-fill' },
+    info: { className: 'alert-info', iconClass: 'bi bi-hourglass-split' },
+    ready: { className: 'alert-primary', iconClass: 'bi bi-check2-all' }
+  };
+
+  const variant = variants[tone] || variants.info;
+
+  return (
+    <div className={`alert ${variant.className} d-flex align-items-start gap-2 mb-3`} role="alert">
+      <i className={`${icon || variant.iconClass} flex-shrink-0 mt-1`}></i>
+      <div>
+        <div className="fw-semibold mb-1">{title}</div>
+        <div className="small">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function MetricPill({ icon, label, value }) {
+  return (
+    <div
+      className="d-flex align-items-center gap-3 px-3 py-3 rounded-3 bg-light border"
+      style={{
+        minHeight: '72px'
+      }}
+    >
+      <span
+        className="d-inline-flex align-items-center justify-content-center rounded-circle"
+        style={{
+          width: '34px',
+          height: '34px',
+          background: 'rgba(65, 84, 241, 0.12)',
+          color: '#4154f1'
+        }}
+      >
+        <i className={icon}></i>
+      </span>
+      <div>
+        <div
+          className="text-uppercase text-muted"
+          style={{ fontSize: '10px', letterSpacing: '0.08em' }}
+        >
+          {label}
+        </div>
+        <div className="fw-semibold" style={{ fontSize: '14px', color: '#012970' }}>
+          {value}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RegisterPage() {
   const [info, setInfo] = React.useState(INITIAL_INFO);
   const [loading, setLoading] = React.useState(true);
   const [captureError, setCaptureError] = React.useState('');
+  const [fieldErrors, setFieldErrors] = React.useState({});
   const [submitting, setSubmitting] = React.useState(false);
   const [result, setResult] = React.useState(null);
-  const [courseOptionsByCollege, setCourseOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
+  const [programOptionsByCollege, setProgramOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
   const [collegeOptions, setCollegeOptions] = React.useState(DEFAULT_COLLEGE_OPTIONS);
-  const [form, setForm] = React.useState({ name: '', sr_code: '', gender: '', college: '', course: '' });
+  const [form, setForm] = React.useState({ name: '', sr_code: '', gender: '', college: '', program: '' });
 
   React.useEffect(() => {
     let cancelled = false;
@@ -155,7 +211,7 @@ export default function RegisterPage() {
   React.useEffect(() => {
     let cancelled = false;
 
-    async function loadCourseOptions() {
+    async function loadProgramOptions() {
       try {
         const response = await fetch('/api/registered-profiles', { credentials: 'include' });
         if (!response.ok) {
@@ -165,16 +221,17 @@ export default function RegisterPage() {
         if (cancelled) {
           return;
         }
+
         const groupedPrograms = Object.entries(DEFAULT_COLLEGE_PROGRAM_MAP).reduce((acc, [college, programs]) => {
           acc[college] = [...programs];
           return acc;
         }, {});
 
-        const dynamicCourses = (payload.rows || [])
-          .map((row) => (row.course || '').trim())
-          .filter((course) => course && course !== '-');
+        const dynamicPrograms = (payload.rows || [])
+          .map((row) => (row.program || '').trim())
+          .filter((program) => program && program !== '-');
 
-        dynamicCourses.forEach((program) => {
+        dynamicPrograms.forEach((program) => {
           const mappedCollege = PROGRAM_TO_COLLEGE[program] || OTHER_COLLEGE_LABEL;
           if (!groupedPrograms[mappedCollege]) {
             groupedPrograms[mappedCollege] = [];
@@ -190,33 +247,45 @@ export default function RegisterPage() {
             .map(([college, programs]) => [college, [...programs].sort((a, b) => a.localeCompare(b))])
         );
 
-        setCourseOptionsByCollege(normalizedGroups);
+        setProgramOptionsByCollege(normalizedGroups);
         setCollegeOptions(Object.keys(normalizedGroups));
       } catch {
         // Keep fallback options.
       }
     }
 
-    loadCourseOptions();
+    loadProgramOptions();
     return () => {
       cancelled = true;
     };
   }, []);
 
   function updateForm(key, value) {
+    setFieldErrors((prev) => {
+      if (!prev[key]) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
   function updateCollege(value) {
     setForm((prev) => {
-      const allowedPrograms = courseOptionsByCollege[value] || [];
-      const nextCourse = allowedPrograms.includes(prev.course) ? prev.course : '';
-      return { ...prev, college: value, course: nextCourse };
+      const allowedPrograms = programOptionsByCollege[value] || [];
+      return {
+        ...prev,
+        college: value,
+        program: allowedPrograms.includes(prev.program) ? prev.program : ''
+      };
     });
   }
 
   async function handleReset() {
     setCaptureError('');
+    setFieldErrors({});
     setResult(null);
 
     try {
@@ -245,14 +314,17 @@ export default function RegisterPage() {
   async function handleSubmit(ev) {
     ev.preventDefault();
     setCaptureError('');
+    setFieldErrors({});
     setResult(null);
 
     if (!form.name.includes(',')) {
+      setFieldErrors({ name: 'Use the name format: Last Name, First Name.' });
       setCaptureError('Use the name format: Last Name, First Name.');
       return;
     }
 
     if (!form.college) {
+      setFieldErrors({ college: 'Please select a college before choosing a program.' });
       setCaptureError('Please select a college before choosing a program.');
       return;
     }
@@ -263,7 +335,7 @@ export default function RegisterPage() {
     formData.append('name', form.name);
     formData.append('sr_code', form.sr_code);
     formData.append('gender', form.gender);
-    formData.append('course', form.course);
+    formData.append('program', form.program);
 
     try {
       const response = await fetch('/register', {
@@ -274,6 +346,9 @@ export default function RegisterPage() {
       const payload = await response.json();
 
       if (!response.ok || !payload.success) {
+        if ((payload.message || '').toLowerCase().includes('sr code')) {
+          setFieldErrors({ sr_code: payload.message || 'This SR Code is already registered.' });
+        }
         setCaptureError(payload.message || 'Unable to save the registration.');
         return;
       }
@@ -299,7 +374,8 @@ export default function RegisterPage() {
     ? Math.min(100, Math.round((info.capture_count / info.max_captures) * 100))
     : 0;
   const readyToSubmit = Boolean(info.ready_to_submit || info.has_pending_registration || info.is_in_progress);
-  const filteredCourseOptions = form.college ? courseOptionsByCollege[form.college] || [] : [];
+  const filteredProgramOptions = form.college ? programOptionsByCollege[form.college] || [] : [];
+  const sampleCount = info.sample_previews?.length || 0;
 
   if (loading) {
     return (
@@ -312,92 +388,151 @@ export default function RegisterPage() {
   return (
     <main className="auth-page animate__animated animate__fadeIn animate__fast">
       <div className="container">
-        <section className="section register min-vh-100 d-flex flex-column align-items-center justify-content-center py-4">
+        <section className="section register min-vh-100 d-flex flex-column justify-content-center py-4">
           <div className="container animate__animated animate__fadeInUp animate__fast">
-            <div className="d-flex justify-content-center mb-3">
+            <div className="d-flex justify-content-center mb-4">
               <a href="/login">
                 <img
                   src="/static/assets/img/bsu-new-logo.png"
                   alt="BatStateU Logo"
-                  style={{ width: '20rem', height: 'auto' }}
+                  style={{ width: '24rem', height: 'auto' }}
                 />
               </a>
             </div>
 
             <div className="row justify-content-center">
-              <div className="col-xl-8 col-lg-10">
-                <div className="card mb-3 shadow-sm border-0">
+              <div className="col-xl-8 col-lg-9">
+                <div className="card">
                   <div className="card-body p-4 p-xl-5">
-                    <div className="d-flex justify-content-between align-items-start mb-3">
+                    <div className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
                       <div>
-                        <span className="badge bg-primary-subtle text-primary mb-2">CLI Capture</span>
-                        <h5 className="card-title fs-4 mb-1">Complete registration</h5>
-                        <p className="text-muted small mb-0">
-                          Face samples are captured from the live CCTV window. This page only collects student details and saves the profile.
+                        <div className="text-uppercase text-muted fw-semibold" style={{ fontSize: '11px', letterSpacing: '0.08em' }}>
+                          Registration Queue
+                        </div>
+                        <h5 className="card-title mb-1">
+                          Complete student registration
+                        </h5>
+                        <p className="text-muted mb-0 small">
+                          Review the captured samples, then fill out the form below to complete the student profile.
                         </p>
                       </div>
-                      <span className="badge bg-light text-dark">{info.capture_count}/{info.max_captures}</span>
-                    </div>
-
-                    <div className="progress mb-3" style={{ height: '8px' }}>
-                      <div className="progress-bar" style={{ width: `${progressPercent}%` }}></div>
+                      <span className={`badge rounded-pill ${readyToSubmit ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'}`}>
+                        {readyToSubmit ? 'Ready for submission' : 'Capture in progress'}
+                      </span>
                     </div>
 
                     {captureError ? (
-                      <div className="alert alert-danger mb-3" role="alert">
-                        <i className="bi bi-exclamation-triangle me-2"></i>
+                      <StatusAlert tone="danger" title="Registration error">
                         {captureError}
-                      </div>
+                      </StatusAlert>
                     ) : null}
 
                     {result?.profile ? (
-                      <div className="alert alert-success mb-3" role="alert">
-                        <div className="fw-semibold mb-1">{result.message}</div>
-                        <div className="small">
-                          Saved as {result.profile.name} ({result.profile.sr_code}) - {result.profile.gender}, {result.profile.course}.
-                        </div>
-                        <div className="small">Redirecting to the website record view...</div>
-                      </div>
+                      <StatusAlert tone="success" title={result.message}>
+                        Saved as {result.profile.name} ({result.profile.sr_code}) - {result.profile.gender},{' '}
+                        {result.profile.program}. Redirecting to the profile list now.
+                      </StatusAlert>
                     ) : null}
 
                     {!readyToSubmit ? (
-                      <div className="alert alert-info mb-4" role="alert">
-                        <div className="fw-semibold mb-1">Waiting for CLI capture</div>
-                        <div className="small">
-                          Capture samples from the live camera flow until completion. This page will unlock automatically once all required captures are complete.
-                        </div>
-                      </div>
+                      <StatusAlert tone="info" title="Waiting for CLI capture">
+                        Capture samples from the live camera flow until the system completes the required set. This page
+                        unlocks automatically when registration is ready.
+                      </StatusAlert>
                     ) : (
-                      <div className="alert alert-primary mb-4" role="alert">
-                        <div className="fw-semibold mb-1">Samples ready</div>
-                        <div className="small">
-                          Required CLI samples are already captured. Fill in the form below to save this profile to the database.
-                        </div>
-                      </div>
+                      <StatusAlert tone="ready" title="Samples ready">
+                        The required face samples are already available. You can now submit the student details below.
+                      </StatusAlert>
                     )}
 
-                    {info.sample_previews?.length ? (
-                      <div className="mb-4">
-                        <div className="small text-muted mb-2">Captured face samples</div>
+                    <div className="row g-3 mb-4">
+                      <div className="col-md-4">
+                        <MetricPill icon="bi bi-camera" label="Captured" value={`${info.capture_count}/${info.max_captures}`} />
+                      </div>
+                      <div className="col-md-4">
+                        <MetricPill
+                          icon="bi bi-images"
+                          label="Preview Tiles"
+                          value={sampleCount ? `${sampleCount} sample${sampleCount > 1 ? 's' : ''}` : 'No previews yet'}
+                        />
+                      </div>
+                      <div className="col-md-4">
+                        <MetricPill
+                          icon="bi bi-patch-check"
+                          label="Submission"
+                          value={readyToSubmit ? 'Ready to save' : 'Waiting for CLI capture'}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mb-4">
+                      <div className="d-flex justify-content-between small text-muted mb-2">
+                        <span>Capture progress</span>
+                        <span>{progressPercent}%</span>
+                      </div>
+                      <div className="progress" style={{ height: '8px' }}>
+                        <div
+                          className="progress-bar"
+                          style={{
+                            width: `${progressPercent}%`,
+                            transition: 'width 0.35s ease'
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-3 border bg-light p-3 p-md-4 mb-4">
+                      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                        <div className="fw-semibold" style={{ color: '#012970' }}>Captured face previews</div>
+                        <div className="small text-muted">{sampleCount} preview{sampleCount === 1 ? '' : 's'} available</div>
+                      </div>
+
+                      {sampleCount ? (
                         <div className="d-flex gap-2 flex-wrap">
                           {info.sample_previews.map((sample, index) => (
-                            <div key={sample.id ?? index} className="border rounded p-1 bg-white" style={{ width: '88px' }}>
+                            <div
+                              key={sample.id ?? index}
+                              className="text-center"
+                              style={{
+                                width: '88px',
+                                padding: '6px',
+                                border: '1px solid #e6e7eb',
+                                background: '#fff'
+                              }}
+                            >
                               <img
                                 src={sample.image_url}
                                 alt={`Captured sample ${index + 1}`}
-                                className="rounded w-100"
-                                style={{ aspectRatio: '1 / 1', objectFit: 'cover' }}
+                                className="rounded-3 w-100"
+                                style={{ aspectRatio: '1 / 1', objectFit: 'cover', display: 'block' }}
                               />
-                              <div className="small text-center text-muted mt-1">Q {sample.quality_score}</div>
+                              <div className="small text-muted mt-2">Q {sample.quality_score}</div>
                             </div>
                           ))}
                         </div>
-                      </div>
-                    ) : null}
+                      ) : (
+                        <div className="rounded-3 d-flex align-items-center justify-content-center text-center px-4 border border-secondary-subtle bg-white text-muted" style={{ minHeight: '112px', borderStyle: 'dashed' }}>
+                          No preview tiles yet. Stay on the CCTV capture flow until the sample set is completed.
+                        </div>
+                      )}
+                    </div>
 
                     <form className="row g-3" onSubmit={handleSubmit}>
                       <div className="col-12">
-                        <label htmlFor="name" className="form-label">Last Name, First Name</label>
+                        <div className="rounded-3 border bg-light p-3">
+                          <div className="fw-semibold mb-2" style={{ color: '#012970' }}>Before saving</div>
+                          <ul className="mb-0 ps-3 text-muted" style={{ fontSize: '13px', lineHeight: 1.7 }}>
+                            <li>Use the format Last Name, First Name.</li>
+                            <li>Select the correct college first so the program list is filtered properly.</li>
+                            <li>Reset samples only if the captured face set is wrong or incomplete.</li>
+                          </ul>
+                        </div>
+                      </div>
+
+                      <div className="col-12">
+                        <label htmlFor="name" className="form-label" style={{ fontSize: '13px' }}>
+                          Last Name, First Name
+                        </label>
                         <input
                           type="text"
                           id="name"
@@ -408,22 +543,31 @@ export default function RegisterPage() {
                           onChange={(ev) => updateForm('name', ev.target.value)}
                           required
                         />
-                        <div className="form-text">Enter the full name as: Last Name, First Name.</div>
+                        <div className="form-text">Enter the student name using the official Last Name, First Name format.</div>
                       </div>
+
                       <div className="col-md-6">
-                        <label htmlFor="sr_code" className="form-label">SR Code</label>
+                        <label htmlFor="sr_code" className="form-label" style={{ fontSize: '13px' }}>
+                          SR Code
+                        </label>
                         <input
                           type="text"
                           id="sr_code"
                           name="sr_code"
-                          className="form-control"
+                          className={`form-control ${fieldErrors.sr_code ? 'is-invalid' : ''}`}
+                          placeholder="23-12345"
                           value={form.sr_code}
                           onChange={(ev) => updateForm('sr_code', ev.target.value)}
                           required
                         />
+                        {fieldErrors.sr_code ? <div className="invalid-feedback">{fieldErrors.sr_code}</div> : null}
+                        <div className="form-text">Each student must have one unique SR Code. Duplicate SR Codes cannot be registered.</div>
                       </div>
+
                       <div className="col-md-6">
-                        <label htmlFor="gender" className="form-label">Gender</label>
+                        <label htmlFor="gender" className="form-label" style={{ fontSize: '13px' }}>
+                          Gender
+                        </label>
                         <select
                           id="gender"
                           name="gender"
@@ -438,10 +582,12 @@ export default function RegisterPage() {
                           <option value="Other">Other</option>
                         </select>
                       </div>
+
                       <div className="col-md-6">
-                        <label htmlFor="college" className="form-label">College</label>
+                        <label htmlFor="college" className="form-label" style={{ fontSize: '13px' }}>
+                          College
+                        </label>
                         <select
-                          type="text"
                           id="college"
                           name="college"
                           className="form-select"
@@ -457,48 +603,90 @@ export default function RegisterPage() {
                           ))}
                         </select>
                       </div>
+
                       <div className="col-md-6">
-                        <label htmlFor="course" className="form-label">Program</label>
+                        <label htmlFor="program" className="form-label" style={{ fontSize: '13px' }}>
+                          Program
+                        </label>
                         <input
                           type="text"
-                          id="course"
-                          name="course"
+                          id="program"
+                          name="program"
                           className="form-control"
-                          list="course-options"
+                          list="program-options"
                           placeholder={form.college ? 'Select or type a program' : 'Select a college first'}
-                          value={form.course}
-                          onChange={(ev) => updateForm('course', ev.target.value)}
+                          value={form.program}
+                          onChange={(ev) => updateForm('program', ev.target.value)}
                           disabled={!form.college}
                           required
                         />
-                        <datalist id="course-options">
-                          {filteredCourseOptions.map((course) => (
-                            <option key={course} value={course} />
+                        <datalist id="program-options">
+                          {filteredProgramOptions.map((program) => (
+                            <option key={program} value={program} />
                           ))}
                         </datalist>
-                        <div className="form-text">Program suggestions are filtered by the selected college.</div>
+                        <div className="form-text">Program suggestions are filtered based on the selected college.</div>
                       </div>
+
                       <div className="col-12">
-                        <div className="border rounded p-3 bg-light small text-muted">
-                          The live recognition camera stays running while this page is open. Only the captured CLI samples will be used for registration.
+                        <div className="alert alert-info d-flex align-items-start gap-3 mb-0">
+                          <i className="bi bi-info-circle-fill mt-1"></i>
+                          <div className="small">
+                            The live recognition camera continues running while this page is open. Only the captured CLI
+                            face samples are used for this registration record.
+                          </div>
                         </div>
                       </div>
-                      <div className="col-12 pt-2 d-grid gap-2 d-sm-flex">
-                        <button className="btn btn-primary px-4" type="submit" disabled={submitting || !readyToSubmit}>
-                          {submitting ? 'Saving Registration...' : 'Complete Registration'}
-                        </button>
-                        <button className="btn btn-outline-secondary" type="button" onClick={handleReset}>
-                          Reset Captured Samples
-                        </button>
-                        <a className="btn btn-light border" href="/registered-profiles">
-                          View Registered Profiles
-                        </a>
+
+                      <div className="col-12 pt-1">
+                        <div className="d-flex flex-wrap gap-2 align-items-center">
+                          <button
+                            className="btn btn-primary px-4"
+                            type="submit"
+                            disabled={submitting || !readyToSubmit}
+                          >
+                            {submitting ? (
+                              <>
+                                <span className="spinner-border spinner-border-sm me-2" role="status" />
+                                Saving Registration...
+                              </>
+                            ) : (
+                              <>
+                                <i className="bi bi-person-check-fill me-2"></i>
+                                Complete Registration
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            className="btn btn-outline-secondary"
+                            type="button"
+                            onClick={handleReset}
+                          >
+                            <i className="bi bi-arrow-counterclockwise me-2"></i>
+                            Reset Samples
+                          </button>
+
+                          <a
+                            className="btn btn-outline-danger ms-lg-auto"
+                            href="/registered-profiles"
+                          >
+                            <i className="bi bi-people me-2"></i>
+                            View Profiles
+                          </a>
+                        </div>
                       </div>
                     </form>
                   </div>
                 </div>
               </div>
             </div>
+
+            <footer className="text-center mt-4">
+              <div className="copyright">
+                <strong>Batangas State University The National Engineering University</strong>
+              </div>
+            </footer>
           </div>
         </section>
       </div>

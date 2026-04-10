@@ -22,7 +22,7 @@ The System may collect and process the following:
 
 - Full name
 - SR Code / institutional identifier
-- Course / department
+- Program / department
 - Facial images captured during enrollment
 - Face embedding vectors (numerical facial features used for matching)
 - Recognition logs (date/time, confidence score, result)

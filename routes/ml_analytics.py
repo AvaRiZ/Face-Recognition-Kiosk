@@ -257,10 +257,10 @@ def run_ml_analytics(db_path):
     yl_dist.columns = ["label","count"]
     year_level_data = yl_dist.sort_values("label").to_dict("records")
 
-    # Course distribution
-    course_dist = df.groupby("program")["sr_code"].nunique().reset_index()
-    course_dist.columns = ["course","count"]
-    course_distribution = course_dist.sort_values("count", ascending=False).head(8).to_dict("records")
+    # Program distribution
+    program_dist = df.groupby("program")["sr_code"].nunique().reset_index()
+    program_dist.columns = ["program","count"]
+    program_distribution = program_dist.sort_values("count", ascending=False).head(8).to_dict("records")
 
     # Peak hours
     hour_counts = df.groupby("hour").size()
@@ -604,7 +604,7 @@ def run_ml_analytics(db_path):
         "dow_averages":         dow_averages,
         "last_30_labels":       last_30_labels,
         "last_30_counts":       last_30_counts,
-        "course_distribution":  course_distribution,
+        "program_distribution": program_distribution,
         "peak_hours":           peak_hours,
         "gender_data":          gender_data,
         "year_level_data":      year_level_data,
