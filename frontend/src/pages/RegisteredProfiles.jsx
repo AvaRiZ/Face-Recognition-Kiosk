@@ -148,6 +148,7 @@ export default function RegisteredProfilesPage() {
                   <th>#</th>
                   <th>Name</th>
                   <th>SR Code</th>
+                  <th>Gender</th>
                   <th>Course</th>
                   <th>Created</th>
                   <th>Last Updated</th>
@@ -160,6 +161,7 @@ export default function RegisteredProfilesPage() {
                       <td className="row-index">{String(idx + 1)}</td>
                       <td>{row.name}</td>
                       <td>{row.sr_code}</td>
+                      <td>{row.gender}</td>
                       <td>{row.course}</td>
                       <td>{row.created_at}</td>
                       <td>{row.last_updated}</td>
@@ -167,7 +169,7 @@ export default function RegisteredProfilesPage() {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="6" className="text-center text-muted">
+                    <td colSpan="7" className="text-center text-muted">
                       No registered profiles found.
                     </td>
                   </tr>

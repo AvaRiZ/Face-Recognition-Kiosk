@@ -4,9 +4,13 @@ import struct
 import csv
 import io
 import math
+import time
+import base64
 from datetime import date, timedelta
 from pathlib import Path
 
+import cv2
+import numpy as np
 from flask import Blueprint, flash, redirect, request, session, url_for, current_app, jsonify, send_from_directory
 
 from auth import (
@@ -17,8 +21,11 @@ from auth import (
     role_required,
     toggle_staff_status,
 )
+from core.models import RegistrationSample, User
 from db import connect as db_connect
 from routes.ml_analytics import run_ml_analytics
+from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
+from utils.image_utils import crop_face_region
 
 
 def init_imported_logs_table(db_path):
@@ -85,6 +92,159 @@ def create_routes_blueprint(deps):
             except (ValueError, TypeError):
                 return None
         return None
+
+    def _decode_uploaded_image(file_storage):
+        if not file_storage:
+            return None
+        raw = file_storage.read()
+        if not raw:
+            return None
+        file_storage.stream.seek(0)
+        buffer = np.frombuffer(raw, dtype=np.uint8)
+        if buffer.size == 0:
+            return None
+        return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+    def _registration_sample_previews(reg_state):
+        samples = reg_state.pending_registration or reg_state.captured_samples or []
+        previews = []
+        preview_limit = reg_state.total_retained_samples if reg_state.pending_registration else reg_state.max_captures
+        for index, sample in enumerate(samples[:preview_limit]):
+            face_crop = getattr(sample, "face_crop", None)
+            if face_crop is None or getattr(face_crop, "size", 0) == 0:
+                continue
+            preview = face_crop
+            if preview.shape[0] > 160:
+                scale = 160.0 / preview.shape[0]
+                preview = cv2.resize(
+                    preview,
+                    (max(1, int(preview.shape[1] * scale)), 160),
+                    interpolation=cv2.INTER_AREA,
+                )
+            success, encoded = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if not success:
+                continue
+            previews.append(
+                {
+                    "id": index,
+                    "pose": getattr(sample, "pose", None),
+                    "quality_score": round(float(getattr(sample, "quality", 0.0)), 2),
+                    "image_url": "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii"),
+                }
+            )
+        return previews
+
+    def _registration_status_payload(reg_state):
+        progress = deps["get_registration_progress"]()
+        total_progress = progress.get("total_progress", {})
+        captured_total = int(total_progress.get("captured", reg_state.capture_count))
+        return {
+            "capture_count": captured_total,
+            "max_captures": reg_state.max_captures,
+            "has_pending_registration": bool(reg_state.pending_registration),
+            "is_in_progress": reg_state.in_progress,
+            "detection_paused": bool(deps["detection_paused"]()),
+            "sample_previews": _registration_sample_previews(reg_state),
+            "required_poses": progress["required_poses"],
+            "current_pose": progress["current_pose"],
+            "current_pose_index": progress["current_pose_index"],
+            "pose_progress": progress["pose_progress"],
+            "total_progress": progress["total_progress"],
+            "ready_to_submit": progress["ready_to_submit"],
+        }
+
+    def _registration_error_payload(reg_state, message: str, **extra):
+        payload = _registration_status_payload(reg_state)
+        payload.update({"success": False, "message": message, **extra})
+        return payload
+
+    def _extract_largest_face(image):
+        if image is None or image.size == 0:
+            return None, None, None, 0
+
+        yolo_model = deps.get("yolo_model")
+        if yolo_model is not None:
+            try:
+                yolo_results = yolo_model.predict(
+                    source=image,
+                    verbose=False,
+                    device=deps.get("yolo_device", "cpu"),
+                )
+                for result in yolo_results or []:
+                    if result.boxes is None:
+                        continue
+
+                    best_box = None
+                    best_index = -1
+                    best_area = -1
+                    for idx, box in enumerate(result.boxes):
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        w = x2 - x1
+                        h = y2 - y1
+                        if w < deps["config"].min_face_size or h < deps["config"].min_face_size:
+                            continue
+                        area = w * h
+                        if area > best_area:
+                            best_area = area
+                            best_box = box
+                            best_index = idx
+
+                    if best_box is not None:
+                        x1, y1, x2, y2 = map(int, best_box.xyxy[0])
+                        face_crop, _clamped_bbox = crop_face_region(image, x1, y1, x2, y2)
+                        if face_crop is not None:
+                            landmarks = None
+                            keypoints_xy = getattr(getattr(result, "keypoints", None), "xy", None)
+                            if keypoints_xy is not None and best_index >= 0:
+                                try:
+                                    if hasattr(keypoints_xy, "detach"):
+                                        keypoints_xy = keypoints_xy.detach().cpu().numpy()
+                                    else:
+                                        keypoints_xy = keypoints_xy.cpu().numpy() if hasattr(keypoints_xy, "cpu") else keypoints_xy
+                                    if best_index < len(keypoints_xy):
+                                        points = keypoints_xy[best_index]
+                                        landmarks = {
+                                            "left_eye": (float(points[0][0] - x1), float(points[0][1] - y1)) if len(points) > 0 else None,
+                                            "right_eye": (float(points[1][0] - x1), float(points[1][1] - y1)) if len(points) > 1 else None,
+                                            "nose": (float(points[2][0] - x1), float(points[2][1] - y1)) if len(points) > 2 else None,
+                                            "mouth_left": (float(points[3][0] - x1), float(points[3][1] - y1)) if len(points) > 3 else None,
+                                            "mouth_right": (float(points[4][0] - x1), float(points[4][1] - y1)) if len(points) > 4 else None,
+                                        }
+                                except Exception:
+                                    landmarks = None
+
+                            detection_confidence = (
+                                float(best_box.conf[0]) if best_box.conf is not None else None
+                            )
+                            selected_area = int(face_crop.shape[0] * face_crop.shape[1])
+                            return face_crop, detection_confidence, landmarks, selected_area
+            except Exception:
+                pass
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        classifier = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        if classifier.empty():
+            return None, None, None, 0
+
+        faces = classifier.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(deps["config"].min_face_size, deps["config"].min_face_size),
+        )
+        if len(faces) == 0:
+            return None, None, None, 0
+
+        x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
+        face_crop, _clamped_bbox = crop_face_region(image, x, y, x + w, y + h)
+        if face_crop is None:
+            return None, None, None, 0
+
+        detection_confidence = min(1.0, max(0.35, float((w * h) / max(image.shape[0] * image.shape[1], 1))))
+        selected_area = int(face_crop.shape[0] * face_crop.shape[1])
+        return face_crop, detection_confidence, None, selected_area
 
     def _ensure_settings_table(db_path):
         conn = db_connect(db_path)
@@ -335,6 +495,7 @@ def create_routes_blueprint(deps):
     def dashboard_page():
         return _spa_index()
 
+    @bp.route("/route-list")
     @bp.route("/routes", endpoint="route_list_page")
     @login_required
     @role_required("super_admin", "library_admin")
@@ -398,9 +559,17 @@ def create_routes_blueprint(deps):
         if request.method == "POST":
             deps["set_thresholds"](
                 float(request.form.get("threshold", deps["get_thresholds"]()[0])),
-                request.form.get("adaptive_threshold") == "on",
-                float(request.form.get("quality_threshold", deps["get_thresholds"]()[2])),
+                float(request.form.get("quality_threshold", deps["get_thresholds"]()[1])),
             )
+            vector_index_top_k_raw = request.form.get("vector_index_top_k", "").strip()
+            if vector_index_top_k_raw:
+                try:
+                    vector_index_top_k = max(1, int(vector_index_top_k_raw))
+                except ValueError:
+                    vector_index_top_k = 20
+                deps["config"].vector_index_top_k = vector_index_top_k
+                _set_setting(deps["db_path"], "vector_index_top_k", vector_index_top_k)
+
             max_occupancy_raw = request.form.get("max_occupancy", "").strip()
             if max_occupancy_raw:
                 try:
@@ -674,6 +843,219 @@ def create_routes_blueprint(deps):
     def reset_registration():
         deps["reset_registration_state"]()
         return {"success": True, "message": "Registration state reset"}
+
+    @bp.route("/api/register-info", methods=["GET"], endpoint="api_register_info")
+    def api_register_info():
+        reg_state = deps["get_registration_state"]()
+        return jsonify(_registration_status_payload(reg_state))
+
+    @bp.route("/api/detection/pause", methods=["POST"], endpoint="api_detection_pause")
+    def api_detection_pause():
+        deps["pause_detection"]()
+        return jsonify({"success": True, "detection_paused": True})
+
+    @bp.route("/api/detection/resume", methods=["POST"], endpoint="api_detection_resume")
+    def api_detection_resume():
+        deps["resume_detection"]()
+        return jsonify({"success": True, "detection_paused": False})
+
+    @bp.route("/api/register-reset", methods=["POST"], endpoint="api_register_reset")
+    def api_register_reset():
+        deps["reset_registration_state"]()
+        reg_state = deps["get_registration_state"]()
+        payload = _registration_status_payload(reg_state)
+        payload.update(
+            {
+                "success": True,
+                "message": "Registration capture session reset.",
+            }
+        )
+        return jsonify(payload)
+
+    @bp.route("/api/register-capture", methods=["POST"], endpoint="api_register_capture")
+    def api_register_capture():
+        reg_state = deps["get_registration_state"]()
+        if reg_state.in_progress and reg_state.pending_registration:
+            payload = _registration_error_payload(
+                reg_state,
+                "Required pose samples already captured. Complete the registration form or reset the session.",
+            )
+            return jsonify(
+                payload
+            ), 400
+
+        image = _decode_uploaded_image(request.files.get("frame"))
+        if image is None:
+            return jsonify(_registration_error_payload(reg_state, "No camera frame was received.")), 400
+
+        face_crop, detection_confidence, landmarks, selected_face_area = _extract_largest_face(image)
+        if face_crop is None:
+            payload = _registration_error_payload(
+                reg_state,
+                "No clear face detected. Center your face and try again.",
+            )
+            return jsonify(payload), 400
+
+        min_registration_face_area = max(
+            int(deps["config"].registration_min_face_area),
+            int(deps["config"].min_face_size) * int(deps["config"].min_face_size),
+        )
+        if selected_face_area < min_registration_face_area:
+            min_edge = int(math.sqrt(min_registration_face_area))
+            payload = _registration_error_payload(
+                reg_state,
+                f"Move closer to the camera. Registration requires a face size of at least {min_edge}px x {min_edge}px.",
+                selected_face_area=selected_face_area,
+                required_face_area=min_registration_face_area,
+            )
+            return jsonify(payload), 400
+
+        quality_score, quality_status, _ = deps["quality_service"].assess_face_quality(
+            face_crop,
+            detection_confidence=detection_confidence,
+            landmarks=landmarks,
+        )
+        if quality_score < deps["config"].face_quality_threshold:
+            payload = _registration_error_payload(
+                reg_state,
+                f"Face quality is too low ({quality_status}). Improve lighting and keep still.",
+                quality_score=round(quality_score, 2),
+                quality_status=quality_status,
+            )
+            return jsonify(
+                payload
+            ), 400
+
+        embeddings = deps["embedding_service"].extract_embedding_ensemble(face_crop)
+        if not embeddings:
+            payload = _registration_error_payload(
+                reg_state,
+                "Unable to extract face embeddings from this capture.",
+            )
+            return jsonify(payload), 400
+
+        current_pose = deps["get_current_registration_pose"]() or "front"
+        detected_pose = deps["quality_service"].detect_face_pose(face_crop, landmarks=landmarks)
+        if detected_pose != current_pose:
+            payload = _registration_error_payload(
+                reg_state,
+                f"Pose mismatch. Please face {current_pose} before capturing.",
+                expected_pose=current_pose,
+                detected_pose=detected_pose or "unknown",
+            )
+            return jsonify(payload), 400
+
+        sample = RegistrationSample(face_crop=face_crop, embeddings=embeddings, quality=quality_score, pose=current_pose)
+        captured_count = deps["capture_registration_sample"](sample)
+
+        reg_state = deps["get_registration_state"]()
+        payload = _registration_status_payload(reg_state)
+        next_pose = payload.get("current_pose")
+        completed_pose = current_pose if next_pose != current_pose else None
+        if completed_pose and next_pose:
+            message = (
+                f"Captured {reg_state.samples_per_pose_target} samples for {completed_pose}. "
+                f"Next pose: {next_pose}."
+            )
+        elif completed_pose and not next_pose:
+            message = "All pose captures complete. You can now submit registration."
+        else:
+            pose_progress = payload.get("pose_progress", {}).get(current_pose, {})
+            pose_captured = pose_progress.get("captured", 0)
+            pose_required = pose_progress.get("required", reg_state.samples_per_pose_target)
+            message = f"Captured {pose_captured}/{pose_required} for pose {current_pose}."
+
+        payload.update(
+            {
+                "success": True,
+                "message": message,
+                "quality_score": round(quality_score, 2),
+                "quality_status": quality_status,
+                "captured_count_total": captured_count,
+            }
+        )
+        return jsonify(payload)
+
+    @bp.route("/register", methods=["POST"], endpoint="register_submit")
+    def register_submit():
+        reg_state = deps["get_registration_state"]()
+        pending_registration = reg_state.pending_registration or []
+        if not pending_registration:
+            return jsonify({"success": False, "message": "No pending registration samples found."}), 400
+
+        name = request.form.get("name", "").strip()
+        sr_code = request.form.get("sr_code", "").strip()
+        gender = request.form.get("gender", "").strip()
+        course = request.form.get("course", "").strip()
+        if not name or not sr_code or not gender or not course:
+            return jsonify({"success": False, "message": "Name, SR Code, gender, and course are required."}), 400
+
+        repository = deps["repository"]
+        existing = repository.get_user_by_sr_code(sr_code)
+
+        all_embeddings = {}
+        image_paths = []
+        user_folder = os.path.join(deps["base_save_dir"], sr_code)
+        os.makedirs(user_folder, exist_ok=True)
+
+        for index, face_sample in enumerate(pending_registration):
+            timestamp = int(time.time() * 1000)
+            filename = os.path.join(user_folder, f"face_{timestamp}_{index}.jpg")
+            if not cv2.imwrite(filename, face_sample.face_crop):
+                return jsonify({"success": False, "message": "Failed to save captured face sample."}), 500
+            image_paths.append(filename)
+            all_embeddings = merge_embeddings_by_model(all_embeddings, face_sample.embeddings)
+
+        user_id = repository.save_user(
+            User(
+                id=existing.id if existing else 0,
+                name=name,
+                sr_code=sr_code,
+                gender=gender,
+                course=course,
+                embeddings=all_embeddings,
+                image_paths=image_paths,
+                embedding_dim=0,
+            )
+        )
+        saved_user = repository.get_user_by_sr_code(sr_code)
+        if saved_user:
+            saved_user.id = user_id
+            deps["replace_user"](saved_user)
+
+        deps["complete_registration"]()
+        total_embeddings = count_embeddings(normalize_embeddings_by_model(all_embeddings))
+        redirect_url = (
+            url_for("routes.registered_profiles")
+            if "staff_id" in session
+            else url_for("auth_routes.auth_login", next=url_for("routes.registered_profiles"))
+        )
+        profile_payload = None
+        if saved_user:
+            profile_payload = {
+                "user_id": saved_user.id,
+                "name": saved_user.name,
+                "sr_code": saved_user.sr_code,
+                "gender": saved_user.gender,
+                "course": saved_user.course,
+            }
+        return jsonify(
+            {
+                "success": True,
+                "user_id": user_id,
+                "updated": existing is not None,
+                "embedding_count": total_embeddings,
+                "message": (
+                    f"Profile updated for {saved_user.name}."
+                    if existing is not None and saved_user
+                    else f"Profile registered for {saved_user.name}."
+                    if saved_user
+                    else "Registration saved successfully."
+                ),
+                "profile": profile_payload,
+                "redirect_url": redirect_url,
+            }
+        )
     
     @bp.route("/registered-profiles/delete/<int:user_id>", methods=["POST"], endpoint="delete_profile")
     @login_required
@@ -802,9 +1184,18 @@ def create_routes_blueprint(deps):
             payload = request.get_json(silent=True) or {}
             deps["set_thresholds"](
                 float(payload.get("threshold", deps["get_thresholds"]()[0])),
-                bool(payload.get("adaptive_threshold")),
-                float(payload.get("quality_threshold", deps["get_thresholds"]()[2])),
+                float(payload.get("quality_threshold", deps["get_thresholds"]()[1])),
             )
+
+            vector_index_top_k_raw = str(payload.get("vector_index_top_k", "")).strip()
+            if vector_index_top_k_raw:
+                try:
+                    vector_index_top_k = max(1, int(vector_index_top_k_raw))
+                except ValueError:
+                    vector_index_top_k = 20
+                deps["config"].vector_index_top_k = vector_index_top_k
+                _set_setting(deps["db_path"], "vector_index_top_k", vector_index_top_k)
+
             max_occupancy_raw = str(payload.get("max_occupancy", "")).strip()
             if max_occupancy_raw:
                 try:
@@ -813,7 +1204,18 @@ def create_routes_blueprint(deps):
                     max_occupancy_value = 300
                 _set_setting(deps["db_path"], "max_occupancy", max_occupancy_value)
 
-        threshold, adaptive_threshold, quality_threshold = deps["get_thresholds"]()
+        threshold, quality_threshold = deps["get_thresholds"]()
+        vector_index_top_k_setting = _get_setting(
+            deps["db_path"],
+            "vector_index_top_k",
+            str(deps["config"].vector_index_top_k),
+        )
+        try:
+            vector_index_top_k = max(1, int(vector_index_top_k_setting))
+        except (TypeError, ValueError):
+            vector_index_top_k = max(1, int(deps["config"].vector_index_top_k))
+        deps["config"].vector_index_top_k = vector_index_top_k
+
         max_occupancy_setting = _get_setting(deps["db_path"], "max_occupancy", "300")
         try:
             max_occupancy = int(max_occupancy_setting)
@@ -823,8 +1225,8 @@ def create_routes_blueprint(deps):
             {
                 "user_count": deps["get_user_count"](),
                 "threshold": threshold,
-                "adaptive_threshold": adaptive_threshold,
                 "quality_threshold": quality_threshold,
+                "vector_index_top_k": vector_index_top_k,
                 "max_occupancy": max_occupancy,
             }
         )
@@ -837,7 +1239,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, created_at, last_updated
+            SELECT user_id, name, sr_code, gender, course, created_at, last_updated
             FROM users
             ORDER BY created_at DESC
             """
@@ -847,9 +1249,10 @@ def create_routes_blueprint(deps):
                 "user_id": row[0],
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
-                "course": row[3] or "-",
-                "created_at": row[4] or "-",
-                "last_updated": row[5] or "-",
+                "gender": row[3] or "-",
+                "course": row[4] or "-",
+                "created_at": row[5] or "-",
+                "last_updated": row[6] or "-",
             }
             for row in c.fetchall()
         ]
@@ -864,7 +1267,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, created_at, last_updated
+            SELECT user_id, name, sr_code, gender, course, created_at, last_updated
             FROM users
             WHERE archived_at IS NULL
             ORDER BY created_at DESC
@@ -875,9 +1278,10 @@ def create_routes_blueprint(deps):
                 "user_id": row[0],
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
-                "course": row[3] or "-",
-                "created_at": row[4] or "-",
-                "last_updated": row[5] or "-",
+                "gender": row[3] or "-",
+                "course": row[4] or "-",
+                "created_at": row[5] or "-",
+                "last_updated": row[6] or "-",
             }
             for row in c.fetchall()
         ]
@@ -917,7 +1321,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, course, created_at, last_updated, archived_at
+            SELECT user_id, name, sr_code, gender, course, created_at, last_updated, archived_at
             FROM users
             WHERE archived_at IS NOT NULL
             ORDER BY archived_at DESC
@@ -928,10 +1332,11 @@ def create_routes_blueprint(deps):
                 "user_id": row[0],
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
-                "course": row[3] or "-",
-                "created_at": row[4] or "-",
-                "last_updated": row[5] or "-",
-                "archived_at": row[6] or "-",
+                "gender": row[3] or "-",
+                "course": row[4] or "-",
+                "created_at": row[5] or "-",
+                "last_updated": row[6] or "-",
+                "archived_at": row[7] or "-",
             }
             for row in c.fetchall()
         ]
@@ -1171,7 +1576,7 @@ def create_routes_blueprint(deps):
             return jsonify(result), status
         except Exception as e:
             return jsonify({
-                "message": "Analytics pipeline failed to run.",
+                "message": f"Analytics pipeline failed to run: {e}",
                 "details": str(e),
             }), 500
 
@@ -1267,7 +1672,19 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin")
     def api_route_list():
         routes_list = []
-        for i, rule in enumerate(sorted(current_app.url_map.iter_rules(), key=lambda r: r.rule), start=1):
+        hidden_routes = {
+            "/kiosk",
+            "/kiosk-improved",
+            "/api/kiosk-metrics",
+            "/register",
+            "/api/register-info",
+        }
+        visible_rules = [
+            rule
+            for rule in sorted(current_app.url_map.iter_rules(), key=lambda r: r.rule)
+            if rule.rule not in hidden_routes
+        ]
+        for i, rule in enumerate(visible_rules, start=1):
             routes_list.append(
                 {
                     "i": i,

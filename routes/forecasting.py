@@ -8,6 +8,13 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 
+def _classify_forecast_exception(model_name, exc):
+    message = str(exc).strip() or exc.__class__.__name__
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        return "warning", f"{model_name} is unavailable in this environment: {message}"
+    return "error", message
+
+
 def _next_forecast_dates(anchor_date, steps):
     return [anchor_date + timedelta(days=i + 1) for i in range(steps)]
 
@@ -453,30 +460,47 @@ def run_all_forecasts(daily_df, today):
  
     results    = []
     errors     = {}
+    warnings_  = {}
  
     # ── ARIMA ──────────────────────────────────────────────
     try:
         results.append(forecast_arima(ts_series, today))
     except Exception as e:
-        errors["ARIMA"] = str(e)
+        severity, message = _classify_forecast_exception("ARIMA", e)
+        if severity == "warning":
+            warnings_["ARIMA"] = message
+        else:
+            errors["ARIMA"] = message
  
     # ── SARIMA ─────────────────────────────────────────────
     try:
         results.append(forecast_sarima(ts_series, today))
     except Exception as e:
-        errors["SARIMA"] = str(e)
+        severity, message = _classify_forecast_exception("SARIMA", e)
+        if severity == "warning":
+            warnings_["SARIMA"] = message
+        else:
+            errors["SARIMA"] = message
  
     # ── Prophet ────────────────────────────────────────────
     try:
         results.append(forecast_prophet(ts_series, today))
     except Exception as e:
-        errors["Prophet"] = str(e)
+        severity, message = _classify_forecast_exception("Prophet", e)
+        if severity == "warning":
+            warnings_["Prophet"] = message
+        else:
+            errors["Prophet"] = message
  
     # ── Holt-Winters ───────────────────────────────────────
     try:
         results.append(forecast_holt_winters(ts_series, today))
     except Exception as e:
-        errors["Holt-Winters"] = str(e)
+        severity, message = _classify_forecast_exception("Holt-Winters", e)
+        if severity == "warning":
+            warnings_["Holt-Winters"] = message
+        else:
+            errors["Holt-Winters"] = message
  
     # ── Comparison table ───────────────────────────────────
     comparison = []
@@ -504,6 +528,9 @@ def run_all_forecasts(daily_df, today):
         "comparison":       comparison,
         "best_model":       best_model,
         "errors":           errors,
+        "warnings":         warnings_,
+        "successful_models": len(results),
+        "attempted_models": 4,
         "comparison_interpretation": _comparison_interpretation(comparison, best_model),
     }
  

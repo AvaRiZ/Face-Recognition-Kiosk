@@ -63,9 +63,6 @@ export default defineConfig(({ command }) => ({
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:5000',
-      '/video_feed': 'http://127.0.0.1:5000',
-      '/check_status': 'http://127.0.0.1:5000',
-      '/stop_feed': 'http://127.0.0.1:5000',
       '/register': {
         target: 'http://127.0.0.1:5000',
         bypass(req) {

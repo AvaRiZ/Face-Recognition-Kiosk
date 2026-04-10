@@ -33,7 +33,7 @@ export default function SettingsPage() {
 
   const [threshold, setThreshold] = React.useState('0.3');
   const [qualityThreshold, setQualityThreshold] = React.useState('0.2');
-  const [adaptiveThreshold, setAdaptiveThreshold] = React.useState(false);
+  const [vectorIndexTopK, setVectorIndexTopK] = React.useState('20');
   const [maxOccupancy, setMaxOccupancy] = React.useState('300');
 
   React.useEffect(() => {
@@ -42,7 +42,7 @@ export default function SettingsPage() {
         setData(resp);
         setThreshold(String(resp.threshold ?? '0.3'));
         setQualityThreshold(String(resp.quality_threshold ?? '0.2'));
-        setAdaptiveThreshold(!!resp.adaptive_threshold);
+        setVectorIndexTopK(String(resp.vector_index_top_k ?? '20'));
         setMaxOccupancy(String(resp.max_occupancy ?? '300'));
       })
       .catch(() => setData(null))
@@ -56,8 +56,8 @@ export default function SettingsPage() {
       body: JSON.stringify({
         max_occupancy: maxOccupancy,
         threshold,
-        adaptive_threshold: adaptiveThreshold,
-        quality_threshold: qualityThreshold
+        quality_threshold: qualityThreshold,
+        vector_index_top_k: vectorIndexTopK
       })
     })
       .then((resp) => setData(resp))
@@ -136,8 +136,8 @@ export default function SettingsPage() {
                 </div>
                 <div className="col-md-4">
                   <div className="border rounded p-3 text-center h-100">
-                    <div className="h3 mb-1">{adaptiveThreshold ? 'Enabled' : 'Disabled'}</div>
-                    <small className="text-muted">Adaptive Threshold</small>
+                    <div className="h3 mb-1">{Number(qualityThreshold).toFixed(2)}</div>
+                    <small className="text-muted">Min Face Quality</small>
                   </div>
                 </div>
               </div>
@@ -170,6 +170,25 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="col-12">
+                  <label htmlFor="vector_index_top_k" className="form-label">
+                    Vector Index Top-K
+                  </label>
+                  <input
+                    type="number"
+                    id="vector_index_top_k"
+                    name="vector_index_top_k"
+                    className="form-control"
+                    min="1"
+                    step="1"
+                    value={vectorIndexTopK}
+                    onChange={(ev) => setVectorIndexTopK(ev.target.value)}
+                  />
+                  <div className="form-text">
+                    Number of nearest embedding candidates examined per model before two-factor verification.
+                  </div>
+                </div>
+
+                <div className="col-12">
                   <label htmlFor="threshold" className="form-label">
                     Recognition Threshold:{' '}
                     <span className="badge bg-light text-dark" id="thresholdValue">
@@ -188,22 +207,6 @@ export default function SettingsPage() {
                     onChange={(ev) => setThreshold(ev.target.value)}
                   />
                   <div className="form-text">Lower values = stricter. Higher values = more lenient.</div>
-                </div>
-
-                <div className="col-12">
-                  <div className="form-check">
-                    <input
-                      className="form-check-input"
-                      type="checkbox"
-                      id="adaptive_threshold"
-                      name="adaptive_threshold"
-                      checked={adaptiveThreshold}
-                      onChange={(ev) => setAdaptiveThreshold(ev.target.checked)}
-                    />
-                    <label className="form-check-label" htmlFor="adaptive_threshold">
-                      Enable Adaptive Threshold
-                    </label>
-                  </div>
                 </div>
 
                 <div className="col-12">

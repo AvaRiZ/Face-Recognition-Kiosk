@@ -1,5 +1,5 @@
 import React from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import Layout from './components/Layout.jsx';
 import LoginPage from './pages/Login.jsx';
 import DashboardPage from './pages/Dashboard.jsx';
@@ -73,6 +73,40 @@ function ProtectedRoute({ children }) {
 
 export default function App() {
   const sessionState = useSessionState();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    async function syncPendingRegistration() {
+      try {
+        const resp = await fetch('/api/register-info', { credentials: 'include' });
+        if (!resp.ok) {
+          return;
+        }
+        const payload = await resp.json();
+        if (cancelled) {
+          return;
+        }
+        const registrationReady = Boolean(
+          payload?.ready_to_submit || payload?.has_pending_registration || payload?.is_in_progress
+        );
+        if (registrationReady && location.pathname !== '/register') {
+          navigate('/register', { replace: true });
+        }
+      } catch {
+        // Ignore polling failures and keep the current route.
+      }
+    }
+
+    syncPendingRegistration();
+    const timer = window.setInterval(syncPendingRegistration, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [location.pathname, navigate]);
 
   return (
     <SessionContext.Provider value={sessionState}>
@@ -94,6 +128,7 @@ export default function App() {
           <Route path="archived-profiles" element={<ArchivedProfilesPage />} />
           <Route path="entry-exit-logs" element={<EntryExitLogsPage />} />
           <Route path="analytics-reports" element={<AnalyticsReportsPage />} />
+          <Route path="routes" element={<RouteListPage />} />
           <Route path="route-list" element={<RouteListPage />} />
           <Route path="manage-users" element={<ManageUsersPage />} />
           <Route path="settings" element={<SettingsPage />} />
