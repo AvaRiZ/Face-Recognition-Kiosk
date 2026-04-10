@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import struct
 import csv
@@ -157,6 +158,39 @@ def create_routes_blueprint(deps):
         payload = _registration_status_payload(reg_state)
         payload.update({"success": False, "message": message, **extra})
         return payload
+
+    def _validate_registration_fields(name: str, sr_code: str, gender: str, program: str):
+        allowed_genders = {"Male", "Female", "Other"}
+        normalized_name = " ".join(name.split())
+        normalized_program = " ".join(program.split())
+        normalized_sr_code = sr_code.strip()
+
+        if not normalized_name or not normalized_sr_code or not gender or not normalized_program:
+            return False, "Name, SR Code, gender, and program are required.", None
+
+        if "," not in normalized_name:
+            return False, "Use the name format: Last Name, First Name.", "name"
+
+        last_name, first_name = [part.strip() for part in normalized_name.split(",", 1)]
+        if not last_name or not first_name:
+            return False, "Use the name format: Last Name, First Name.", "name"
+
+        if not re.fullmatch(r"[A-Za-z][A-Za-z .,'-]{1,79}", normalized_name):
+            return False, "Name contains invalid characters.", "name"
+
+        if not re.fullmatch(r"\d{2}-\d{5}", normalized_sr_code):
+            return False, "SR Code must use the format 23-12345.", "sr_code"
+
+        if gender not in allowed_genders:
+            return False, "Please select a valid gender.", "gender"
+
+        if len(normalized_program) < 4 or len(normalized_program) > 120:
+            return False, "Program must be between 4 and 120 characters.", "program"
+
+        if not re.fullmatch(r"[A-Za-z0-9&(),./' -]+", normalized_program):
+            return False, "Program contains invalid characters.", "program"
+
+        return True, "", None
 
     def _extract_largest_face(image):
         if image is None or image.size == 0:
@@ -987,8 +1021,14 @@ def create_routes_blueprint(deps):
         sr_code = request.form.get("sr_code", "").strip()
         gender = request.form.get("gender", "").strip()
         program = request.form.get("program", "").strip()
-        if not name or not sr_code or not gender or not program:
-            return jsonify({"success": False, "message": "Name, SR Code, gender, and program are required."}), 400
+        is_valid, validation_message, invalid_field = _validate_registration_fields(
+            name,
+            sr_code,
+            gender,
+            program,
+        )
+        if not is_valid:
+            return jsonify({"success": False, "message": validation_message, "field": invalid_field}), 400
 
         repository = deps["repository"]
         existing = repository.get_user_by_sr_code(sr_code)

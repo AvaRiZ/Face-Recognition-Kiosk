@@ -112,6 +112,11 @@ const INITIAL_INFO = {
   sample_previews: []
 };
 
+const ALLOWED_GENDERS = new Set(['Male', 'Female', 'Other']);
+const NAME_PATTERN = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
+const SR_CODE_PATTERN = /^\d{2}-\d{5}$/;
+const PROGRAM_PATTERN = /^[A-Za-z0-9&(),./' -]+$/;
+
 function StatusAlert({ tone, icon, title, children }) {
   const variants = {
     danger: { className: 'alert-danger', iconClass: 'bi bi-exclamation-triangle-fill' },
@@ -165,6 +170,65 @@ function MetricPill({ icon, label, value }) {
       </div>
     </div>
   );
+}
+
+function normalizeSpaces(value) {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function validateRegistrationForm(form) {
+  const errors = {};
+  const normalizedName = normalizeSpaces(form.name);
+  const normalizedSrCode = form.sr_code.trim();
+  const normalizedProgram = normalizeSpaces(form.program);
+
+  if (!normalizedName) {
+    errors.name = 'Name is required.';
+  } else if (!normalizedName.includes(',')) {
+    errors.name = 'Use the name format: Last Name, First Name.';
+  } else {
+    const [lastName, firstName] = normalizedName.split(',', 2).map((part) => part.trim());
+    if (!lastName || !firstName) {
+      errors.name = 'Use the name format: Last Name, First Name.';
+    } else if (!NAME_PATTERN.test(normalizedName)) {
+      errors.name = 'Name contains invalid characters.';
+    }
+  }
+
+  if (!normalizedSrCode) {
+    errors.sr_code = 'SR Code is required.';
+  } else if (!SR_CODE_PATTERN.test(normalizedSrCode)) {
+    errors.sr_code = 'SR Code must use the format 23-12345.';
+  }
+
+  if (!form.gender) {
+    errors.gender = 'Gender is required.';
+  } else if (!ALLOWED_GENDERS.has(form.gender)) {
+    errors.gender = 'Please select a valid gender.';
+  }
+
+  if (!form.college) {
+    errors.college = 'Please select a college before choosing a program.';
+  }
+
+  if (!normalizedProgram) {
+    errors.program = 'Program is required.';
+  } else if (normalizedProgram.length < 4 || normalizedProgram.length > 120) {
+    errors.program = 'Program must be between 4 and 120 characters.';
+  } else if (!PROGRAM_PATTERN.test(normalizedProgram)) {
+    errors.program = 'Program contains invalid characters.';
+  }
+
+  return {
+    errors,
+    normalized: {
+      name: normalizedName,
+      sr_code: normalizedSrCode,
+      gender: form.gender,
+      college: form.college,
+      program: normalizedProgram
+    }
+  };
 }
 
 export default function RegisterPage() {
@@ -317,25 +381,20 @@ export default function RegisterPage() {
     setFieldErrors({});
     setResult(null);
 
-    if (!form.name.includes(',')) {
-      setFieldErrors({ name: 'Use the name format: Last Name, First Name.' });
-      setCaptureError('Use the name format: Last Name, First Name.');
-      return;
-    }
-
-    if (!form.college) {
-      setFieldErrors({ college: 'Please select a college before choosing a program.' });
-      setCaptureError('Please select a college before choosing a program.');
+    const { errors, normalized } = validateRegistrationForm(form);
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setCaptureError(Object.values(errors)[0]);
       return;
     }
 
     setSubmitting(true);
 
     const formData = new FormData();
-    formData.append('name', form.name);
-    formData.append('sr_code', form.sr_code);
-    formData.append('gender', form.gender);
-    formData.append('program', form.program);
+    formData.append('name', normalized.name);
+    formData.append('sr_code', normalized.sr_code);
+    formData.append('gender', normalized.gender);
+    formData.append('program', normalized.program);
 
     try {
       const response = await fetch('/register', {
@@ -346,7 +405,9 @@ export default function RegisterPage() {
       const payload = await response.json();
 
       if (!response.ok || !payload.success) {
-        if ((payload.message || '').toLowerCase().includes('sr code')) {
+        if (payload.field) {
+          setFieldErrors({ [payload.field]: payload.message || 'Please review this field.' });
+        } else if ((payload.message || '').toLowerCase().includes('sr code')) {
           setFieldErrors({ sr_code: payload.message || 'This SR Code is already registered.' });
         }
         setCaptureError(payload.message || 'Unable to save the registration.');
@@ -537,12 +598,13 @@ export default function RegisterPage() {
                           type="text"
                           id="name"
                           name="name"
-                          className="form-control"
+                          className={`form-control ${fieldErrors.name ? 'is-invalid' : ''}`}
                           placeholder="Dela Cruz, Juan"
                           value={form.name}
                           onChange={(ev) => updateForm('name', ev.target.value)}
                           required
                         />
+                        {fieldErrors.name ? <div className="invalid-feedback">{fieldErrors.name}</div> : null}
                         <div className="form-text">Enter the student name using the official Last Name, First Name format.</div>
                       </div>
 
@@ -571,7 +633,7 @@ export default function RegisterPage() {
                         <select
                           id="gender"
                           name="gender"
-                          className="form-select"
+                          className={`form-select ${fieldErrors.gender ? 'is-invalid' : ''}`}
                           value={form.gender}
                           onChange={(ev) => updateForm('gender', ev.target.value)}
                           required
@@ -581,6 +643,7 @@ export default function RegisterPage() {
                           <option value="Female">Female</option>
                           <option value="Other">Other</option>
                         </select>
+                        {fieldErrors.gender ? <div className="invalid-feedback">{fieldErrors.gender}</div> : null}
                       </div>
 
                       <div className="col-md-6">
@@ -590,7 +653,7 @@ export default function RegisterPage() {
                         <select
                           id="college"
                           name="college"
-                          className="form-select"
+                          className={`form-select ${fieldErrors.college ? 'is-invalid' : ''}`}
                           value={form.college}
                           onChange={(ev) => updateCollege(ev.target.value)}
                           required
@@ -602,6 +665,7 @@ export default function RegisterPage() {
                             </option>
                           ))}
                         </select>
+                        {fieldErrors.college ? <div className="invalid-feedback">{fieldErrors.college}</div> : null}
                       </div>
 
                       <div className="col-md-6">
@@ -612,7 +676,7 @@ export default function RegisterPage() {
                           type="text"
                           id="program"
                           name="program"
-                          className="form-control"
+                          className={`form-control ${fieldErrors.program ? 'is-invalid' : ''}`}
                           list="program-options"
                           placeholder={form.college ? 'Select or type a program' : 'Select a college first'}
                           value={form.program}
@@ -620,6 +684,7 @@ export default function RegisterPage() {
                           disabled={!form.college}
                           required
                         />
+                        {fieldErrors.program ? <div className="invalid-feedback">{fieldErrors.program}</div> : null}
                         <datalist id="program-options">
                           {filteredProgramOptions.map((program) => (
                             <option key={program} value={program} />
