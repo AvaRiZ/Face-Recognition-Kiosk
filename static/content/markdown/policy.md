@@ -23,7 +23,7 @@ The System may collect and process the following:
 - Full name
 - SR Code / institutional identifier
 - Program / department
-- Facial images captured during enrollment
+- Facial images captured during registration
 - Face embedding vectors (numerical facial features used for matching)
 - Recognition logs (date/time, confidence score, result)
 - Staff account data (username, role, profile image, login activity)
@@ -48,7 +48,7 @@ Data is limited to what is necessary for identity verification and operational m
 
 Data is retained only as long as needed for service delivery, security, and compliance:
 
-- Enrollment records: while the user remains active in the institution, or until valid deletion request/administrative offboarding
+- Registration records: while the user remains active in the institution, or until valid deletion request/administrative offboarding
 - Recognition logs: based on institutional retention schedule
 - Audit logs: retained for security review and accountability
 

@@ -238,6 +238,7 @@ export default function RegisterPage() {
   const [fieldErrors, setFieldErrors] = React.useState({});
   const [submitting, setSubmitting] = React.useState(false);
   const [result, setResult] = React.useState(null);
+  const [resetArmed, setResetArmed] = React.useState(false);
   const [programOptionsByCollege, setProgramOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
   const [collegeOptions, setCollegeOptions] = React.useState(DEFAULT_COLLEGE_OPTIONS);
   const [form, setForm] = React.useState({ name: '', sr_code: '', gender: '', college: '', program: '' });
@@ -348,6 +349,11 @@ export default function RegisterPage() {
   }
 
   async function handleReset() {
+    if (!resetArmed) {
+      setResetArmed(true);
+      return;
+    }
+
     setCaptureError('');
     setFieldErrors({});
     setResult(null);
@@ -362,6 +368,7 @@ export default function RegisterPage() {
         setCaptureError(payload.message || 'Unable to reset the capture session.');
         return;
       }
+      setResetArmed(false);
       setInfo((prev) => ({
         ...prev,
         capture_count: payload.capture_count ?? 0,
@@ -442,6 +449,23 @@ export default function RegisterPage() {
   const readyToSubmit = Boolean(info.ready_to_submit && info.has_pending_registration);
   const filteredProgramOptions = form.college ? programOptionsByCollege[form.college] || [] : [];
   const sampleCount = info.sample_previews?.length || 0;
+  const currentPose = info.current_pose || null;
+  const currentPoseProgress = currentPose ? info.pose_progress?.[currentPose] : null;
+  const currentPoseCaptured = currentPoseProgress?.captured ?? 0;
+  const currentPoseRequired = currentPoseProgress?.required ?? 0;
+  const completedPoses = Array.isArray(info.required_poses)
+    ? info.required_poses.filter((pose) => info.pose_progress?.[pose]?.completed).length
+    : 0;
+  const totalPoses = Array.isArray(info.required_poses) ? info.required_poses.length : 0;
+  const captureStateTitle = readyToSubmit ? 'Capture complete' : sampleCount > 0 || info.capture_count > 0 ? 'Capture still in progress' : 'Waiting for capture';
+  const captureStateBody = readyToSubmit
+    ? 'The required face samples are ready. Review the previews, then complete the student details below to save the registration.'
+    : currentPose
+      ? `The CLI is still collecting samples. Current pose: ${currentPose}. Captured ${currentPoseCaptured} of ${currentPoseRequired} required samples for this pose.`
+      : 'No completed capture set is available yet. Keep the student in the CLI camera flow until the required samples are collected.';
+  const resetHelperText = resetArmed
+    ? 'Click "Confirm Reset" to permanently clear the current captured samples for this student.'
+    : 'Use reset only when the wrong student was captured or the sample set is incomplete.';
 
   if (loading) {
     return (
@@ -473,17 +497,17 @@ export default function RegisterPage() {
                     <div className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
                       <div>
                         <div className="text-uppercase text-muted fw-semibold" style={{ fontSize: '11px', letterSpacing: '0.08em' }}>
-                          Registration Queue
+                          First-Time Registration Only
                         </div>
                         <h5 className="card-title mb-1">
-                          Complete student registration
+                          Complete first-time student registration
                         </h5>
                         <p className="text-muted mb-0 small">
-                          Review the captured samples, then fill out the form below to complete the student profile.
+                          Use this page only for students who are not yet registered. Review the captured samples, then fill out the form below to create the student profile.
                         </p>
                       </div>
                       <span className={`badge rounded-pill ${readyToSubmit ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'}`}>
-                        {readyToSubmit ? 'Ready for submission' : 'Capture in progress'}
+                        {readyToSubmit ? 'Ready for submission' : info.capture_count > 0 ? 'Capture in progress' : 'Waiting for capture'}
                       </span>
                     </div>
 
@@ -501,15 +525,44 @@ export default function RegisterPage() {
                     ) : null}
 
                     {!readyToSubmit ? (
-                      <StatusAlert tone="info" title="Waiting for CLI capture">
-                        Capture samples from the live camera flow until the system completes the required set. This page
-                        unlocks automatically when registration is ready.
+                      <StatusAlert tone="info" title="Waiting for unregistered-student capture">
+                        This page is only for students who are not yet registered. Keep the student on the live camera flow
+                        until the required face samples are completed. Registration unlocks automatically when the capture
+                        set is ready.
                       </StatusAlert>
                     ) : (
-                      <StatusAlert tone="ready" title="Samples ready">
-                        The required face samples are already available. You can now submit the student details below.
+                      <StatusAlert tone="ready" title="Unregistered student detected">
+                        The required face samples are ready for a student who is not yet registered. You can now enter the
+                        student details below to complete first-time registration.
                       </StatusAlert>
                     )}
+
+                    <div className={`rounded-3 border p-3 p-md-4 mb-4 ${readyToSubmit ? 'border-success-subtle bg-success-subtle' : 'bg-light'}`}>
+                      <div className="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                        <div>
+                          <div className="fw-semibold mb-1" style={{ color: '#012970' }}>{captureStateTitle}</div>
+                          <div className="small text-muted">{captureStateBody}</div>
+                        </div>
+                        <span className={`badge rounded-pill ${readyToSubmit ? 'text-bg-success' : 'text-bg-secondary'}`}>
+                          {readyToSubmit ? 'Ready now' : `${progressPercent}% complete`}
+                        </span>
+                      </div>
+
+                      <div className="row g-2 mt-2">
+                        <div className="col-md-4">
+                          <div className="small text-muted">Overall progress</div>
+                          <div className="fw-semibold">{info.capture_count || 0} / {info.max_captures || 0} captures</div>
+                        </div>
+                        <div className="col-md-4">
+                          <div className="small text-muted">Completed poses</div>
+                          <div className="fw-semibold">{completedPoses} / {totalPoses || '-'}</div>
+                        </div>
+                        <div className="col-md-4">
+                          <div className="small text-muted">Current pose</div>
+                          <div className="fw-semibold text-capitalize">{currentPose || (readyToSubmit ? 'Done' : 'Waiting')}</div>
+                        </div>
+                      </div>
+                    </div>
 
                     <div className="row g-3 mb-4">
                       <div className="col-md-4">
@@ -526,7 +579,7 @@ export default function RegisterPage() {
                         <MetricPill
                           icon="bi bi-patch-check"
                           label="Submission"
-                          value={readyToSubmit ? 'Ready to save' : 'Waiting for CLI capture'}
+                          value={readyToSubmit ? 'Ready to save' : 'Locked until capture is complete'}
                         />
                       </div>
                     </div>
@@ -586,11 +639,12 @@ export default function RegisterPage() {
                     <form className="row g-3" onSubmit={handleSubmit}>
                       <div className="col-12">
                         <div className="rounded-3 border bg-light p-3">
-                          <div className="fw-semibold mb-2" style={{ color: '#012970' }}>Before saving</div>
+                      <div className="fw-semibold mb-2" style={{ color: '#012970' }}>Before saving</div>
                           <ul className="mb-0 ps-3 text-muted" style={{ fontSize: '13px', lineHeight: 1.7 }}>
                             <li>Use the format Last Name, First Name.</li>
                             <li>Select the correct college first so the program list is filtered properly.</li>
-                            <li>Reset samples only if the captured face set is wrong or incomplete.</li>
+                            <li>Use this page only for students who are not yet registered in the system.</li>
+                            <li>Reset samples only if the wrong student was captured or the face set is incomplete.</li>
                           </ul>
                         </div>
                       </div>
@@ -702,8 +756,8 @@ export default function RegisterPage() {
                         <div className="alert alert-info d-flex align-items-start gap-3 mb-0">
                           <i className="bi bi-info-circle-fill mt-1"></i>
                           <div className="small">
-                            The live recognition camera continues running while this page is open. Only the captured CLI
-                            face samples are used for this registration record.
+                            The live recognition camera continues running while this page is open. Only the captured face
+                            samples for the unregistered student are used for this first-time registration record.
                           </div>
                         </div>
                       </div>
@@ -729,13 +783,25 @@ export default function RegisterPage() {
                           </button>
 
                           <button
-                            className="btn btn-outline-secondary"
+                            className={`btn ${resetArmed ? 'btn-outline-danger' : 'btn-outline-secondary'}`}
                             type="button"
                             onClick={handleReset}
+                            disabled={submitting}
                           >
-                            <i className="bi bi-arrow-counterclockwise me-2"></i>
-                            Reset Samples
+                            <i className={`bi ${resetArmed ? 'bi bi-exclamation-triangle me-2' : 'bi bi-arrow-counterclockwise me-2'}`}></i>
+                            {resetArmed ? 'Confirm Reset' : 'Reset Samples'}
                           </button>
+
+                          {resetArmed ? (
+                            <button
+                              className="btn btn-link text-decoration-none px-1"
+                              type="button"
+                              onClick={() => setResetArmed(false)}
+                              disabled={submitting}
+                            >
+                              Cancel
+                            </button>
+                          ) : null}
 
                           <a
                             className="btn btn-outline-danger ms-lg-auto"
@@ -744,6 +810,9 @@ export default function RegisterPage() {
                             <i className="bi bi-people me-2"></i>
                             View Profiles
                           </a>
+                        </div>
+                        <div className={`small mt-2 ${resetArmed ? 'text-danger' : 'text-muted'}`}>
+                          {resetHelperText}
                         </div>
                       </div>
                     </form>

@@ -588,7 +588,7 @@ export default function Dashboard() {
         <StatCard
           title="Registered Students"
           value={totalStudents}
-          subtext="enrolled in system"
+          subtext="registered in system"
           iconClass="bi bi-people"
           cardClass="customers-card"
         />

@@ -28,7 +28,6 @@ export default function Sidebar() {
           <>
             <NavItem to="/registered-profiles" icon="bi bi-people-fill" label="Registered Profiles" />
             <NavItem to="/analytics-reports" icon="bi bi-graph-up" label="Analytics & Reports" />
-            <NavItem to="/policy" icon="bi bi-shield-check" label="Policy" />
           </>
         ) : null}
 
