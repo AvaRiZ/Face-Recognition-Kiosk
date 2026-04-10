@@ -159,6 +159,12 @@ def create_routes_blueprint(deps):
         payload.update({"success": False, "message": message, **extra})
         return payload
 
+    def _has_complete_pending_registration(reg_state) -> bool:
+        pending_registration = reg_state.pending_registration or []
+        if not deps["is_registration_ready"]():
+            return False
+        return len(pending_registration) >= int(reg_state.total_retained_samples)
+
     def _validate_registration_fields(name: str, sr_code: str, gender: str, program: str):
         allowed_genders = {"Male", "Female", "Other"}
         normalized_name = " ".join(name.split())
@@ -1016,6 +1022,16 @@ def create_routes_blueprint(deps):
         pending_registration = reg_state.pending_registration or []
         if not pending_registration:
             return jsonify({"success": False, "message": "No pending registration samples found."}), 400
+        if not _has_complete_pending_registration(reg_state):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "Registration capture is not complete yet. Finish all required face samples before saving.",
+                    }
+                ),
+                400,
+            )
 
         name = request.form.get("name", "").strip()
         sr_code = request.form.get("sr_code", "").strip()

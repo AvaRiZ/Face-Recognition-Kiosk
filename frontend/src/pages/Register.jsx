@@ -381,6 +381,11 @@ export default function RegisterPage() {
     setFieldErrors({});
     setResult(null);
 
+    if (!info.ready_to_submit || !info.has_pending_registration) {
+      setCaptureError('Registration capture is not complete yet. Finish all required face samples before saving.');
+      return;
+    }
+
     const { errors, normalized } = validateRegistrationForm(form);
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors);
@@ -434,7 +439,7 @@ export default function RegisterPage() {
   const progressPercent = info.max_captures
     ? Math.min(100, Math.round((info.capture_count / info.max_captures) * 100))
     : 0;
-  const readyToSubmit = Boolean(info.ready_to_submit || info.has_pending_registration || info.is_in_progress);
+  const readyToSubmit = Boolean(info.ready_to_submit && info.has_pending_registration);
   const filteredProgramOptions = form.college ? programOptionsByCollege[form.college] || [] : [];
   const sampleCount = info.sample_previews?.length || 0;
 
