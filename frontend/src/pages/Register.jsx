@@ -1,22 +1,107 @@
 import React from 'react';
 
-const DEFAULT_PROGRAM_OPTIONS = [
-  'BS Information Technology',
-  'BS Computer Science',
-  'BS Information Systems',
-  'BS Computer Engineering',
-  'BS Industrial Engineering',
-  'BS Civil Engineering',
-  'BS Electrical Engineering',
-  'BS Mechanical Engineering',
-  'BS Electronics Engineering',
-  'BS Nursing',
-  'BS Psychology',
-  'BS Accountancy',
-  'BS Business Administration',
-  'BS Hospitality Management',
-  'BS Education'
-];
+const DEFAULT_COLLEGE_PROGRAM_MAP = {
+  'College of Engineering': [
+    'Bachelor of Science in Chemical Engineering',
+    'Bachelor of Science in Food Engineering',
+    'Bachelor of Science in Ceramics Engineering',
+    'Bachelor of Science in Metallurgical Engineering',
+    'Bachelor of Science in Civil Engineering',
+    'Bachelor of Science in Sanitary Engineering',
+    'Bachelor of Science in Geodetic Engineering',
+    'Bachelor of Science in Geological Engineering',
+    'Bachelor of Science in Transportation Systems Engineering',
+    'Bachelor of Science in Electrical Engineering',
+    'Bachelor of Science in Computer Engineering',
+    'Bachelor of Science in Electronics Engineering',
+    'Bachelor of Science in Instrumentation and Control Engineering',
+    'Bachelor of Science in Mechatronics Engineering',
+    'Bachelor of Science in Aerospace Engineering',
+    'Bachelor of Science in Biomedical Engineering',
+    'Bachelor of Science in Industrial Engineering',
+    'Bachelor of Science in Mechanical Engineering',
+    'Bachelor of Science in Petroleum Engineering',
+    'Bachelor of Science in Automotive Engineering'
+  ],
+  'College of Architecture, Fine Arts and Design': [
+    'Bachelor of Fine Arts and Design Major in Visual Communication',
+    'Bachelor of Science in Architecture',
+    'Bachelor of Science in Interior Design'
+  ],
+  'College of Arts and Sciences': [
+    'Bachelor of Arts in English Language Studies',
+    'Bachelor of Arts in Communication',
+    'Bachelor of Science in Biology',
+    'Bachelor of Science in Chemistry',
+    'Bachelor of Science in Criminology',
+    'Bachelor of Science in Development Communication',
+    'Bachelor of Science in Mathematics',
+    'Bachelor of Science in Psychology',
+    'Bachelor of Science in Fisheries and Aquatic Sciences'
+  ],
+  'College of Accountancy, Business, Economics, and International Hospitality Management': [
+    'Bachelor of Science in Accountancy',
+    'Bachelor of Science in Business Administration Major in Business Economics',
+    'Bachelor of Science in Business Administration Major in Financial Management',
+    'Bachelor of Science in Business Administration Major in Human Resource Management',
+    'Bachelor of Science in Business Administration Major in Marketing Management',
+    'Bachelor of Science in Business Administration Major in Operations Management',
+    'Bachelor of Science in Hospitality Management',
+    'Bachelor of Science in Tourism Management',
+    'Bachelor in Public Administration',
+    'Bachelor of Science in Customs Administration',
+    'Bachelor of Science in Entrepreneurship'
+  ],
+  'College of Informatics and Computing Sciences': [
+    'Bachelor of Science in Computer Science',
+    'Bachelor of Science in Information Technology'
+  ],
+  'College of Nursing and Allied Health Sciences': [
+    'Bachelor of Science in Nursing',
+    'Bachelor of Science in Nutrition and Dietetics',
+    'Bachelor of Science in Public Health (Disaster Response)'
+  ],
+  'College of Engineering Technology': [
+    'Bachelor of Automotive Engineering Technology',
+    'Bachelor of Civil Engineering Technology',
+    'Bachelor of Computer Engineering Technology',
+    'Bachelor of Drafting Engineering Technology',
+    'Bachelor of Electrical Engineering Technology',
+    'Bachelor of Electronics Engineering Technology',
+    'Bachelor of Food Engineering Technology',
+    'Bachelor of Instrumentation and Control Engineering Technology',
+    'Bachelor of Mechanical Engineering Technology',
+    'Bachelor of Mechatronics Engineering Technology',
+    'Bachelor of Welding and Fabrication Engineering Technology'
+  ],
+  'College of Agriculture and Forestry': [
+    'Bachelor of Science in Agriculture',
+    'Bachelor of Science in Forestry'
+  ],
+  'College of Teacher Education': [
+    'Bachelor of Elementary Education',
+    'Bachelor of Early Childhood Education',
+    'Bachelor of Secondary Education Major in Science',
+    'Bachelor of Secondary Education Major in English',
+    'Bachelor of Secondary Education Major in Filipino',
+    'Bachelor of Secondary Education Major in Mathematics',
+    'Bachelor of Secondary Education Major in Social Studies',
+    'Bachelor of Technology & Livelihood Education Major in Home Economics',
+    'Bachelor of Technical-Vocational Teacher Education Major in Garments, Fashion and Design',
+    'Bachelor of Technical-Vocational Teacher Education Major in Electronics Technology',
+    'Bachelor of Physical Education'
+  ]
+};
+
+const PROGRAM_TO_COLLEGE = Object.entries(DEFAULT_COLLEGE_PROGRAM_MAP).reduce((acc, [college, programs]) => {
+  programs.forEach((program) => {
+    acc[program] = college;
+  });
+  return acc;
+}, {});
+
+const DEFAULT_COLLEGE_OPTIONS = Object.keys(DEFAULT_COLLEGE_PROGRAM_MAP);
+const OTHER_COLLEGE_LABEL = 'Other / Unassigned';
 
 const INITIAL_INFO = {
   capture_count: 0,
@@ -33,8 +118,9 @@ export default function RegisterPage() {
   const [captureError, setCaptureError] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
   const [result, setResult] = React.useState(null);
-  const [courseOptions, setCourseOptions] = React.useState(DEFAULT_PROGRAM_OPTIONS);
-  const [form, setForm] = React.useState({ name: '', sr_code: '', gender: '', course: '' });
+  const [courseOptionsByCollege, setCourseOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
+  const [collegeOptions, setCollegeOptions] = React.useState(DEFAULT_COLLEGE_OPTIONS);
+  const [form, setForm] = React.useState({ name: '', sr_code: '', gender: '', college: '', course: '' });
 
   React.useEffect(() => {
     let cancelled = false;
@@ -79,13 +165,33 @@ export default function RegisterPage() {
         if (cancelled) {
           return;
         }
+        const groupedPrograms = Object.entries(DEFAULT_COLLEGE_PROGRAM_MAP).reduce((acc, [college, programs]) => {
+          acc[college] = [...programs];
+          return acc;
+        }, {});
+
         const dynamicCourses = (payload.rows || [])
           .map((row) => (row.course || '').trim())
           .filter((course) => course && course !== '-');
-        const merged = Array.from(new Set([...dynamicCourses, ...DEFAULT_PROGRAM_OPTIONS])).sort((a, b) =>
-          a.localeCompare(b)
+
+        dynamicCourses.forEach((program) => {
+          const mappedCollege = PROGRAM_TO_COLLEGE[program] || OTHER_COLLEGE_LABEL;
+          if (!groupedPrograms[mappedCollege]) {
+            groupedPrograms[mappedCollege] = [];
+          }
+          if (!groupedPrograms[mappedCollege].includes(program)) {
+            groupedPrograms[mappedCollege].push(program);
+          }
+        });
+
+        const normalizedGroups = Object.fromEntries(
+          Object.entries(groupedPrograms)
+            .filter(([, programs]) => programs.length > 0)
+            .map(([college, programs]) => [college, [...programs].sort((a, b) => a.localeCompare(b))])
         );
-        setCourseOptions(merged);
+
+        setCourseOptionsByCollege(normalizedGroups);
+        setCollegeOptions(Object.keys(normalizedGroups));
       } catch {
         // Keep fallback options.
       }
@@ -99,6 +205,14 @@ export default function RegisterPage() {
 
   function updateForm(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function updateCollege(value) {
+    setForm((prev) => {
+      const allowedPrograms = courseOptionsByCollege[value] || [];
+      const nextCourse = allowedPrograms.includes(prev.course) ? prev.course : '';
+      return { ...prev, college: value, course: nextCourse };
+    });
   }
 
   async function handleReset() {
@@ -135,6 +249,11 @@ export default function RegisterPage() {
 
     if (!form.name.includes(',')) {
       setCaptureError('Use the name format: Last Name, First Name.');
+      return;
+    }
+
+    if (!form.college) {
+      setCaptureError('Please select a college before choosing a program.');
       return;
     }
 
@@ -180,6 +299,7 @@ export default function RegisterPage() {
     ? Math.min(100, Math.round((info.capture_count / info.max_captures) * 100))
     : 0;
   const readyToSubmit = Boolean(info.ready_to_submit || info.has_pending_registration || info.is_in_progress);
+  const filteredCourseOptions = form.college ? courseOptionsByCollege[form.college] || [] : [];
 
   if (loading) {
     return (
@@ -319,23 +439,44 @@ export default function RegisterPage() {
                         </select>
                       </div>
                       <div className="col-md-6">
-                        <label htmlFor="course" className="form-label">Course / Program</label>
+                        <label htmlFor="college" className="form-label">College</label>
+                        <select
+                          type="text"
+                          id="college"
+                          name="college"
+                          className="form-select"
+                          value={form.college}
+                          onChange={(ev) => updateCollege(ev.target.value)}
+                          required
+                        >
+                          <option value="">Select college</option>
+                          {collegeOptions.map((college) => (
+                            <option key={college} value={college}>
+                              {college}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-md-6">
+                        <label htmlFor="course" className="form-label">Program</label>
                         <input
                           type="text"
                           id="course"
                           name="course"
                           className="form-control"
                           list="course-options"
-                          placeholder="Select or type a course/program"
+                          placeholder={form.college ? 'Select or type a program' : 'Select a college first'}
                           value={form.course}
                           onChange={(ev) => updateForm('course', ev.target.value)}
+                          disabled={!form.college}
                           required
                         />
                         <datalist id="course-options">
-                          {courseOptions.map((course) => (
+                          {filteredCourseOptions.map((course) => (
                             <option key={course} value={course} />
                           ))}
                         </datalist>
+                        <div className="form-text">Program suggestions are filtered by the selected college.</div>
                       </div>
                       <div className="col-12">
                         <div className="border rounded p-3 bg-light small text-muted">
