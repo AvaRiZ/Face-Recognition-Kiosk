@@ -32,6 +32,7 @@ export default function Sidebar() {
         ) : null}
 
         {isStaff ? <NavItem to="/entry-exit-logs" icon="bi bi-people-fill" label="Entry/Exit Logs" /> : null}
+        {role ? <NavItem to="/program-monthly-visits" icon="bi bi-table" label="Program Monthly Visits" /> : null}
 
         {role === 'super_admin' ? <NavItem to="/settings" icon="bi bi-gear" label="Settings" /> : null}
       </ul>

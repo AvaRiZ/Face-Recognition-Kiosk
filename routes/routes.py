@@ -324,6 +324,104 @@ def create_routes_blueprint(deps):
         conn.commit()
         conn.close()
 
+    def _monthly_program_visits_data(selected_year=None):
+        import calendar
+
+        current_year = date.today().year
+        try:
+            year = int(selected_year or current_year)
+        except (TypeError, ValueError):
+            year = current_year
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+
+        c.execute(
+            """
+            SELECT program_name
+            FROM programs
+            WHERE COALESCE(is_active, 1) = 1
+            ORDER BY program_name ASC
+            """
+        )
+        program_names = [row[0] for row in c.fetchall() if row[0]]
+
+        c.execute(
+            """
+            SELECT DISTINCT SUBSTR(CAST(timestamp AS TEXT), 1, 4) AS year
+            FROM recognition_log
+            WHERE timestamp IS NOT NULL AND TRIM(CAST(timestamp AS TEXT)) != ''
+            ORDER BY year DESC
+            """
+        )
+        available_years = {current_year}
+        for (raw_year,) in c.fetchall():
+            try:
+                available_years.add(int(raw_year))
+            except (TypeError, ValueError):
+                continue
+        available_years = sorted(available_years, reverse=True)
+
+        if year not in available_years:
+            if available_years:
+                year = available_years[0]
+            else:
+                available_years = [current_year]
+                year = current_year
+
+        c.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(TRIM(u.course), ''), 'Unassigned') AS program,
+                SUBSTR(CAST(r.timestamp AS TEXT), 6, 2) AS month_num,
+                COUNT(*) AS visit_count
+            FROM recognition_log r
+            JOIN users u ON r.user_id = u.user_id
+            WHERE SUBSTR(CAST(r.timestamp AS TEXT), 1, 4) = ?
+            GROUP BY program, month_num
+            ORDER BY program ASC, month_num ASC
+            """,
+            (str(year),),
+        )
+        raw_rows = c.fetchall()
+        conn.close()
+
+        grouped = {program_name: [0] * 12 for program_name in program_names}
+        for program, month_num, visit_count in raw_rows:
+            month_index = int(month_num or 0)
+            if month_index < 1 or month_index > 12:
+                continue
+            grouped.setdefault(program, [0] * 12)[month_index - 1] = int(visit_count or 0)
+
+        rows = []
+        overall_monthly = [0] * 12
+        for program in sorted(grouped):
+            monthly_counts = grouped[program]
+            overall_total = sum(monthly_counts)
+            for idx, count in enumerate(monthly_counts):
+                overall_monthly[idx] += count
+            rows.append(
+                {
+                    "program": program,
+                    "months": monthly_counts,
+                    "overall_total": overall_total,
+                }
+            )
+
+        overall_row = {
+            "program": "Overall Total",
+            "months": overall_monthly,
+            "overall_total": sum(overall_monthly),
+        }
+
+        return {
+            "year": year,
+            "years": available_years,
+            "months": [calendar.month_abbr[idx] for idx in range(1, 13)],
+            "rows": rows,
+            "overall_row": overall_row,
+        }
+
     def _dashboard_data():
         from datetime import date, timedelta
 
@@ -533,6 +631,12 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def dashboard_page():
+        return _spa_index()
+
+    @bp.route("/program-monthly-visits", endpoint="program_monthly_visits_page")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def program_monthly_visits_page():
         return _spa_index()
 
     @bp.route("/route-list")
@@ -1234,6 +1338,32 @@ def create_routes_blueprint(deps):
         log_action("EXPORT_LOGS")
         return response
 
+    @bp.route("/program-monthly-visits/export", endpoint="export_program_monthly_visits")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def export_program_monthly_visits():
+        from flask import make_response
+
+        payload = _monthly_program_visits_data(request.args.get("year", "").strip())
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        header = ["Program", *payload["months"], "Overall Total"]
+        writer.writerow(header)
+
+        for row in payload["rows"]:
+            writer.writerow([row["program"], *row["months"], row["overall_total"]])
+
+        overall_row = payload["overall_row"]
+        writer.writerow([overall_row["program"], *overall_row["months"], overall_row["overall_total"]])
+
+        response = make_response(output.getvalue())
+        filename = f"program_monthly_visits_{payload['year']}.csv"
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        response.headers["Content-type"] = "text/csv"
+        log_action("EXPORT_PROGRAM_MONTHLY_VISITS", target=str(payload["year"]))
+        return response
+
     @bp.route("/api/dashboard", methods=["GET"], endpoint="api_dashboard")
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
@@ -1676,6 +1806,13 @@ def create_routes_blueprint(deps):
             )
         conn.close()
         return jsonify({"rows": rows})
+
+    @bp.route("/api/program-monthly-visits", methods=["GET"], endpoint="api_program_monthly_visits")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def api_program_monthly_visits():
+        payload = _monthly_program_visits_data(request.args.get("year", "").strip())
+        return jsonify(payload)
 
     @bp.route("/api/manage-users", methods=["GET"], endpoint="api_manage_users")
     @login_required
