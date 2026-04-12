@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass
 
 from ultralytics import YOLO
@@ -62,6 +63,12 @@ def build_runtime() -> AppRuntime:
     log_step(f"YOLOv8 model loaded on {yolo_device}")
 
     embedding_service = EmbeddingService(config)
+    log_step("Warming up embedding models...")
+    warmup_started = time.perf_counter()
+    embedding_service.warm_up_models(logger=log_step)
+    warmup_elapsed = time.perf_counter() - warmup_started
+    log_step(f"Embedding warm-up finished in {warmup_elapsed:.2f}s")
+
     quality_service = FaceQualityService(config)
     tracking_service = TrackingService(config, state)
     recognition_service = FaceRecognitionService(

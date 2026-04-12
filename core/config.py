@@ -107,13 +107,13 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Area is measured in pixels (`width * height` of the face crop).
     # Example:
-    # - `50 * 50` means crops smaller than roughly 50px by 50px fail size.
-    # - `130 * 130` means crops around that size get full size credit.
+    # - `260 * 260` means crops smaller than roughly 260px by 260px fail size.
+    # - `280 * 280` means crops around that size get full size credit.
     # Tuning:
     # - Raise `quality_face_area_min` to reject small, low-detail faces.
     # - Lower it if your camera is farther away and valid faces look smaller.
-    quality_face_area_min: int = 50 * 50
-    quality_face_area_good: int = 130 * 130
+    quality_face_area_min: int = 260 * 260
+    quality_face_area_good: int = 280 * 280
 
     # ------------------------------------------------------------------
     # Quality scoring: detector confidence
@@ -131,7 +131,7 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_sharpness_min` to be stricter against blur.
     # - Lower it if motion blur is common but recognition still works.
-    quality_sharpness_min: float = 60.0
+    quality_sharpness_min: float = 10.0
     quality_sharpness_good: float = 128.0
 
     # ------------------------------------------------------------------
@@ -189,7 +189,7 @@ class AppConfig:
     # Registration distance gate (face-size proxy).
     # The closest detected face is selected for registration; this threshold
     # ensures that selected face is close enough to camera before capture.
-    registration_min_face_area: int = 120 * 120
+    registration_min_face_area: int = 260 * 260
 
     # ------------------------------------------------------------------
     # Device configuration

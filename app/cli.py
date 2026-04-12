@@ -97,7 +97,7 @@ class CLIApplication:
         print("[WARN] Failed to connect")
         return None
 
-    def process_cctv_stream(self, stream_url, frame_width=1280, frame_height=720):
+    def process_cctv_stream(self, stream_url, frame_width=1600, frame_height=900):
         camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
         if camera is None:
             return
