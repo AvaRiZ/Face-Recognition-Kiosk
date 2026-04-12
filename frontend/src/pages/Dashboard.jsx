@@ -92,8 +92,8 @@ function DailyVisitorsChart({ data }) {
   );
 }
 
-// ── Course Distribution Pie Chart ────────────────────────────
-function CourseDistributionChart({ data }) {
+// ── Program Distribution Pie Chart ───────────────────────────
+function ProgramDistributionChart({ data }) {
   const canvasRef = React.useRef(null);
   const chartRef = React.useRef(null);
 
@@ -115,7 +115,7 @@ function CourseDistributionChart({ data }) {
     chartRef.current = new window.Chart(canvasRef.current, {
       type: "doughnut",
       data: {
-        labels: data.map((d) => d.course || "Unknown"),
+        labels: data.map((d) => d.program || "Unknown"),
         datasets: [
           {
             data: data.map((d) => d.count),
@@ -558,7 +558,7 @@ export default function Dashboard() {
   const avgConfidence = data?.avg_confidence ?? 0;
   const totalStudents = data?.total_students ?? 0;
   const dailyVisitors = data?.daily_visitors ?? [];
-  const courseDistrib = data?.course_distribution ?? [];
+  const programDistrib = data?.program_distribution ?? [];
   const peakHours = data?.peak_hours ?? [];
   const topVisitors = data?.top_visitors ?? [];
   const weeklyHeatmap = data?.weekly_heatmap ?? [];
@@ -588,7 +588,7 @@ export default function Dashboard() {
         <StatCard
           title="Registered Students"
           value={totalStudents}
-          subtext="enrolled in system"
+          subtext="registered in system"
           iconClass="bi bi-people"
           cardClass="customers-card"
         />
@@ -615,7 +615,7 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* ── Daily Visitors + Course Distribution ── */}
+      {/* ── Daily Visitors + Program Distribution ── */}
       <div className="row g-3 mb-3">
         <div className="col-lg-8">
           <div className="card h-100">
@@ -635,8 +635,8 @@ export default function Dashboard() {
         <div className="col-lg-4">
           <div className="card h-100">
             <div className="card-body">
-              <h5 className="card-title">Course Distribution</h5>
-              <CourseDistributionChart data={courseDistrib} />
+              <h5 className="card-title">Program Distribution</h5>
+              <ProgramDistributionChart data={programDistrib} />
             </div>
           </div>
         </div>

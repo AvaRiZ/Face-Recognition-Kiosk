@@ -112,7 +112,7 @@ def init_db():
     conn.close()
     print("Database initialized (app.py compatible schema)")
 
-def save_user_with_multiple_embeddings(embeddings_by_model, image_paths, name, sr_code, course):
+def save_user_with_multiple_embeddings(embeddings_by_model, image_paths, name, sr_code, program):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
@@ -137,7 +137,7 @@ def save_user_with_multiple_embeddings(embeddings_by_model, image_paths, name, s
             SET name = ?, course = ?, embeddings = ?, image_paths = ?, 
                 embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
             WHERE user_id = ?
-        """, (name, course, embeddings_blob, ';'.join(image_paths), infer_embedding_dim(all_embeddings), user_id))
+        """, (name, program, embeddings_blob, ';'.join(image_paths), infer_embedding_dim(all_embeddings), user_id))
     else:
         embeddings_by_model = normalize_embeddings_by_model(embeddings_by_model)
         embeddings_blob = pickle.dumps(embeddings_by_model)
@@ -145,7 +145,7 @@ def save_user_with_multiple_embeddings(embeddings_by_model, image_paths, name, s
         c.execute("""
             INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim) 
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (name, sr_code, course, embeddings_blob, ';'.join(image_paths), embedding_dim))
+        """, (name, sr_code, program, embeddings_blob, ';'.join(image_paths), embedding_dim))
         user_id = c.lastrowid
     
     conn.commit()
@@ -443,9 +443,9 @@ def register_new_user():
     print("\n=== USER INFO ===")
     name = input("Full name: ").strip()
     sr_code = input("SR Code: ").strip()
-    course = input("Course: ").strip()
+    program = input("Program: ").strip()
     
-    if not all([name, sr_code, course]):
+    if not all([name, sr_code, program]):
         print("All fields required!")
         return
     
@@ -467,7 +467,7 @@ def register_new_user():
     cv2.imwrite(filename, face_crop)
     
     # Save to DB (app.py compatible)
-    user_id = save_user_with_multiple_embeddings(embeddings, [filename], name, sr_code, course)
+    user_id = save_user_with_multiple_embeddings(embeddings, [filename], name, sr_code, program)
     
     print(f"\n✅ REGISTERED! ID: {user_id}")
     print(f"Name: {name} | SR: {sr_code} | Dual embeddings saved")

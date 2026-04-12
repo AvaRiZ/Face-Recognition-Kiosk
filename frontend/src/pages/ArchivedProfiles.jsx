@@ -211,7 +211,7 @@ export default function ArchivedProfilesPage() {
                   <th>#</th>
                   <th>Name</th>
                   <th>SR Code</th>
-                  <th>Course</th>
+                  <th>Program</th>
                   <th>Created</th>
                   <th>Last Updated</th>
                   <th>Archived At</th>
@@ -238,7 +238,7 @@ export default function ArchivedProfilesPage() {
                         <td>{String(idx + 1)}</td>
                         <td>{row.name}</td>
                         <td>{row.sr_code}</td>
-                        <td>{row.course}</td>
+                        <td>{row.program}</td>
                         <td>{row.created_at}</td>
                         <td>{row.last_updated}</td>
                         <td>{row.archived_at}</td>

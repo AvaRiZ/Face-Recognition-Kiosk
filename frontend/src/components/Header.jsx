@@ -13,6 +13,7 @@ export default function Header() {
   const { session, refresh } = useSession();
   const displayName = session?.full_name || session?.username || 'Admin';
   const initials = getInitials(displayName);
+  const isAdmin = session?.role === 'super_admin' || session?.role === 'library_admin';
 
   async function handleLogout(ev) {
     ev.preventDefault();
@@ -51,6 +52,15 @@ export default function Header() {
                 <hr className="dropdown-divider" />
               </li>
               <li>
+                <button id="profileThemeToggle" className="dropdown-item d-flex align-items-center" type="button">
+                  <i className="bi bi-moon me-2"></i>
+                  <span>Dark Mode</span>
+                </button>
+              </li>
+              <li>
+                <hr className="dropdown-divider" />
+              </li>
+              <li>
                 <a className="dropdown-item d-flex align-items-center" href="/profile">
                   <i className="bi bi-person-circle"></i>
                   <span>Profile Settings</span>
@@ -59,6 +69,19 @@ export default function Header() {
               <li>
                 <hr className="dropdown-divider" />
               </li>
+              {isAdmin ? (
+                <>
+                  <li>
+                    <a className="dropdown-item d-flex align-items-center" href="/route-list">
+                      <i className="bi bi-diagram-3"></i>
+                      <span>Route List</span>
+                    </a>
+                  </li>
+                  <li>
+                    <hr className="dropdown-divider" />
+                  </li>
+                </>
+              ) : null}
               {session?.role === 'super_admin' ? (
                 <>
                   <li>
@@ -73,10 +96,10 @@ export default function Header() {
                 </>
               ) : null}
               <li>
-                <button id="profileThemeToggle" className="dropdown-item d-flex align-items-center" type="button">
-                  <i className="bi bi-moon me-2"></i>
-                  <span>Dark Mode</span>
-                </button>
+                <a className="dropdown-item d-flex align-items-center" href="/policy">
+                  <i className="bi bi-shield-check"></i>
+                  <span>Policy</span>
+                </a>
               </li>
               <li>
                 <hr className="dropdown-divider" />

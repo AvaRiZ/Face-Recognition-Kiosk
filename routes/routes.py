@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import struct
 import csv
@@ -158,6 +159,45 @@ def create_routes_blueprint(deps):
         payload.update({"success": False, "message": message, **extra})
         return payload
 
+    def _has_complete_pending_registration(reg_state) -> bool:
+        pending_registration = reg_state.pending_registration or []
+        if not deps["is_registration_ready"]():
+            return False
+        return len(pending_registration) >= int(reg_state.total_retained_samples)
+
+    def _validate_registration_fields(name: str, sr_code: str, gender: str, program: str):
+        allowed_genders = {"Male", "Female", "Other"}
+        normalized_name = " ".join(name.split())
+        normalized_program = " ".join(program.split())
+        normalized_sr_code = sr_code.strip()
+
+        if not normalized_name or not normalized_sr_code or not gender or not normalized_program:
+            return False, "Name, SR Code, gender, and program are required.", None
+
+        if "," not in normalized_name:
+            return False, "Use the name format: Last Name, First Name.", "name"
+
+        last_name, first_name = [part.strip() for part in normalized_name.split(",", 1)]
+        if not last_name or not first_name:
+            return False, "Use the name format: Last Name, First Name.", "name"
+
+        if not re.fullmatch(r"[A-Za-z][A-Za-z .,'-]{1,79}", normalized_name):
+            return False, "Name contains invalid characters.", "name"
+
+        if not re.fullmatch(r"\d{2}-\d{5}", normalized_sr_code):
+            return False, "SR Code must use the format 23-12345.", "sr_code"
+
+        if gender not in allowed_genders:
+            return False, "Please select a valid gender.", "gender"
+
+        if len(normalized_program) < 4 or len(normalized_program) > 120:
+            return False, "Program must be between 4 and 120 characters.", "program"
+
+        if not re.fullmatch(r"[A-Za-z0-9&(),./' -]+", normalized_program):
+            return False, "Program contains invalid characters.", "program"
+
+        return True, "", None
+
     def _extract_largest_face(image):
         if image is None or image.size == 0:
             return None, None, None, 0
@@ -284,6 +324,104 @@ def create_routes_blueprint(deps):
         conn.commit()
         conn.close()
 
+    def _monthly_program_visits_data(selected_year=None):
+        import calendar
+
+        current_year = date.today().year
+        try:
+            year = int(selected_year or current_year)
+        except (TypeError, ValueError):
+            year = current_year
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+
+        c.execute(
+            """
+            SELECT program_name
+            FROM programs
+            WHERE COALESCE(is_active, 1) = 1
+            ORDER BY program_name ASC
+            """
+        )
+        program_names = [row[0] for row in c.fetchall() if row[0]]
+
+        c.execute(
+            """
+            SELECT DISTINCT SUBSTR(CAST(timestamp AS TEXT), 1, 4) AS year
+            FROM recognition_log
+            WHERE timestamp IS NOT NULL AND TRIM(CAST(timestamp AS TEXT)) != ''
+            ORDER BY year DESC
+            """
+        )
+        available_years = {current_year}
+        for (raw_year,) in c.fetchall():
+            try:
+                available_years.add(int(raw_year))
+            except (TypeError, ValueError):
+                continue
+        available_years = sorted(available_years, reverse=True)
+
+        if year not in available_years:
+            if available_years:
+                year = available_years[0]
+            else:
+                available_years = [current_year]
+                year = current_year
+
+        c.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(TRIM(u.course), ''), 'Unassigned') AS program,
+                SUBSTR(CAST(r.timestamp AS TEXT), 6, 2) AS month_num,
+                COUNT(*) AS visit_count
+            FROM recognition_log r
+            JOIN users u ON r.user_id = u.user_id
+            WHERE SUBSTR(CAST(r.timestamp AS TEXT), 1, 4) = ?
+            GROUP BY program, month_num
+            ORDER BY program ASC, month_num ASC
+            """,
+            (str(year),),
+        )
+        raw_rows = c.fetchall()
+        conn.close()
+
+        grouped = {program_name: [0] * 12 for program_name in program_names}
+        for program, month_num, visit_count in raw_rows:
+            month_index = int(month_num or 0)
+            if month_index < 1 or month_index > 12:
+                continue
+            grouped.setdefault(program, [0] * 12)[month_index - 1] = int(visit_count or 0)
+
+        rows = []
+        overall_monthly = [0] * 12
+        for program in sorted(grouped):
+            monthly_counts = grouped[program]
+            overall_total = sum(monthly_counts)
+            for idx, count in enumerate(monthly_counts):
+                overall_monthly[idx] += count
+            rows.append(
+                {
+                    "program": program,
+                    "months": monthly_counts,
+                    "overall_total": overall_total,
+                }
+            )
+
+        overall_row = {
+            "program": "Overall Total",
+            "months": overall_monthly,
+            "overall_total": sum(overall_monthly),
+        }
+
+        return {
+            "year": year,
+            "years": available_years,
+            "months": [calendar.month_abbr[idx] for idx in range(1, 13)],
+            "rows": rows,
+            "overall_row": overall_row,
+        }
+
     def _dashboard_data():
         from datetime import date, timedelta
 
@@ -369,8 +507,8 @@ def create_routes_blueprint(deps):
             ORDER BY count DESC
             LIMIT 8
         """)
-        course_distribution = [
-            {"course": row[0], "count": row[1]}
+        program_distribution = [
+            {"program": row[0], "count": row[1]}
             for row in c.fetchall()
         ]
 
@@ -476,7 +614,7 @@ def create_routes_blueprint(deps):
             # ── New fields for enhanced dashboard ──────────────────
             "total_students": total_students,
             "daily_visitors": daily_visitors,
-            "course_distribution": course_distribution,
+            "program_distribution": program_distribution,
             "peak_hours": peak_hours,
             "top_visitors": top_visitors,
             "weekly_heatmap": weekly_heatmap,
@@ -493,6 +631,12 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def dashboard_page():
+        return _spa_index()
+
+    @bp.route("/program-monthly-visits", endpoint="program_monthly_visits_page")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def program_monthly_visits_page():
         return _spa_index()
 
     @bp.route("/route-list")
@@ -982,16 +1126,42 @@ def create_routes_blueprint(deps):
         pending_registration = reg_state.pending_registration or []
         if not pending_registration:
             return jsonify({"success": False, "message": "No pending registration samples found."}), 400
+        if not _has_complete_pending_registration(reg_state):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "Registration capture is not complete yet. Finish all required face samples before saving.",
+                    }
+                ),
+                400,
+            )
 
         name = request.form.get("name", "").strip()
         sr_code = request.form.get("sr_code", "").strip()
         gender = request.form.get("gender", "").strip()
-        course = request.form.get("course", "").strip()
-        if not name or not sr_code or not gender or not course:
-            return jsonify({"success": False, "message": "Name, SR Code, gender, and course are required."}), 400
+        program = request.form.get("program", "").strip()
+        is_valid, validation_message, invalid_field = _validate_registration_fields(
+            name,
+            sr_code,
+            gender,
+            program,
+        )
+        if not is_valid:
+            return jsonify({"success": False, "message": validation_message, "field": invalid_field}), 400
 
         repository = deps["repository"]
         existing = repository.get_user_by_sr_code(sr_code)
+        if existing is not None:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": f"SR Code {sr_code} is already registered to {existing.name}. Use a different SR Code.",
+                    }
+                ),
+                409,
+            )
 
         all_embeddings = {}
         image_paths = []
@@ -1008,11 +1178,11 @@ def create_routes_blueprint(deps):
 
         user_id = repository.save_user(
             User(
-                id=existing.id if existing else 0,
+                id=0,
                 name=name,
                 sr_code=sr_code,
                 gender=gender,
-                course=course,
+                program=program,
                 embeddings=all_embeddings,
                 image_paths=image_paths,
                 embedding_dim=0,
@@ -1037,18 +1207,16 @@ def create_routes_blueprint(deps):
                 "name": saved_user.name,
                 "sr_code": saved_user.sr_code,
                 "gender": saved_user.gender,
-                "course": saved_user.course,
+                "program": saved_user.program,
             }
         return jsonify(
             {
                 "success": True,
                 "user_id": user_id,
-                "updated": existing is not None,
+                "updated": False,
                 "embedding_count": total_embeddings,
                 "message": (
-                    f"Profile updated for {saved_user.name}."
-                    if existing is not None and saved_user
-                    else f"Profile registered for {saved_user.name}."
+                    f"Profile registered for {saved_user.name}."
                     if saved_user
                     else "Registration saved successfully."
                 ),
@@ -1156,11 +1324,11 @@ def create_routes_blueprint(deps):
  
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['Name', 'SR Code', 'Course', 'Confidence (%)', 'Timestamp'])
-        for name, sr_code, course, confidence, timestamp in logs:
+        writer.writerow(['Name', 'SR Code', 'Program', 'Confidence (%)', 'Timestamp'])
+        for name, sr_code, program, confidence, timestamp in logs:
             confidence = _coerce_confidence(confidence)
             conf_value = f"{confidence * 100:.1f}" if isinstance(confidence, (int, float)) else ""
-            writer.writerow([name, sr_code, course, conf_value, timestamp])
+            writer.writerow([name, sr_code, program, conf_value, timestamp])
  
         response = make_response(output.getvalue())
         filename = f"library_logs_{date_for_name.strftime('%m-%d-%Y')}.csv"
@@ -1168,6 +1336,32 @@ def create_routes_blueprint(deps):
         response.headers['Content-Disposition'] = f'attachment; filename={filename}'
         response.headers['Content-type'] = 'text/csv'
         log_action("EXPORT_LOGS")
+        return response
+
+    @bp.route("/program-monthly-visits/export", endpoint="export_program_monthly_visits")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def export_program_monthly_visits():
+        from flask import make_response
+
+        payload = _monthly_program_visits_data(request.args.get("year", "").strip())
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        header = ["Program", *payload["months"], "Overall Total"]
+        writer.writerow(header)
+
+        for row in payload["rows"]:
+            writer.writerow([row["program"], *row["months"], row["overall_total"]])
+
+        overall_row = payload["overall_row"]
+        writer.writerow([overall_row["program"], *overall_row["months"], overall_row["overall_total"]])
+
+        response = make_response(output.getvalue())
+        filename = f"program_monthly_visits_{payload['year']}.csv"
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        response.headers["Content-type"] = "text/csv"
+        log_action("EXPORT_PROGRAM_MONTHLY_VISITS", target=str(payload["year"]))
         return response
 
     @bp.route("/api/dashboard", methods=["GET"], endpoint="api_dashboard")
@@ -1239,7 +1433,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, created_at, last_updated
+            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated
             FROM users
             ORDER BY created_at DESC
             """
@@ -1250,7 +1444,7 @@ def create_routes_blueprint(deps):
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
-                "course": row[4] or "-",
+                "program": row[4] or "-",
                 "created_at": row[5] or "-",
                 "last_updated": row[6] or "-",
             }
@@ -1267,7 +1461,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, created_at, last_updated
+            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated
             FROM users
             WHERE archived_at IS NULL
             ORDER BY created_at DESC
@@ -1279,7 +1473,7 @@ def create_routes_blueprint(deps):
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
-                "course": row[4] or "-",
+                "program": row[4] or "-",
                 "created_at": row[5] or "-",
                 "last_updated": row[6] or "-",
             }
@@ -1321,7 +1515,7 @@ def create_routes_blueprint(deps):
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, created_at, last_updated, archived_at
+            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated, archived_at
             FROM users
             WHERE archived_at IS NOT NULL
             ORDER BY archived_at DESC
@@ -1333,7 +1527,7 @@ def create_routes_blueprint(deps):
                 "name": row[1] or "-",
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
-                "course": row[4] or "-",
+                "program": row[4] or "-",
                 "created_at": row[5] or "-",
                 "last_updated": row[6] or "-",
                 "archived_at": row[7] or "-",
@@ -1612,6 +1806,13 @@ def create_routes_blueprint(deps):
             )
         conn.close()
         return jsonify({"rows": rows})
+
+    @bp.route("/api/program-monthly-visits", methods=["GET"], endpoint="api_program_monthly_visits")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def api_program_monthly_visits():
+        payload = _monthly_program_visits_data(request.args.get("year", "").strip())
+        return jsonify(payload)
 
     @bp.route("/api/manage-users", methods=["GET"], endpoint="api_manage_users")
     @login_required

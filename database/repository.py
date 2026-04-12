@@ -6,6 +6,7 @@ from typing import Optional
 import numpy as np
 
 from core.models import RecognitionResult, User
+from core.program_catalog import OTHER_COLLEGE_LABEL, iter_program_catalog
 from db import connect as db_connect
 from db import table_columns
 from services.embedding_service import (
@@ -53,6 +54,19 @@ class UserRepository:
             """
         )
 
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS programs (
+                program_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                program_name TEXT NOT NULL UNIQUE,
+                department_name TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
         existing_columns = table_columns(conn, "recognition_log")
         extra_columns = {
             "primary_confidence": "REAL",
@@ -72,6 +86,18 @@ class UserRepository:
         if "archived_at" not in existing_columns:
             c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
 
+        existing_program_columns = table_columns(conn, "programs")
+        if "department_name" not in existing_program_columns:
+            c.execute("ALTER TABLE programs ADD COLUMN department_name TEXT")
+        if "is_active" not in existing_program_columns:
+            c.execute("ALTER TABLE programs ADD COLUMN is_active INTEGER DEFAULT 1")
+        if "created_at" not in existing_program_columns:
+            c.execute("ALTER TABLE programs ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        if "last_updated" not in existing_program_columns:
+            c.execute("ALTER TABLE programs ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+        _seed_programs_table(c)
+
         conn.commit()
         conn.close()
 
@@ -89,7 +115,7 @@ class UserRepository:
         conn.close()
 
         users: list[User] = []
-        for user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim in rows:
+        for user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim in rows:
             embeddings = {}
             if emb_blob:
                 embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob))
@@ -101,7 +127,7 @@ class UserRepository:
                     name=name or "",
                     sr_code=sr_code or "",
                     gender=gender or "",
-                    course=course or "",
+                    program=program or "",
                     embeddings=embeddings,
                     image_paths=image_paths,
                     embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
@@ -125,7 +151,7 @@ class UserRepository:
         if not row:
             return None
 
-        user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim = row
+        user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim = row
         embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob)) if emb_blob else {}
         image_paths = image_paths_raw.split(";") if image_paths_raw else []
         return User(
@@ -133,7 +159,7 @@ class UserRepository:
             name=name or "",
             sr_code=sr_code or "",
             gender=gender or "",
-            course=course or "",
+            program=program or "",
             embeddings=embeddings,
             image_paths=image_paths,
             embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
@@ -155,7 +181,7 @@ class UserRepository:
         if not row:
             return None
 
-        user_id, name, sr_code, gender, course, emb_blob, image_paths_raw, embedding_dim = row
+        user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim = row
         embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob)) if emb_blob else {}
         image_paths = image_paths_raw.split(";") if image_paths_raw else []
         return User(
@@ -163,7 +189,7 @@ class UserRepository:
             name=name or "",
             sr_code=sr_code or "",
             gender=gender or "",
-            course=course or "",
+            program=program or "",
             embeddings=embeddings,
             image_paths=image_paths,
             embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
@@ -197,7 +223,7 @@ class UserRepository:
                 (
                     user.name,
                     user.gender,
-                    user.course,
+                    user.program,
                     pickle.dumps(merged_embeddings),
                     ";".join(merged_paths),
                     infer_embedding_dim(merged_embeddings),
@@ -216,7 +242,7 @@ class UserRepository:
                         user.name,
                         user.sr_code,
                         user.gender,
-                        user.course,
+                        user.program,
                         pickle.dumps(normalized_embeddings),
                         ";".join(user.image_paths),
                         infer_embedding_dim(normalized_embeddings),
@@ -233,13 +259,15 @@ class UserRepository:
                         user.name,
                         user.sr_code,
                         user.gender,
-                        user.course,
+                        user.program,
                         pickle.dumps(normalized_embeddings),
                         ";".join(user.image_paths),
                         infer_embedding_dim(normalized_embeddings),
                     ),
                 )
                 user_id = c.lastrowid
+
+        _upsert_program_record(c, user.program)
 
         conn.commit()
         conn.close()
@@ -261,7 +289,7 @@ class UserRepository:
             conn.close()
             return None
 
-        name, sr_code, gender, course, existing_emb_blob, existing_paths_str, _ = row
+        name, sr_code, gender, program, existing_emb_blob, existing_paths_str, _ = row
         existing_embeddings = normalize_embeddings_by_model(pickle.loads(existing_emb_blob)) if existing_emb_blob else {}
         merged_embeddings = merge_embeddings_by_model(existing_embeddings, new_embeddings)
         image_paths = existing_paths_str.split(";") if existing_paths_str else []
@@ -289,7 +317,7 @@ class UserRepository:
             name=name or "",
             sr_code=sr_code or "",
             gender=gender or "",
-            course=course or "",
+            program=program or "",
             embeddings=merged_embeddings,
             image_paths=image_paths,
             embedding_dim=infer_embedding_dim(merged_embeddings),
@@ -430,3 +458,44 @@ def _coerce_float(value):
         return float(value)
     except Exception:
         return None
+
+
+def _normalize_program_name(program_name: str | None) -> str:
+    return " ".join((program_name or "").split())
+
+
+def _upsert_program_record(cursor, program_name: str | None, department_name: str | None = None) -> None:
+    normalized_program = _normalize_program_name(program_name)
+    if not normalized_program:
+        return
+
+    normalized_department = " ".join((department_name or "").split()) or OTHER_COLLEGE_LABEL
+    cursor.execute(
+        """
+        INSERT INTO programs (program_name, department_name, is_active)
+        VALUES (?, ?, 1)
+        ON CONFLICT(program_name) DO UPDATE SET
+            department_name = CASE
+                WHEN programs.department_name IS NULL OR TRIM(programs.department_name) = '' OR programs.department_name = ?
+                    THEN excluded.department_name
+                ELSE programs.department_name
+            END,
+            is_active = 1,
+            last_updated = CURRENT_TIMESTAMP
+        """,
+        (normalized_program, normalized_department, OTHER_COLLEGE_LABEL),
+    )
+
+
+def _seed_programs_table(cursor) -> None:
+    for department_name, program_name in iter_program_catalog():
+        _upsert_program_record(cursor, program_name, department_name)
+
+    cursor.execute(
+        """
+        SELECT DISTINCT COALESCE(NULLIF(TRIM(course), ''), '')
+        FROM users
+        """
+    )
+    for (program_name,) in cursor.fetchall():
+        _upsert_program_record(cursor, program_name)

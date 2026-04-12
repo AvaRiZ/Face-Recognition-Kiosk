@@ -148,7 +148,7 @@ class CLIApplication:
         print("CCTV FACE RECOGNITION SYSTEM")
         print("=" * 50)
         print("Press 'q' to quit")
-        print("Press 'n' to start CLI registration")
+        print("Press 'n' to start first-time student registration")
         print("Press 'r' to reset recognition status")
         print("Press 'd' to toggle quality debug")
         print("=" * 50)
@@ -304,7 +304,7 @@ class CLIApplication:
                         )
                         identity_color = (0, 255, 0)
                     elif track_state and track_state.last_recognition_time > 0.0:
-                        identity_text = "Unknown"
+                        identity_text = "Not yet registered"
                         identity_color = (0, 165, 255)
                     else:
                         identity_text = "Untracked" if face_id is None else "Tracking"
@@ -338,7 +338,7 @@ class CLIApplication:
 
                     self.state.start_manual_registration(face_id)
                     registration_prompted = False
-                    print(f"[INFO] CLI registration locked to track {face_id}. Hold still for sample capture.")
+                    print(f"[INFO] Unregistered student locked to track {face_id}. Hold still for registration capture.")
 
                 if reg_state.manual_active and reg_state.manual_track_id is not None and face_id != reg_state.manual_track_id:
                     continue
@@ -377,7 +377,7 @@ class CLIApplication:
                     if result is True:
                         self.state.stop_manual_registration()
                         self.state.clear_captured_samples()
-                        print("Face already exists in the database. CLI registration canceled.")
+                        print("Face already exists in the database. First-time registration canceled.")
                     elif reg_state.in_progress:
                         self.state.stop_manual_registration()
 
@@ -451,17 +451,17 @@ class CLIApplication:
                 status_color = (0, 255, 0)
             elif reg_state.in_progress:
                 status_text = (
-                    f"Registration ready - "
-                    f"{len(reg_state.pending_registration or [])}/{reg_state.max_captures} samples"
+                    "Unregistered student detected - captured samples are ready. "
+                    "Open the registration page to complete registration."
                 )
                 status_color = (0, 165, 255)
             elif reg_state.manual_active:
                 status_text = (
-                    f"CLI capture in progress: {reg_state.capture_count}/{reg_state.max_captures}"
+                    f"Registration capture in progress: {reg_state.capture_count}/{reg_state.max_captures}"
                 )
                 status_color = (0, 165, 255)
             elif reg_state.manual_requested:
-                status_text = "CLI registration requested - hold still"
+                status_text = "First-time registration requested - hold still for capture"
                 status_color = (0, 165, 255)
             else:
                 status_text = "Scanning for faces..."
@@ -498,11 +498,11 @@ class CLIApplication:
             if key == ord("n"):
                 reg_state = self.state.registration_state
                 if reg_state.in_progress or reg_state.manual_active or reg_state.manual_requested:
-                    print("CLI registration is already in progress.")
+                    print("First-time registration is already in progress.")
                 else:
                     self.state.request_manual_registration()
                     registration_prompted = False
-                    print("CLI registration requested. Hold still so the system can capture samples.")
+                    print("First-time registration requested. Hold still so the system can capture samples.")
 
         camera.release()
         cv2.destroyAllWindows()
@@ -515,14 +515,15 @@ class CLIApplication:
             return
 
         print("\n" + "=" * 50)
-        print("CLI CAPTURE COMPLETE")
+        print("REGISTRATION CAPTURE COMPLETE")
         print("=" * 50)
         print(f"Captured {len(pending_registration)} face samples")
-        print("Open the website register page to enter the user details and submit this captured face set.")
+        print("This face is not yet registered.")
+        print("Open the website registration page and complete the student's first-time registration.")
         print("The pending samples will stay available until the website registration is completed or reset.")
 
     def main_menu(self):
         stream_url = os.environ.get("CCTV_STREAM_URL", "0").strip() or "0"
         print("The website is running at the same time with detection and recognition.")
-        print("You can also press 'n' in the CCTV window to register from the CLI.")
+        print("You can also press 'n' in the CCTV window to start first-time registration for an unregistered student.")
         self.process_cctv_stream(stream_url)
