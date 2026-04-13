@@ -146,7 +146,6 @@ def create_routes_blueprint(deps):
             "is_in_progress": reg_state.in_progress,
             "web_session_active": bool(reg_state.web_session_active),
             "session_expired": bool(getattr(reg_state, "session_expired", False)),
-            "customer_display_mode": bool(deps["config"].customer_display_mode),
             "detection_paused": bool(deps["detection_paused"]()),
             "sample_previews": _registration_sample_previews(reg_state),
             "required_poses": progress["required_poses"],
@@ -1038,6 +1037,13 @@ def create_routes_blueprint(deps):
             )
             return jsonify(payload), 409
 
+        if reg_state.web_session_active or reg_state.manual_requested:
+            payload = _registration_error_payload(
+                reg_state,
+                "A registration session is already active and waiting for a student.",
+            )
+            return jsonify(payload), 409
+
         started = deps["start_web_registration_session"]()
         reg_state = deps["get_registration_state"]()
         payload = _registration_status_payload(reg_state)
@@ -1045,7 +1051,7 @@ def create_routes_blueprint(deps):
             payload.update(
                 {
                     "success": False,
-                    "message": "Unable to start a new registration session right now.",
+                    "message": "Unable to start a new registration session because another registration step is already active.",
                 }
             )
             return jsonify(payload), 409

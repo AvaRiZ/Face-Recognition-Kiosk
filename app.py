@@ -122,10 +122,7 @@ def main() -> None:
     log_step(f"Base threshold: {runtime.state.base_threshold}")
     log_step(f"Users in database: {runtime.state.user_count}")
     log_step(f"The website is running at the same time with detection and recognition.")
-    if runtime.config.customer_display_mode:
-        log_step("Customer display mode is ON: registration is web-only and CLI hotkeys are limited to quit.")
-    else:
-        log_step("Customer display mode is OFF: staff/debug CLI controls are available.")
+    log_step("Registration workflow is managed from the website while capture runs in the CCTV window.")
     log_step(f"Starting web server at http://{host}:{port}")
     log_step(f"Starting detection and recognition using stream source: {stream_url}")
 
