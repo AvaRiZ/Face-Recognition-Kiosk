@@ -54,6 +54,37 @@ class CLIApplication:
         self.detector_dataset_service = DetectorDatasetService(config)
         self._detection_pause_event = threading.Event()
         self._pause_notice_shown = False
+        self._stream_status_lock = threading.Lock()
+        self._stream_status = {
+            "state": "initializing",
+            "message": "Initializing camera stream.",
+            "last_frame_ts": None,
+            "updated_at": time.time(),
+        }
+
+    def _set_stream_status(self, state: str, message: str, last_frame_ts: float | None = None) -> None:
+        with self._stream_status_lock:
+            self._stream_status.update(
+                {
+                    "state": state,
+                    "message": message,
+                    "last_frame_ts": last_frame_ts,
+                    "updated_at": time.time(),
+                }
+            )
+
+    def get_stream_status(self) -> dict:
+        with self._stream_status_lock:
+            snapshot = dict(self._stream_status)
+
+        last_frame_ts = snapshot.get("last_frame_ts")
+        if isinstance(last_frame_ts, (int, float)):
+            snapshot["last_frame_age_seconds"] = max(0.0, time.time() - float(last_frame_ts))
+        else:
+            snapshot["last_frame_age_seconds"] = None
+
+        snapshot.pop("last_frame_ts", None)
+        return snapshot
 
     def toggle_quality_debug(self) -> bool:
         self.config.quality_debug_enabled = not self.config.quality_debug_enabled
@@ -74,6 +105,7 @@ class CLIApplication:
 
     def connect_to_cctv_stream(self, stream_url, frame_width=640, frame_height=480, target_fps=30):
         print(f"Attempting to connect to: {stream_url}")
+        self._set_stream_status("connecting", "Connecting to CCTV stream...")
 
         if isinstance(stream_url, str) and stream_url.isdigit():
             cam_index = int(stream_url)
@@ -92,9 +124,11 @@ class CLIApplication:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
             print("[OK] Successfully connected")
+            self._set_stream_status("connected", "Camera stream connected.")
             return cap
 
         print("[WARN] Failed to connect")
+        self._set_stream_status("disconnected", "Unable to connect to CCTV stream.")
         return None
 
     @staticmethod
@@ -289,6 +323,7 @@ class CLIApplication:
     def process_cctv_stream(self, stream_url, frame_width=1600, frame_height=900):
         camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
         if camera is None:
+            self._set_stream_status("disconnected", "Camera stream is unavailable.")
             return
 
         print("\n" + "=" * 50)
@@ -317,29 +352,35 @@ class CLIApplication:
                 if not self._pause_notice_shown:
                     print("[INFO] Detection paused so the website registration camera can open.")
                     self._pause_notice_shown = True
+                self._set_stream_status("paused", "Detection is paused while website capture uses the camera.")
                 time.sleep(0.2)
                 continue
 
             if camera is None:
                 camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
                 if camera is None:
+                    self._set_stream_status("reconnecting", "Retrying camera stream connection...")
                     time.sleep(1.0)
                     continue
                 if self._pause_notice_shown:
                     print("[INFO] Detection resumed after website registration camera release.")
                     self._pause_notice_shown = False
+                self._set_stream_status("live", "Camera stream active and running.")
 
             success, frame = camera.read()
             if not success:
                 print("[WARN] Lost connection to CCTV stream. Reconnecting...")
+                self._set_stream_status("reconnecting", "Camera stream lost. Reconnecting...")
                 camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
                 if camera is None:
+                    self._set_stream_status("disconnected", "Camera stream disconnected.")
                     break
                 continue
 
             frame = cv2.resize(frame, (frame_width, frame_height))
             frame = cv2.flip(frame, 1)
             current_time = time.time()
+            self._set_stream_status("live", "Camera stream active and running.", last_frame_ts=current_time)
             if self.state.expire_registration_session_if_needed():
                 print("Registration session expired due to inactivity.")
             frame_index += 1
@@ -608,32 +649,34 @@ class CLIApplication:
                 fps_start_time = time.time()
 
             overlay = frame.copy()
-            cv2.rectangle(overlay, (0, 0), (frame_width, 70), (0, 0, 0), -1)
+            if self.config.cli_top_bar_enabled:
+                cv2.rectangle(overlay, (0, 0), (frame_width, 70), (0, 0, 0), -1)
             cv2.rectangle(overlay, (0, frame_height - 50), (frame_width, frame_height), (0, 0, 0), -1)
             cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
-            cv2.putText(
-                frame,
-                "Controls: [D] Debug  [Q] Quit",
-                (10, 25),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 255, 255),
-                1,
-            )
-            cv2.putText(
-                frame,
-                (
-                    f"DB Users: {self.state.user_count}   FPS: {current_fps}   "
-                    f"Val Frames: {saved_real_val_frames}   "
-                    f"Debug: {'ON' if self.config.quality_debug_enabled else 'OFF'}"
-                ),
-                (10, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (200, 200, 200),
-                1,
-            )
+            if self.config.cli_top_bar_enabled:
+                cv2.putText(
+                    frame,
+                    "Controls: [D] Debug  [Q] Quit",
+                    (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 255),
+                    1,
+                )
+                cv2.putText(
+                    frame,
+                    (
+                        f"DB Users: {self.state.user_count}   FPS: {current_fps}   "
+                        f"Val Frames: {saved_real_val_frames}   "
+                        f"Debug: {'ON' if self.config.quality_debug_enabled else 'OFF'}"
+                    ),
+                    (10, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (200, 200, 200),
+                    1,
+                )
 
             self._draw_registration_guidance(frame, frame_height, selected_track_id)
 
@@ -688,6 +731,7 @@ class CLIApplication:
 
         camera.release()
         cv2.destroyAllWindows()
+        self._set_stream_status("stopped", "Detection loop stopped.")
 
     def handle_registration(self):
         reg_state = self.state.registration_state

@@ -111,7 +111,11 @@ const INITIAL_INFO = {
   web_session_active: false,
   session_expired: false,
   ready_to_submit: false,
-  sample_previews: []
+  sample_previews: [],
+  camera_stream: {
+    state: 'unknown',
+    message: 'Camera status unavailable.'
+  }
 };
 
 const ALLOWED_GENDERS = new Set(['Male', 'Female', 'Other']);
@@ -529,6 +533,53 @@ export default function RegisterPage() {
   const resetHelperText = resetArmed
     ? 'Click "Confirm Reset" to permanently clear the current captured samples for this student.'
     : 'Use reset only when the wrong student was captured or the sample set is incomplete.';
+  const cameraState = (info.camera_stream?.state || 'unknown').toLowerCase();
+  const cameraMessage = info.camera_stream?.message || '';
+  const frameAgeSeconds = typeof info.camera_stream?.last_frame_age_seconds === 'number'
+    ? Math.round(info.camera_stream.last_frame_age_seconds)
+    : null;
+  const streamStale = frameAgeSeconds != null && frameAgeSeconds > 4;
+
+  let healthVariant = 'text-bg-success';
+  let healthLabel = 'Detection Live';
+  if (info.detection_paused) {
+    healthVariant = 'text-bg-warning';
+    healthLabel = 'Detection Paused';
+  } else if (cameraState === 'live' || cameraState === 'connected') {
+    healthVariant = streamStale ? 'text-bg-warning' : 'text-bg-success';
+    healthLabel = streamStale ? 'Stream Stale' : 'Detection Live';
+  } else if (cameraState === 'connecting' || cameraState === 'reconnecting') {
+    healthVariant = 'text-bg-warning';
+    healthLabel = 'Reconnecting';
+  } else {
+    healthVariant = 'text-bg-danger';
+    healthLabel = 'Stream Offline';
+  }
+
+  const guidanceSteps = [];
+  if (info.detection_paused) {
+    guidanceSteps.push('Detection is paused. Resume detection or finish website capture before expecting live updates.');
+  } else if (cameraState === 'reconnecting' || cameraState === 'connecting') {
+    guidanceSteps.push(cameraMessage || 'Camera is reconnecting. Keep this page open while stream health recovers.');
+  } else if (cameraState === 'disconnected') {
+    guidanceSteps.push(cameraMessage || 'Camera stream is offline. Check CCTV source or camera index, then retry.');
+  }
+
+  if (readyToSubmit) {
+    guidanceSteps.push('Capture is complete. Review previews and submit student details.');
+  } else if (!webSessionActive && !captureInProgress) {
+    guidanceSteps.push('Start a registration session to lock onto an unregistered student.');
+  } else if (webSessionActive && currentPose) {
+    guidanceSteps.push(`Current required pose: ${currentPose}. Keep the student steady until this pose is completed.`);
+  }
+
+  if (currentPose && !readyToSubmit) {
+    guidanceSteps.push(`Pose progress: ${currentPoseCaptured} of ${currentPoseRequired} samples collected for ${currentPose}.`);
+  }
+
+  if (sampleCount === 0 && webSessionActive) {
+    guidanceSteps.push('No sample previews yet. Keep one face centered and well lit in the CCTV window.');
+  }
 
   if (loading) {
     return (
@@ -577,6 +628,14 @@ export default function RegisterPage() {
                             : info.capture_count > 0
                               ? 'Capture in progress'
                               : 'Session not started'}
+                      </span>
+                    </div>
+
+                    <div className="d-flex flex-wrap gap-2 align-items-center mb-3">
+                      <span className={`badge ${healthVariant}`}>{healthLabel}</span>
+                      <span className="small text-muted">
+                        {cameraMessage || 'Camera status is being monitored.'}
+                        {frameAgeSeconds != null ? ` Last frame ${frameAgeSeconds}s ago.` : ''}
                       </span>
                     </div>
 
@@ -643,6 +702,18 @@ export default function RegisterPage() {
                           <div className="fw-semibold text-capitalize">{currentPose || (readyToSubmit ? 'Done' : 'Waiting')}</div>
                         </div>
                       </div>
+                    </div>
+
+                    <div className="rounded-3 border bg-white p-3 p-md-4 mb-4">
+                      <div className="d-flex justify-content-between align-items-center mb-2">
+                        <div className="fw-semibold" style={{ color: '#012970' }}>Live Capture Guidance</div>
+                        <span className="small text-muted">Updates every 1.5s</span>
+                      </div>
+                      <ul className="mb-0 ps-3 text-muted" style={{ fontSize: '13px', lineHeight: 1.7 }}>
+                        {guidanceSteps.map((step, index) => (
+                          <li key={`${step}-${index}`}>{step}</li>
+                        ))}
+                      </ul>
                     </div>
 
                     <div className="row g-3 mb-4">

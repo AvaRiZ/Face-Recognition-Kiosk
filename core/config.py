@@ -104,6 +104,9 @@ class AppConfig:
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
+    
+    # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
+    cli_top_bar_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Quality scoring: face size

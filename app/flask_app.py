@@ -52,6 +52,9 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
         "pause_detection": cli.pause_detection if cli else (lambda: None),
         "resume_detection": cli.resume_detection if cli else (lambda: None),
         "detection_paused": cli.detection_paused if cli else (lambda: False),
+        "stream_status": cli.get_stream_status
+        if cli
+        else (lambda: {"state": "unknown", "message": "Camera status unavailable."}),
     }
 
     app.register_blueprint(create_routes_blueprint(deps))

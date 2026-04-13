@@ -139,6 +139,7 @@ def create_routes_blueprint(deps):
         progress = deps["get_registration_progress"]()
         total_progress = progress.get("total_progress", {})
         captured_total = int(total_progress.get("captured", reg_state.capture_count))
+        stream_status = deps["stream_status"]() if deps.get("stream_status") else {"state": "unknown", "message": "Camera status unavailable."}
         return {
             "capture_count": captured_total,
             "max_captures": reg_state.max_captures,
@@ -154,6 +155,7 @@ def create_routes_blueprint(deps):
             "pose_progress": progress["pose_progress"],
             "total_progress": progress["total_progress"],
             "ready_to_submit": progress["ready_to_submit"],
+            "camera_stream": stream_status,
         }
 
     def _registration_error_payload(reg_state, message: str, **extra):
