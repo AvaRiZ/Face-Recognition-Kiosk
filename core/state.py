@@ -96,6 +96,7 @@ class AppStateManager:
         state.capture_requested = False
         state.capture_active = False
         state.capture_track_id = None
+        state.selected_track_id = None
         state.session_expired = True
         self._reset_registration_collections()
         self._clear_registration_session_timestamps()
@@ -249,6 +250,7 @@ class AppStateManager:
         self._registration_state.capture_requested = False
         self._registration_state.capture_active = False
         self._registration_state.capture_track_id = None
+        self._registration_state.selected_track_id = None
         self._registration_state.session_active = False
         self._registration_state.session_expired = False
         self._clear_registration_session_timestamps()
@@ -289,6 +291,7 @@ class AppStateManager:
         self._registration_state.capture_requested = False
         self._registration_state.capture_active = False
         self._registration_state.capture_track_id = None
+        self._registration_state.selected_track_id = None
         self._registration_state.session_active = False
         self._registration_state.session_expired = False
         self._clear_registration_session_timestamps()
@@ -297,6 +300,7 @@ class AppStateManager:
         self._registration_state.capture_requested = True
         self._registration_state.capture_active = False
         self._registration_state.capture_track_id = None
+        self._registration_state.selected_track_id = None
         self._registration_state.session_active = False
         self._registration_state.session_expired = False
         self._reset_registration_collections()
@@ -306,6 +310,7 @@ class AppStateManager:
         self._registration_state.capture_requested = False
         self._registration_state.capture_active = True
         self._registration_state.capture_track_id = track_id
+        self._registration_state.selected_track_id = track_id
         self._registration_state.session_active = False
         self._registration_state.session_expired = False
         self._reset_registration_collections()
@@ -315,6 +320,7 @@ class AppStateManager:
         self._registration_state.capture_requested = False
         self._registration_state.capture_active = False
         self._registration_state.capture_track_id = None
+        self._registration_state.selected_track_id = None
         self._registration_state.session_active = False
         # Keep finalized pending samples intact so web registration can continue.
         if not self.is_registration_ready():
@@ -328,6 +334,7 @@ class AppStateManager:
         state.capture_requested = True
         state.capture_active = False
         state.capture_track_id = None
+        state.selected_track_id = None
         state.session_active = True
         state.session_expired = False
         self._reset_registration_collections()
@@ -340,6 +347,7 @@ class AppStateManager:
         state.capture_requested = False
         state.capture_active = False
         state.capture_track_id = None
+        state.selected_track_id = None
         state.session_expired = False
         self._reset_registration_collections()
         self._clear_registration_session_timestamps()
@@ -358,6 +366,12 @@ class AppStateManager:
         track_state.recognized = False
         track_state.user = None
         track_state.last_recognition_time = 0.0
+        track_state.last_recognition_confidence = None
+        track_state.last_recognition_threshold = None
+        track_state.failed_good_quality_attempts = 0
+        track_state.last_label = "Tracking"
+        track_state.last_label_color = (180, 180, 180)
+        track_state.selected_for_registration = False
         self._face_stability.pop(track_id, None)
         return track_state
 

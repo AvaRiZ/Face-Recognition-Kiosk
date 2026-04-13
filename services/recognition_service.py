@@ -226,6 +226,9 @@ class FaceRecognitionService:
             return None, {}
         return self.find_best_match(embeddings, quality_score), embeddings
 
+    def is_confident_recognition(self, match: RecognitionResult) -> bool:
+        return float(match.confidence) >= float(self.config.recognition_confidence_threshold)
+
     def register_or_recognize_face(
         self,
         face_crop,
@@ -238,7 +241,7 @@ class FaceRecognitionService:
     ):
         reg_state = self.state.registration_state
         if reg_state.in_progress:
-            return None
+            return {"status": "registration_pending"}
 
         if precomputed_quality is None:
             quality_score, quality_status, quality_debug = quality_service.assess_face_quality(
@@ -258,7 +261,14 @@ class FaceRecognitionService:
             if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
                 message += f" | {quality_service.quality_debug_summary(quality_debug)}"
             print(message)
-            return None
+            return {
+                "status": "low_quality",
+                "quality_score": quality_score,
+                "quality_status": quality_status,
+                "quality_debug": quality_debug,
+                "match_confidence": None,
+                "match_threshold": None,
+            }
 
         message = (
             f"  Face quality: {quality_score:.2f} ({quality_status}) "
@@ -276,9 +286,30 @@ class FaceRecognitionService:
         best_match, embeddings = self.recognize(face_crop, quality_score)
         if not embeddings:
             print("  Failed to extract embeddings")
-            return None
+            return {
+                "status": "embedding_failed",
+                "quality_score": quality_score,
+                "quality_status": quality_status,
+                "quality_debug": quality_debug,
+                "match_confidence": None,
+                "match_threshold": None,
+            }
 
         if best_match:
+            if not self.is_confident_recognition(best_match):
+                print(
+                    f"  Recognition below confidence threshold: "
+                    f"{best_match.confidence:.2%} < {self.config.recognition_confidence_threshold:.2%}"
+                )
+                return {
+                    "status": "uncertain",
+                    "quality_score": quality_score,
+                    "quality_status": quality_status,
+                    "quality_debug": quality_debug,
+                    "match_confidence": best_match.confidence,
+                    "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
+                }
+
             timestamp = int(time.time() * 1000)
             user_folder = os.path.join(self.config.base_save_dir, best_match.user.sr_code)
             os.makedirs(user_folder, exist_ok=True)
@@ -324,7 +355,15 @@ class FaceRecognitionService:
                 f"[OK] Recognized: {recognized_payload['name']} "
                 f"(conf: {best_match.confidence:.2%}, dist: {best_match.distance:.4f})"
             )
-            return True
+            return {
+                "status": "recognized",
+                "quality_score": quality_score,
+                "quality_status": quality_status,
+                "quality_debug": quality_debug,
+                "match_confidence": best_match.confidence,
+                "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
+                "payload": recognized_payload,
+            }
 
         if allow_registration and not reg_state.in_progress and reg_state.capture_count < reg_state.max_captures:
             current_pose = self.state.get_current_registration_pose() or "front"
@@ -334,7 +373,16 @@ class FaceRecognitionService:
                 print(
                     f"  Skipped registration sample: expected pose '{current_pose}', detected '{pose_label}'"
                 )
-                return False
+                return {
+                    "status": "pose_mismatch",
+                    "quality_score": quality_score,
+                    "quality_status": quality_status,
+                    "quality_debug": quality_debug,
+                    "match_confidence": None,
+                    "match_threshold": None,
+                    "expected_pose": current_pose,
+                    "detected_pose": detected_pose,
+                }
 
             sample = RegistrationSample(
                 face_crop=face_crop,
@@ -354,4 +402,22 @@ class FaceRecognitionService:
                     f"{len(reg_state.pending_registration)} samples"
                 )
 
-        return False
+            return {
+                "status": "registration_captured",
+                "quality_score": quality_score,
+                "quality_status": quality_status,
+                "quality_debug": quality_debug,
+                "match_confidence": None,
+                "match_threshold": None,
+                "expected_pose": current_pose,
+                "detected_pose": detected_pose,
+            }
+
+        return {
+            "status": "no_match",
+            "quality_score": quality_score,
+            "quality_status": quality_status,
+            "quality_debug": quality_debug,
+            "match_confidence": None,
+            "match_threshold": None,
+        }

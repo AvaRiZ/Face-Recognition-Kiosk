@@ -99,6 +99,8 @@ class AppConfig:
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 2
     recognition_cooldown_seconds: int = 1
+    recognition_confidence_threshold: float = 0.72
+    unknown_person_attempt_threshold: int = 3
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0

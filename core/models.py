@@ -62,6 +62,7 @@ class RegistrationState:
     capture_requested: bool = False
     capture_active: bool = False
     capture_track_id: Optional[int] = None
+    selected_track_id: Optional[int] = None
     session_active: bool = False
     session_expired: bool = False
     session_started_at: Optional[float] = None
@@ -137,6 +138,21 @@ class TrackingState:
     last_seen: float = 0.0
     last_recognition_time: float = 0.0
     last_bbox: Optional[tuple[int, int, int, int]] = None
+    last_detection_confidence: Optional[float] = None
+    last_quality_score: float = 0.0
+    last_quality_status: str = "Poor"
+    last_quality_debug: dict = field(default_factory=dict)
+    last_landmarks: Optional[dict] = None
+    last_pose: Optional[str] = None
+    last_stable: bool = False
+    last_area: int = 0
+    last_analysis_frame_index: int = -1
+    last_label: str = "Tracking"
+    last_label_color: tuple[int, int, int] = (180, 180, 180)
+    last_recognition_confidence: Optional[float] = None
+    last_recognition_threshold: Optional[float] = None
+    failed_good_quality_attempts: int = 0
+    selected_for_registration: bool = False
 
 
 def recognized_user_payload(result: RecognitionResult) -> dict[str, str]:
@@ -146,5 +162,7 @@ def recognized_user_payload(result: RecognitionResult) -> dict[str, str]:
         "gender": result.user.gender,
         "program": result.user.program,
         "confidence": f"{result.confidence:.2%}",
+        "confidence_value": f"{result.confidence:.4f}",
+        "threshold_value": f"{result.threshold:.4f}",
         "distance": f"{result.distance:.4f}",
     }
