@@ -59,10 +59,13 @@ class RegistrationState:
     samples_per_pose_target: int = 10
     retained_samples_per_pose: int = 5
     max_captures: int = 30
-    manual_requested: bool = False
-    manual_active: bool = False
-    manual_track_id: Optional[int] = None
-    web_session_active: bool = False
+    capture_requested: bool = False
+    capture_active: bool = False
+    capture_track_id: Optional[int] = None
+    session_active: bool = False
+    session_expired: bool = False
+    session_started_at: Optional[float] = None
+    last_activity_at: Optional[float] = None
 
     @property
     def capture_count(self) -> int:
@@ -85,6 +88,39 @@ class RegistrationState:
     @property
     def total_retained_samples(self) -> int:
         return len(self.required_poses) * int(self.retained_samples_per_pose)
+
+    # Backward-compatible aliases used by existing route/frontend payloads.
+    @property
+    def manual_requested(self) -> bool:
+        return bool(self.capture_requested)
+
+    @manual_requested.setter
+    def manual_requested(self, value: bool) -> None:
+        self.capture_requested = bool(value)
+
+    @property
+    def manual_active(self) -> bool:
+        return bool(self.capture_active)
+
+    @manual_active.setter
+    def manual_active(self, value: bool) -> None:
+        self.capture_active = bool(value)
+
+    @property
+    def manual_track_id(self) -> Optional[int]:
+        return self.capture_track_id
+
+    @manual_track_id.setter
+    def manual_track_id(self, value: Optional[int]) -> None:
+        self.capture_track_id = value
+
+    @property
+    def web_session_active(self) -> bool:
+        return bool(self.session_active)
+
+    @web_session_active.setter
+    def web_session_active(self, value: bool) -> None:
+        self.session_active = bool(value)
 
 
 @dataclass

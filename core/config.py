@@ -95,6 +95,7 @@ class AppConfig:
     #   images per pose are kept for final enrollment.
     registration_samples_per_pose_target: int = 5
     registration_retained_samples_per_pose: int = 5
+    registration_session_timeout_seconds: int = 180
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 2
     recognition_cooldown_seconds: int = 1

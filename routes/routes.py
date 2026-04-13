@@ -22,7 +22,7 @@ from auth import (
     role_required,
     toggle_staff_status,
 )
-from core.models import RegistrationSample, User
+from core.models import User
 from db import connect as db_connect
 from routes.ml_analytics import run_ml_analytics
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
@@ -145,6 +145,7 @@ def create_routes_blueprint(deps):
             "has_pending_registration": bool(reg_state.pending_registration),
             "is_in_progress": reg_state.in_progress,
             "web_session_active": bool(reg_state.web_session_active),
+            "session_expired": bool(getattr(reg_state, "session_expired", False)),
             "customer_display_mode": bool(deps["config"].customer_display_mode),
             "detection_paused": bool(deps["detection_paused"]()),
             "sample_previews": _registration_sample_previews(reg_state),
@@ -992,6 +993,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/register-info", methods=["GET"], endpoint="api_register_info")
     def api_register_info():
+        deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
         return jsonify(_registration_status_payload(reg_state))
 
@@ -1020,6 +1022,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/register-session/start", methods=["POST"], endpoint="api_register_session_start")
     def api_register_session_start():
+        deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
         if reg_state.in_progress and reg_state.pending_registration:
             payload = _registration_error_payload(
@@ -1057,6 +1060,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/register-session/cancel", methods=["POST"], endpoint="api_register_session_cancel")
     def api_register_session_cancel():
+        deps["expire_registration_session_if_needed"]()
         deps["cancel_web_registration_session"]()
         reg_state = deps["get_registration_state"]()
         payload = _registration_status_payload(reg_state)
@@ -1068,112 +1072,9 @@ def create_routes_blueprint(deps):
         )
         return jsonify(payload)
 
-    @bp.route("/api/register-capture", methods=["POST"], endpoint="api_register_capture")
-    def api_register_capture():
-        reg_state = deps["get_registration_state"]()
-        if reg_state.in_progress and reg_state.pending_registration:
-            payload = _registration_error_payload(
-                reg_state,
-                "Required pose samples already captured. Complete the registration form or reset the session.",
-            )
-            return jsonify(
-                payload
-            ), 400
-
-        image = _decode_uploaded_image(request.files.get("frame"))
-        if image is None:
-            return jsonify(_registration_error_payload(reg_state, "No camera frame was received.")), 400
-
-        face_crop, detection_confidence, landmarks, selected_face_area = _extract_largest_face(image)
-        if face_crop is None:
-            payload = _registration_error_payload(
-                reg_state,
-                "No clear face detected. Center your face and try again.",
-            )
-            return jsonify(payload), 400
-
-        min_registration_face_area = max(
-            int(deps["config"].registration_min_face_area),
-            int(deps["config"].min_face_size) * int(deps["config"].min_face_size),
-        )
-        if selected_face_area < min_registration_face_area:
-            min_edge = int(math.sqrt(min_registration_face_area))
-            payload = _registration_error_payload(
-                reg_state,
-                f"Move closer to the camera. Registration requires a face size of at least {min_edge}px x {min_edge}px.",
-                selected_face_area=selected_face_area,
-                required_face_area=min_registration_face_area,
-            )
-            return jsonify(payload), 400
-
-        quality_score, quality_status, _ = deps["quality_service"].assess_face_quality(
-            face_crop,
-            detection_confidence=detection_confidence,
-            landmarks=landmarks,
-        )
-        if quality_score < deps["config"].face_quality_threshold:
-            payload = _registration_error_payload(
-                reg_state,
-                f"Face quality is too low ({quality_status}). Improve lighting and keep still.",
-                quality_score=round(quality_score, 2),
-                quality_status=quality_status,
-            )
-            return jsonify(
-                payload
-            ), 400
-
-        embeddings = deps["embedding_service"].extract_embedding_ensemble(face_crop)
-        if not embeddings:
-            payload = _registration_error_payload(
-                reg_state,
-                "Unable to extract face embeddings from this capture.",
-            )
-            return jsonify(payload), 400
-
-        current_pose = deps["get_current_registration_pose"]() or "front"
-        detected_pose = deps["quality_service"].detect_face_pose(face_crop, landmarks=landmarks)
-        if detected_pose != current_pose:
-            payload = _registration_error_payload(
-                reg_state,
-                f"Pose mismatch. Please face {current_pose} before capturing.",
-                expected_pose=current_pose,
-                detected_pose=detected_pose or "unknown",
-            )
-            return jsonify(payload), 400
-
-        sample = RegistrationSample(face_crop=face_crop, embeddings=embeddings, quality=quality_score, pose=current_pose)
-        captured_count = deps["capture_registration_sample"](sample)
-
-        reg_state = deps["get_registration_state"]()
-        payload = _registration_status_payload(reg_state)
-        next_pose = payload.get("current_pose")
-        completed_pose = current_pose if next_pose != current_pose else None
-        if completed_pose and next_pose:
-            message = (
-                f"Captured {reg_state.samples_per_pose_target} samples for {completed_pose}. "
-                f"Next pose: {next_pose}."
-            )
-        elif completed_pose and not next_pose:
-            message = "All pose captures complete. You can now submit registration."
-        else:
-            pose_progress = payload.get("pose_progress", {}).get(current_pose, {})
-            pose_captured = pose_progress.get("captured", 0)
-            pose_required = pose_progress.get("required", reg_state.samples_per_pose_target)
-            message = f"Captured {pose_captured}/{pose_required} for pose {current_pose}."
-
-        payload.update(
-            {
-                "success": True,
-                "message": message,
-                "quality_score": round(quality_score, 2),
-                "quality_status": quality_status,
-                "captured_count_total": captured_count,
-            }
-        )
-        return jsonify(payload)
-
     @bp.route("/register", methods=["POST"], endpoint="register_submit")
     def register_submit():
+        deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
         pending_registration = reg_state.pending_registration or []
         if not pending_registration:

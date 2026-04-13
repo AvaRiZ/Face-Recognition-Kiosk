@@ -199,6 +199,8 @@ class CLIApplication:
             frame = cv2.resize(frame, (frame_width, frame_height))
             frame = cv2.flip(frame, 1)
             current_time = time.time()
+            if self.state.expire_registration_session_if_needed():
+                print("Registration session expired due to inactivity.")
             frame_index += 1
 
             if (
@@ -351,8 +353,9 @@ class CLIApplication:
                 reg_state = self.state.registration_state
 
                 if not self.customer_display_mode() and reg_state.manual_requested:
+                    from_web_session = bool(reg_state.web_session_active)
                     if track_state.recognized and track_state.user:
-                        if reg_state.web_session_active:
+                        if from_web_session:
                             print("Web registration canceled because the selected face is already recognized.")
                         else:
                             print("Manual registration canceled because the selected face is already recognized.")
@@ -361,7 +364,7 @@ class CLIApplication:
 
                     self.state.start_manual_registration(face_id)
                     registration_prompted = False
-                    if reg_state.web_session_active:
+                    if from_web_session:
                         print(f"[INFO] Web registration locked to track {face_id}. Hold still for registration capture.")
                     else:
                         print(f"[INFO] Unregistered student locked to track {face_id}. Hold still for registration capture.")
@@ -460,7 +463,7 @@ class CLIApplication:
             if not self.customer_display_mode():
                 cv2.putText(
                     frame,
-                    "Controls: [N] New User  [R] Reset  [D] Debug  [Q] Quit",
+                    "Controls: [R] Reset  [D] Debug  [Q] Quit",
                     (10, 25),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.55,
@@ -541,14 +544,6 @@ class CLIApplication:
                     debug_enabled = self.toggle_quality_debug()
                     debug_status = "enabled" if debug_enabled else "disabled"
                     print(f"Quality debug {debug_status}.")
-                if key == ord("n"):
-                    reg_state = self.state.registration_state
-                    if reg_state.in_progress or reg_state.manual_active or reg_state.manual_requested or reg_state.web_session_active:
-                        print("First-time registration is already in progress.")
-                    else:
-                        self.state.request_manual_registration()
-                        registration_prompted = False
-                        print("First-time registration requested. Hold still so the system can capture samples.")
 
         camera.release()
         cv2.destroyAllWindows()
@@ -574,5 +569,5 @@ class CLIApplication:
         stream_url = os.environ.get("CCTV_STREAM_URL", "0").strip() or "0"
         print("The website is running at the same time with detection and recognition.")
         if not self.customer_display_mode():
-            print("You can also press 'n' in the CCTV window to start first-time registration for an unregistered student.")
+            print("Use the registration page controls to start and manage first-time registration sessions.")
         self.process_cctv_stream(stream_url)

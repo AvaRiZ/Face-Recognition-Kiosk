@@ -109,6 +109,7 @@ const INITIAL_INFO = {
   has_pending_registration: false,
   is_in_progress: false,
   web_session_active: false,
+  session_expired: false,
   ready_to_submit: false,
   sample_previews: []
 };
@@ -521,10 +522,10 @@ export default function RegisterPage() {
   const captureStateBody = readyToSubmit
     ? 'The required face samples are ready. Review the previews, then complete the student details below to save the registration.'
     : webSessionActive
-      ? 'The session is active. Keep one unregistered student centered in the camera so CLI can lock and collect required pose samples.'
+      ? 'The session is active. Keep one unregistered student centered in the camera window so the capture service can lock and collect required pose samples.'
       : currentPose
-      ? `The CLI is still collecting samples. Current pose: ${currentPose}. Captured ${currentPoseCaptured} of ${currentPoseRequired} required samples for this pose.`
-      : 'No active registration session yet. Start a session below, then keep the student in the CLI camera flow until required samples are collected.';
+      ? `The camera capture flow is still collecting samples. Current pose: ${currentPose}. Captured ${currentPoseCaptured} of ${currentPoseRequired} required samples for this pose.`
+      : 'No active registration session yet. Start a session below, then keep the student in the camera window flow until required samples are collected.';
   const resetHelperText = resetArmed
     ? 'Click "Confirm Reset" to permanently clear the current captured samples for this student.'
     : 'Use reset only when the wrong student was captured or the sample set is incomplete.';
@@ -585,6 +586,12 @@ export default function RegisterPage() {
                       </StatusAlert>
                     ) : null}
 
+                    {info.session_expired ? (
+                      <StatusAlert tone="info" title="Session expired">
+                        The registration session expired due to inactivity. Start a new session to continue capture.
+                      </StatusAlert>
+                    ) : null}
+
                     {result?.profile ? (
                       <StatusAlert tone="success" title={result.message}>
                         Saved as {result.profile.name} ({result.profile.sr_code}) - {result.profile.gender},{' '}
@@ -594,13 +601,13 @@ export default function RegisterPage() {
 
                     {!readyToSubmit && webSessionActive ? (
                       <StatusAlert tone="info" title="Session started">
-                        Registration session is active. Keep the unregistered student on the live camera flow. Capture begins automatically once the face is locked.
+                        Registration session is active. Keep the unregistered student on the live camera window. Capture begins automatically once the face is locked.
                       </StatusAlert>
                     ) : null}
 
                     {!readyToSubmit && !webSessionActive ? (
                       <StatusAlert tone="info" title="Waiting for unregistered-student capture">
-                        This page is only for students who are not yet registered. Start a registration session, then keep the student on the live camera flow until required face samples are completed.
+                        This page is only for students who are not yet registered. Start a registration session, then keep the student on the live camera window until required face samples are completed.
                       </StatusAlert>
                     ) : null}
 

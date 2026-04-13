@@ -38,6 +38,7 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
         "get_current_registration_pose": state.get_current_registration_pose,
         "get_registration_progress": state.get_registration_progress,
         "is_registration_ready": state.is_registration_ready,
+        "expire_registration_session_if_needed": state.expire_registration_session_if_needed,
         "reset_database_state": state.reset_database_state,
         "reset_registration_state": state.reset_registration_state,
         "start_web_registration_session": state.start_web_registration_session,

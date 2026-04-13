@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from core.config import AppConfig
@@ -15,6 +16,7 @@ from core.models import (
 
 class AppStateManager:
     def __init__(self, config: AppConfig):
+        self._config = config
         self._users: list[User] = []
         self._recognized_user: Optional[dict[str, str]] = None
         self._registration_state = RegistrationState(
@@ -49,6 +51,55 @@ class AppStateManager:
         state.pose_capture_counts = {pose: 0 for pose in state.required_poses}
         state.captured_samples = []
         self._refresh_registration_limits()
+
+    def _mark_registration_session_started(self) -> None:
+        now = time.time()
+        state = self._registration_state
+        state.session_started_at = now
+        state.last_activity_at = now
+        state.session_expired = False
+
+    def _touch_registration_session(self) -> None:
+        self._registration_state.last_activity_at = time.time()
+
+    def _clear_registration_session_timestamps(self) -> None:
+        state = self._registration_state
+        state.session_started_at = None
+        state.last_activity_at = None
+
+    def expire_registration_session_if_needed(self) -> bool:
+        timeout_seconds = int(getattr(self._config, "registration_session_timeout_seconds", 0))
+        if timeout_seconds <= 0:
+            return False
+
+        state = self._registration_state
+        has_session_state = bool(
+            state.session_active
+            or state.capture_requested
+            or state.capture_active
+            or state.in_progress
+            or state.pending_registration
+            or state.capture_count > 0
+        )
+        if not has_session_state:
+            return False
+
+        last_activity = state.last_activity_at or state.session_started_at
+        if last_activity is None:
+            self._mark_registration_session_started()
+            return False
+
+        if (time.time() - float(last_activity)) <= timeout_seconds:
+            return False
+
+        state.session_active = False
+        state.capture_requested = False
+        state.capture_active = False
+        state.capture_track_id = None
+        state.session_expired = True
+        self._reset_registration_collections()
+        self._clear_registration_session_timestamps()
+        return True
 
     def get_current_registration_pose(self) -> Optional[str]:
         return self._registration_state.current_pose
@@ -195,10 +246,12 @@ class AppStateManager:
     def reset_registration_state(self) -> None:
         self._recognized_user = None
         self._reset_registration_collections()
-        self._registration_state.manual_requested = False
-        self._registration_state.manual_active = False
-        self._registration_state.manual_track_id = None
-        self._registration_state.web_session_active = False
+        self._registration_state.capture_requested = False
+        self._registration_state.capture_active = False
+        self._registration_state.capture_track_id = None
+        self._registration_state.session_active = False
+        self._registration_state.session_expired = False
+        self._clear_registration_session_timestamps()
 
     def reset_database_state(self) -> None:
         self.reset_registration_state()
@@ -225,6 +278,7 @@ class AppStateManager:
             self.advance_registration_pose()
 
         self._sync_flat_captured_samples()
+        self._touch_registration_session()
         return state.capture_count
 
     def clear_captured_samples(self) -> None:
@@ -232,52 +286,63 @@ class AppStateManager:
 
     def complete_registration(self) -> None:
         self._reset_registration_collections()
-        self._registration_state.manual_requested = False
-        self._registration_state.manual_active = False
-        self._registration_state.manual_track_id = None
-        self._registration_state.web_session_active = False
+        self._registration_state.capture_requested = False
+        self._registration_state.capture_active = False
+        self._registration_state.capture_track_id = None
+        self._registration_state.session_active = False
+        self._registration_state.session_expired = False
+        self._clear_registration_session_timestamps()
 
     def request_manual_registration(self) -> None:
-        self._registration_state.manual_requested = True
-        self._registration_state.manual_active = False
-        self._registration_state.manual_track_id = None
-        self._registration_state.web_session_active = False
+        self._registration_state.capture_requested = True
+        self._registration_state.capture_active = False
+        self._registration_state.capture_track_id = None
+        self._registration_state.session_active = False
+        self._registration_state.session_expired = False
         self._reset_registration_collections()
+        self._mark_registration_session_started()
 
     def start_manual_registration(self, track_id: int) -> None:
-        self._registration_state.manual_requested = False
-        self._registration_state.manual_active = True
-        self._registration_state.manual_track_id = track_id
-        self._registration_state.web_session_active = False
+        self._registration_state.capture_requested = False
+        self._registration_state.capture_active = True
+        self._registration_state.capture_track_id = track_id
+        self._registration_state.session_active = False
+        self._registration_state.session_expired = False
         self._reset_registration_collections()
+        self._mark_registration_session_started()
 
     def stop_manual_registration(self) -> None:
-        self._registration_state.manual_requested = False
-        self._registration_state.manual_active = False
-        self._registration_state.manual_track_id = None
-        self._registration_state.web_session_active = False
+        self._registration_state.capture_requested = False
+        self._registration_state.capture_active = False
+        self._registration_state.capture_track_id = None
+        self._registration_state.session_active = False
         # Keep finalized pending samples intact so web registration can continue.
         if not self.is_registration_ready():
             self._reset_registration_collections()
+            self._clear_registration_session_timestamps()
 
     def start_web_registration_session(self) -> bool:
         state = self._registration_state
-        if state.in_progress or state.manual_active or state.manual_requested or state.web_session_active:
+        if state.in_progress or state.capture_active or state.capture_requested or state.session_active:
             return False
-        state.manual_requested = True
-        state.manual_active = False
-        state.manual_track_id = None
-        state.web_session_active = True
+        state.capture_requested = True
+        state.capture_active = False
+        state.capture_track_id = None
+        state.session_active = True
+        state.session_expired = False
         self._reset_registration_collections()
+        self._mark_registration_session_started()
         return True
 
     def cancel_web_registration_session(self) -> None:
         state = self._registration_state
-        state.web_session_active = False
-        state.manual_requested = False
-        state.manual_active = False
-        state.manual_track_id = None
+        state.session_active = False
+        state.capture_requested = False
+        state.capture_active = False
+        state.capture_track_id = None
+        state.session_expired = False
         self._reset_registration_collections()
+        self._clear_registration_session_timestamps()
 
     def initialize_track_state(self, track_id: int, current_time: float) -> TrackingState:
         if track_id not in self._tracked_faces:
