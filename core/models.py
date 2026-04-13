@@ -62,6 +62,7 @@ class RegistrationState:
     manual_requested: bool = False
     manual_active: bool = False
     manual_track_id: Optional[int] = None
+    web_session_active: bool = False
 
     @property
     def capture_count(self) -> int:

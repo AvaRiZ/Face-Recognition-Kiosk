@@ -78,7 +78,7 @@ class AppConfig:
     #   reason a face was marked poor.
     # - Enable `quality_debug_show_all_scores` while tuning thresholds so you
     #   can inspect every component score and raw metric value.
-    quality_debug_enabled: bool = True
+    quality_debug_enabled: bool = False
     quality_debug_show_primary_issue: bool = True
     quality_debug_show_all_scores: bool = True
 
@@ -98,6 +98,9 @@ class AppConfig:
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 2
     recognition_cooldown_seconds: int = 1
+    # Customer display mode enforces kiosk-safe behavior in the CCTV window:
+    # recognition-only overlays, no registration prompts, and quit-only hotkey.
+    customer_display_mode: bool = True
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0

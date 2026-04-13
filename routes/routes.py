@@ -144,6 +144,8 @@ def create_routes_blueprint(deps):
             "max_captures": reg_state.max_captures,
             "has_pending_registration": bool(reg_state.pending_registration),
             "is_in_progress": reg_state.in_progress,
+            "web_session_active": bool(reg_state.web_session_active),
+            "customer_display_mode": bool(deps["config"].customer_display_mode),
             "detection_paused": bool(deps["detection_paused"]()),
             "sample_previews": _registration_sample_previews(reg_state),
             "required_poses": progress["required_poses"],
@@ -1012,6 +1014,56 @@ def create_routes_blueprint(deps):
             {
                 "success": True,
                 "message": "Registration capture session reset.",
+            }
+        )
+        return jsonify(payload)
+
+    @bp.route("/api/register-session/start", methods=["POST"], endpoint="api_register_session_start")
+    def api_register_session_start():
+        reg_state = deps["get_registration_state"]()
+        if reg_state.in_progress and reg_state.pending_registration:
+            payload = _registration_error_payload(
+                reg_state,
+                "A registration capture is already complete. Submit it or reset before starting a new session.",
+            )
+            return jsonify(payload), 409
+
+        if reg_state.manual_active:
+            payload = _registration_error_payload(
+                reg_state,
+                "A registration capture is already in progress.",
+            )
+            return jsonify(payload), 409
+
+        started = deps["start_web_registration_session"]()
+        reg_state = deps["get_registration_state"]()
+        payload = _registration_status_payload(reg_state)
+        if not started:
+            payload.update(
+                {
+                    "success": False,
+                    "message": "Unable to start a new registration session right now.",
+                }
+            )
+            return jsonify(payload), 409
+
+        payload.update(
+            {
+                "success": True,
+                "message": "Registration session started. Keep the student in frame to capture required samples.",
+            }
+        )
+        return jsonify(payload)
+
+    @bp.route("/api/register-session/cancel", methods=["POST"], endpoint="api_register_session_cancel")
+    def api_register_session_cancel():
+        deps["cancel_web_registration_session"]()
+        reg_state = deps["get_registration_state"]()
+        payload = _registration_status_payload(reg_state)
+        payload.update(
+            {
+                "success": True,
+                "message": "Registration session canceled.",
             }
         )
         return jsonify(payload)

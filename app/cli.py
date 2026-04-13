@@ -72,6 +72,9 @@ class CLIApplication:
     def detection_paused(self) -> bool:
         return self._detection_pause_event.is_set()
 
+    def customer_display_mode(self) -> bool:
+        return bool(self.config.customer_display_mode)
+
     def connect_to_cctv_stream(self, stream_url, frame_width=640, frame_height=480, target_fps=30):
         print(f"Attempting to connect to: {stream_url}")
 
@@ -148,9 +151,10 @@ class CLIApplication:
         print("CCTV FACE RECOGNITION SYSTEM")
         print("=" * 50)
         print("Press 'q' to quit")
-        print("Press 'n' to start first-time student registration")
-        print("Press 'r' to reset recognition status")
-        print("Press 'd' to toggle quality debug")
+        if not self.customer_display_mode():
+            print("Press 'n' to start first-time student registration")
+            print("Press 'r' to reset recognition status")
+            print("Press 'd' to toggle quality debug")
         print("=" * 50)
 
         fps_counter = 0
@@ -159,6 +163,9 @@ class CLIApplication:
         frame_index = 0
         saved_real_val_frames = self.detector_dataset_service.count_real_val_frames()
         registration_prompted = False
+        if self.customer_display_mode():
+            # Ensure CLI registration state never lingers in customer mode.
+            self.state.stop_manual_registration()
 
         while True:
             if self.detection_paused():
@@ -265,36 +272,45 @@ class CLIApplication:
                             )
                         )
 
-                    if is_stable:
-                        if quality_score >= self.config.face_quality_good_threshold:
+                    track_state = self.state.get_track_state(face_id) if face_id is not None else None
+                    if self.customer_display_mode():
+                        if track_state and track_state.recognized and track_state.user:
                             color = (0, 255, 0)
-                        elif quality_score >= self.config.face_quality_threshold:
-                            color = (0, 255, 255)
+                        elif track_state and track_state.last_recognition_time > 0.0:
+                            color = (0, 165, 255)
                         else:
-                            color = (0, 0, 255)
+                            color = (170, 170, 170)
                     else:
-                        color = (128, 128, 128)
+                        if is_stable:
+                            if quality_score >= self.config.face_quality_good_threshold:
+                                color = (0, 255, 0)
+                            elif quality_score >= self.config.face_quality_threshold:
+                                color = (0, 255, 255)
+                            else:
+                                color = (0, 0, 255)
+                        else:
+                            color = (128, 128, 128)
 
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-                    track_text = f"T{face_id}" if face_id is not None else "T?"
-                    stability_text = "NO-ID" if face_id is None else ("STABLE" if is_stable else "MOVING")
-                    issue_text = ""
-                    if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
-                        primary_issue = quality_debug.get("primary_issue_label")
-                        if primary_issue and quality_status == "Poor":
-                            issue_text = f" {primary_issue}"
-                    cv2.putText(
-                        frame,
-                        f"{track_text} {stability_text} Q:{quality_score:.1f}{issue_text}",
-                        (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        color,
-                        1,
-                    )
+                    if not self.customer_display_mode():
+                        track_text = f"T{face_id}" if face_id is not None else "T?"
+                        stability_text = "NO-ID" if face_id is None else ("STABLE" if is_stable else "MOVING")
+                        issue_text = ""
+                        if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
+                            primary_issue = quality_debug.get("primary_issue_label")
+                            if primary_issue and quality_status == "Poor":
+                                issue_text = f" {primary_issue}"
+                        cv2.putText(
+                            frame,
+                            f"{track_text} {stability_text} Q:{quality_score:.1f}{issue_text}",
+                            (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            color,
+                            1,
+                        )
 
-                    track_state = self.state.get_track_state(face_id) if face_id is not None else None
                     if track_state and track_state.recognized and track_state.user:
                         confidence_text = track_state.user.get("confidence")
                         identity_text = (
@@ -304,7 +320,11 @@ class CLIApplication:
                         )
                         identity_color = (0, 255, 0)
                     elif track_state and track_state.last_recognition_time > 0.0:
-                        identity_text = "Not yet registered"
+                        if self.customer_display_mode():
+                            registration_state = self.state.registration_state
+                            identity_text = "Not Registered" if registration_state.in_progress else "Unknown"
+                        else:
+                            identity_text = "Not yet registered"
                         identity_color = (0, 165, 255)
                     else:
                         identity_text = "Untracked" if face_id is None else "Tracking"
@@ -330,15 +350,21 @@ class CLIApplication:
                 track_state = self.tracking_service.initialize_track_state(face_id, current_time)
                 reg_state = self.state.registration_state
 
-                if reg_state.manual_requested:
+                if not self.customer_display_mode() and reg_state.manual_requested:
                     if track_state.recognized and track_state.user:
-                        print("Manual registration canceled because the selected face is already recognized.")
+                        if reg_state.web_session_active:
+                            print("Web registration canceled because the selected face is already recognized.")
+                        else:
+                            print("Manual registration canceled because the selected face is already recognized.")
                         self.state.stop_manual_registration()
                         continue
 
                     self.state.start_manual_registration(face_id)
                     registration_prompted = False
-                    print(f"[INFO] Unregistered student locked to track {face_id}. Hold still for registration capture.")
+                    if reg_state.web_session_active:
+                        print(f"[INFO] Web registration locked to track {face_id}. Hold still for registration capture.")
+                    else:
+                        print(f"[INFO] Unregistered student locked to track {face_id}. Hold still for registration capture.")
 
                 if reg_state.manual_active and reg_state.manual_track_id is not None and face_id != reg_state.manual_track_id:
                     continue
@@ -356,7 +382,11 @@ class CLIApplication:
                     face_crop,
                     quality_service=self.quality_service,
                     face_id=face_id,
-                    allow_registration=reg_state.manual_active and face_id == reg_state.manual_track_id,
+                    allow_registration=(
+                        not self.customer_display_mode()
+                        and reg_state.manual_active
+                        and face_id == reg_state.manual_track_id
+                    ),
                     detection_confidence=detection_confidence,
                     landmarks=landmarks,
                     precomputed_quality=quality_tuple,
@@ -373,7 +403,7 @@ class CLIApplication:
                     track_state.last_seen = current_time
                     track_state.last_recognition_time = current_time
 
-                if reg_state.manual_active:
+                if not self.customer_display_mode() and reg_state.manual_active:
                     if result is True:
                         self.state.stop_manual_registration()
                         self.state.clear_captured_samples()
@@ -382,32 +412,38 @@ class CLIApplication:
                         self.state.stop_manual_registration()
 
             reg_state = self.state.registration_state
-            if registration_prompted and not reg_state.in_progress:
+            if not self.customer_display_mode() and registration_prompted and not reg_state.in_progress:
                 registration_prompted = False
 
-            if reg_state.in_progress and reg_state.pending_registration and not registration_prompted:
+            if (
+                not self.customer_display_mode()
+                and reg_state.in_progress
+                and reg_state.pending_registration
+                and not registration_prompted
+            ):
                 registration_prompted = True
                 self.handle_registration()
                 self.state.set_recognized_user(None)
 
-            for i, (crop, (quality_score, _quality_status)) in enumerate(zip(face_crops[:5], face_qualities[:5])):
-                crop_h, crop_w = crop.shape[:2]
-                scale = 80 / crop_h
-                thumbnail = cv2.resize(crop, (int(crop_w * scale), 80))
-                x_start = 10 + i * 90
-                x_end = min(x_start + thumbnail.shape[1], frame_width)
-                y_start = 80
-                y_end = min(y_start + thumbnail.shape[0], frame_height)
-                frame[y_start:y_end, x_start:x_end] = thumbnail[: y_end - y_start, : x_end - x_start]
-                cv2.putText(
-                    frame,
-                    f"{quality_score:.1f}",
-                    (x_start, y_end + 15),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4,
-                    (255, 255, 255),
-                    1,
-                )
+            if not self.customer_display_mode():
+                for i, (crop, (quality_score, _quality_status)) in enumerate(zip(face_crops[:5], face_qualities[:5])):
+                    crop_h, crop_w = crop.shape[:2]
+                    scale = 80 / crop_h
+                    thumbnail = cv2.resize(crop, (int(crop_w * scale), 80))
+                    x_start = 10 + i * 90
+                    x_end = min(x_start + thumbnail.shape[1], frame_width)
+                    y_start = 80
+                    y_end = min(y_start + thumbnail.shape[0], frame_height)
+                    frame[y_start:y_end, x_start:x_end] = thumbnail[: y_end - y_start, : x_end - x_start]
+                    cv2.putText(
+                        frame,
+                        f"{quality_score:.1f}",
+                        (x_start, y_end + 15),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        (255, 255, 255),
+                        1,
+                    )
 
             fps_counter += 1
             if time.time() - fps_start_time >= 1.0:
@@ -416,32 +452,34 @@ class CLIApplication:
                 fps_start_time = time.time()
 
             overlay = frame.copy()
-            cv2.rectangle(overlay, (0, 0), (frame_width, 70), (0, 0, 0), -1)
+            if not self.customer_display_mode():
+                cv2.rectangle(overlay, (0, 0), (frame_width, 70), (0, 0, 0), -1)
             cv2.rectangle(overlay, (0, frame_height - 50), (frame_width, frame_height), (0, 0, 0), -1)
             cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
-            cv2.putText(
-                frame,
-                "Controls: [N] New User  [R] Reset  [D] Debug  [Q] Quit",
-                (10, 25),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 255, 255),
-                1,
-            )
-            cv2.putText(
-                frame,
-                (
-                    f"DB Users: {self.state.user_count}   FPS: {current_fps}   "
-                    f"Val Frames: {saved_real_val_frames}   "
-                    f"Debug: {'ON' if self.config.quality_debug_enabled else 'OFF'}"
-                ),
-                (10, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (200, 200, 200),
-                1,
-            )
+            if not self.customer_display_mode():
+                cv2.putText(
+                    frame,
+                    "Controls: [N] New User  [R] Reset  [D] Debug  [Q] Quit",
+                    (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 255),
+                    1,
+                )
+                cv2.putText(
+                    frame,
+                    (
+                        f"DB Users: {self.state.user_count}   FPS: {current_fps}   "
+                        f"Val Frames: {saved_real_val_frames}   "
+                        f"Debug: {'ON' if self.config.quality_debug_enabled else 'OFF'}"
+                    ),
+                    (10, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (200, 200, 200),
+                    1,
+                )
 
             if self.state.recognized_user:
                 status_text = (
@@ -449,6 +487,9 @@ class CLIApplication:
                     f"({self.state.recognized_user['confidence']})"
                 )
                 status_color = (0, 255, 0)
+            elif self.customer_display_mode():
+                status_text = "Scanning for faces..."
+                status_color = (255, 255, 255)
             elif reg_state.in_progress:
                 status_text = (
                     "Unregistered student detected - captured samples are ready. "
@@ -461,7 +502,11 @@ class CLIApplication:
                 )
                 status_color = (0, 165, 255)
             elif reg_state.manual_requested:
-                status_text = "First-time registration requested - hold still for capture"
+                status_text = (
+                    "Web registration session started - hold still for capture"
+                    if reg_state.web_session_active
+                    else "First-time registration requested - hold still for capture"
+                )
                 status_color = (0, 165, 255)
             else:
                 status_text = "Scanning for faces..."
@@ -483,31 +528,34 @@ class CLIApplication:
             if key == ord("q"):
                 print("\nShutting down...")
                 break
-            if key == ord("r"):
-                self.state.set_recognized_user(None)
-                self.state.stop_manual_registration()
-                self.state.clear_captured_samples()
-                self.state.complete_registration()
-                self.state.clear_tracking_state()
-                registration_prompted = False
-                print("Recognition status reset")
-            if key == ord("d"):
-                debug_enabled = self.toggle_quality_debug()
-                debug_status = "enabled" if debug_enabled else "disabled"
-                print(f"Quality debug {debug_status}.")
-            if key == ord("n"):
-                reg_state = self.state.registration_state
-                if reg_state.in_progress or reg_state.manual_active or reg_state.manual_requested:
-                    print("First-time registration is already in progress.")
-                else:
-                    self.state.request_manual_registration()
+            if not self.customer_display_mode():
+                if key == ord("r"):
+                    self.state.set_recognized_user(None)
+                    self.state.stop_manual_registration()
+                    self.state.clear_captured_samples()
+                    self.state.complete_registration()
+                    self.state.clear_tracking_state()
                     registration_prompted = False
-                    print("First-time registration requested. Hold still so the system can capture samples.")
+                    print("Recognition status reset")
+                if key == ord("d"):
+                    debug_enabled = self.toggle_quality_debug()
+                    debug_status = "enabled" if debug_enabled else "disabled"
+                    print(f"Quality debug {debug_status}.")
+                if key == ord("n"):
+                    reg_state = self.state.registration_state
+                    if reg_state.in_progress or reg_state.manual_active or reg_state.manual_requested or reg_state.web_session_active:
+                        print("First-time registration is already in progress.")
+                    else:
+                        self.state.request_manual_registration()
+                        registration_prompted = False
+                        print("First-time registration requested. Hold still so the system can capture samples.")
 
         camera.release()
         cv2.destroyAllWindows()
 
     def handle_registration(self):
+        if self.customer_display_mode():
+            return
         reg_state = self.state.registration_state
         pending_registration = reg_state.pending_registration or []
         if not pending_registration:
@@ -525,5 +573,6 @@ class CLIApplication:
     def main_menu(self):
         stream_url = os.environ.get("CCTV_STREAM_URL", "0").strip() or "0"
         print("The website is running at the same time with detection and recognition.")
-        print("You can also press 'n' in the CCTV window to start first-time registration for an unregistered student.")
+        if not self.customer_display_mode():
+            print("You can also press 'n' in the CCTV window to start first-time registration for an unregistered student.")
         self.process_cctv_stream(stream_url)

@@ -198,6 +198,7 @@ class AppStateManager:
         self._registration_state.manual_requested = False
         self._registration_state.manual_active = False
         self._registration_state.manual_track_id = None
+        self._registration_state.web_session_active = False
 
     def reset_database_state(self) -> None:
         self.reset_registration_state()
@@ -234,26 +235,49 @@ class AppStateManager:
         self._registration_state.manual_requested = False
         self._registration_state.manual_active = False
         self._registration_state.manual_track_id = None
+        self._registration_state.web_session_active = False
 
     def request_manual_registration(self) -> None:
         self._registration_state.manual_requested = True
         self._registration_state.manual_active = False
         self._registration_state.manual_track_id = None
+        self._registration_state.web_session_active = False
         self._reset_registration_collections()
 
     def start_manual_registration(self, track_id: int) -> None:
         self._registration_state.manual_requested = False
         self._registration_state.manual_active = True
         self._registration_state.manual_track_id = track_id
+        self._registration_state.web_session_active = False
         self._reset_registration_collections()
 
     def stop_manual_registration(self) -> None:
         self._registration_state.manual_requested = False
         self._registration_state.manual_active = False
         self._registration_state.manual_track_id = None
+        self._registration_state.web_session_active = False
         # Keep finalized pending samples intact so web registration can continue.
         if not self.is_registration_ready():
             self._reset_registration_collections()
+
+    def start_web_registration_session(self) -> bool:
+        state = self._registration_state
+        if state.in_progress or state.manual_active or state.manual_requested or state.web_session_active:
+            return False
+        state.manual_requested = True
+        state.manual_active = False
+        state.manual_track_id = None
+        state.web_session_active = True
+        self._reset_registration_collections()
+        return True
+
+    def cancel_web_registration_session(self) -> None:
+        state = self._registration_state
+        state.web_session_active = False
+        state.manual_requested = False
+        state.manual_active = False
+        state.manual_track_id = None
+        self._reset_registration_collections()
 
     def initialize_track_state(self, track_id: int, current_time: float) -> TrackingState:
         if track_id not in self._tracked_faces:

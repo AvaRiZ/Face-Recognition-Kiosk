@@ -108,6 +108,7 @@ const INITIAL_INFO = {
   max_captures: 30,
   has_pending_registration: false,
   is_in_progress: false,
+  web_session_active: false,
   ready_to_submit: false,
   sample_previews: []
 };
@@ -237,6 +238,7 @@ export default function RegisterPage() {
   const [captureError, setCaptureError] = React.useState('');
   const [fieldErrors, setFieldErrors] = React.useState({});
   const [submitting, setSubmitting] = React.useState(false);
+  const [sessionAction, setSessionAction] = React.useState('');
   const [result, setResult] = React.useState(null);
   const [resetArmed, setResetArmed] = React.useState(false);
   const [programOptionsByCollege, setProgramOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
@@ -443,10 +445,62 @@ export default function RegisterPage() {
     }
   }
 
+  async function handleStartSession() {
+    setCaptureError('');
+    setResult(null);
+    setSessionAction('start');
+
+    try {
+      const response = await fetch('/api/register-session/start', {
+        method: 'POST',
+        credentials: 'include'
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.success === false) {
+        setCaptureError(payload.message || 'Unable to start registration session.');
+        return;
+      }
+      setInfo((prev) => ({ ...prev, ...payload }));
+    } catch {
+      setCaptureError('Unable to start registration session.');
+    } finally {
+      setSessionAction('');
+    }
+  }
+
+  async function handleCancelSession() {
+    setCaptureError('');
+    setResult(null);
+    setSessionAction('cancel');
+
+    try {
+      const response = await fetch('/api/register-session/cancel', {
+        method: 'POST',
+        credentials: 'include'
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.success === false) {
+        setCaptureError(payload.message || 'Unable to cancel registration session.');
+        return;
+      }
+      setResetArmed(false);
+      setInfo((prev) => ({ ...prev, ...payload }));
+    } catch {
+      setCaptureError('Unable to cancel registration session.');
+    } finally {
+      setSessionAction('');
+    }
+  }
+
   const progressPercent = info.max_captures
     ? Math.min(100, Math.round((info.capture_count / info.max_captures) * 100))
     : 0;
   const readyToSubmit = Boolean(info.ready_to_submit && info.has_pending_registration);
+  const webSessionActive = Boolean(info.web_session_active);
+  const captureInProgress = !readyToSubmit && Boolean(info.capture_count > 0 || info.is_in_progress);
+  const sessionControlBusy = sessionAction === 'start' || sessionAction === 'cancel';
+  const canStartSession = !readyToSubmit && !webSessionActive && !captureInProgress && !submitting && !sessionControlBusy;
+  const canCancelSession = (webSessionActive || captureInProgress) && !submitting && !sessionControlBusy;
   const filteredProgramOptions = form.college ? programOptionsByCollege[form.college] || [] : [];
   const sampleCount = info.sample_previews?.length || 0;
   const currentPose = info.current_pose || null;
@@ -457,12 +511,20 @@ export default function RegisterPage() {
     ? info.required_poses.filter((pose) => info.pose_progress?.[pose]?.completed).length
     : 0;
   const totalPoses = Array.isArray(info.required_poses) ? info.required_poses.length : 0;
-  const captureStateTitle = readyToSubmit ? 'Capture complete' : sampleCount > 0 || info.capture_count > 0 ? 'Capture still in progress' : 'Waiting for capture';
+  const captureStateTitle = readyToSubmit
+    ? 'Capture complete'
+    : webSessionActive
+      ? 'Session active - waiting for lock'
+      : sampleCount > 0 || info.capture_count > 0
+        ? 'Capture still in progress'
+        : 'Waiting for session start';
   const captureStateBody = readyToSubmit
     ? 'The required face samples are ready. Review the previews, then complete the student details below to save the registration.'
-    : currentPose
+    : webSessionActive
+      ? 'The session is active. Keep one unregistered student centered in the camera so CLI can lock and collect required pose samples.'
+      : currentPose
       ? `The CLI is still collecting samples. Current pose: ${currentPose}. Captured ${currentPoseCaptured} of ${currentPoseRequired} required samples for this pose.`
-      : 'No completed capture set is available yet. Keep the student in the CLI camera flow until the required samples are collected.';
+      : 'No active registration session yet. Start a session below, then keep the student in the CLI camera flow until required samples are collected.';
   const resetHelperText = resetArmed
     ? 'Click "Confirm Reset" to permanently clear the current captured samples for this student.'
     : 'Use reset only when the wrong student was captured or the sample set is incomplete.';
@@ -507,7 +569,13 @@ export default function RegisterPage() {
                         </p>
                       </div>
                       <span className={`badge rounded-pill ${readyToSubmit ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'}`}>
-                        {readyToSubmit ? 'Ready for submission' : info.capture_count > 0 ? 'Capture in progress' : 'Waiting for capture'}
+                        {readyToSubmit
+                          ? 'Ready for submission'
+                          : webSessionActive
+                            ? 'Session active'
+                            : info.capture_count > 0
+                              ? 'Capture in progress'
+                              : 'Session not started'}
                       </span>
                     </div>
 
@@ -524,18 +592,24 @@ export default function RegisterPage() {
                       </StatusAlert>
                     ) : null}
 
-                    {!readyToSubmit ? (
-                      <StatusAlert tone="info" title="Waiting for unregistered-student capture">
-                        This page is only for students who are not yet registered. Keep the student on the live camera flow
-                        until the required face samples are completed. Registration unlocks automatically when the capture
-                        set is ready.
+                    {!readyToSubmit && webSessionActive ? (
+                      <StatusAlert tone="info" title="Session started">
+                        Registration session is active. Keep the unregistered student on the live camera flow. Capture begins automatically once the face is locked.
                       </StatusAlert>
-                    ) : (
+                    ) : null}
+
+                    {!readyToSubmit && !webSessionActive ? (
+                      <StatusAlert tone="info" title="Waiting for unregistered-student capture">
+                        This page is only for students who are not yet registered. Start a registration session, then keep the student on the live camera flow until required face samples are completed.
+                      </StatusAlert>
+                    ) : null}
+
+                    {readyToSubmit ? (
                       <StatusAlert tone="ready" title="Unregistered student detected">
                         The required face samples are ready for a student who is not yet registered. You can now enter the
                         student details below to complete first-time registration.
                       </StatusAlert>
-                    )}
+                    ) : null}
 
                     <div className={`rounded-3 border p-3 p-md-4 mb-4 ${readyToSubmit ? 'border-success-subtle bg-success-subtle' : 'bg-light'}`}>
                       <div className="d-flex flex-wrap justify-content-between align-items-start gap-3">
@@ -765,9 +839,47 @@ export default function RegisterPage() {
                       <div className="col-12 pt-1">
                         <div className="d-flex flex-wrap gap-2 align-items-center">
                           <button
+                            className="btn btn-outline-primary"
+                            type="button"
+                            onClick={handleStartSession}
+                            disabled={!canStartSession}
+                          >
+                            {sessionAction === 'start' ? (
+                              <>
+                                <span className="spinner-border spinner-border-sm me-2" role="status" />
+                                Starting Session...
+                              </>
+                            ) : (
+                              <>
+                                <i className="bi bi-play-circle me-2"></i>
+                                Start Session
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            className="btn btn-outline-warning"
+                            type="button"
+                            onClick={handleCancelSession}
+                            disabled={!canCancelSession}
+                          >
+                            {sessionAction === 'cancel' ? (
+                              <>
+                                <span className="spinner-border spinner-border-sm me-2" role="status" />
+                                Canceling Session...
+                              </>
+                            ) : (
+                              <>
+                                <i className="bi bi-x-circle me-2"></i>
+                                Cancel Session
+                              </>
+                            )}
+                          </button>
+
+                          <button
                             className="btn btn-primary px-4"
                             type="submit"
-                            disabled={submitting || !readyToSubmit}
+                            disabled={submitting || sessionControlBusy || !readyToSubmit}
                           >
                             {submitting ? (
                               <>
@@ -786,7 +898,7 @@ export default function RegisterPage() {
                             className={`btn ${resetArmed ? 'btn-outline-danger' : 'btn-outline-secondary'}`}
                             type="button"
                             onClick={handleReset}
-                            disabled={submitting}
+                            disabled={submitting || sessionControlBusy}
                           >
                             <i className={`bi ${resetArmed ? 'bi bi-exclamation-triangle me-2' : 'bi bi-arrow-counterclockwise me-2'}`}></i>
                             {resetArmed ? 'Confirm Reset' : 'Reset Samples'}
@@ -797,7 +909,7 @@ export default function RegisterPage() {
                               className="btn btn-link text-decoration-none px-1"
                               type="button"
                               onClick={() => setResetArmed(false)}
-                              disabled={submitting}
+                              disabled={submitting || sessionControlBusy}
                             >
                               Cancel
                             </button>
