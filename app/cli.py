@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import pickle
 import shutil
 import subprocess
@@ -103,20 +102,26 @@ class CLIApplication:
     def detection_paused(self) -> bool:
         return self._detection_pause_event.is_set()
 
-    def connect_to_cctv_stream(self, stream_url, frame_width=640, frame_height=480, target_fps=30):
-        print(f"Attempting to connect to: {stream_url}")
+    def connect_to_cctv_stream(self, stream_source, frame_width=1280, frame_height=720, target_fps=30):
+        print(f"Attempting to connect to: {stream_source}")
         self._set_stream_status("connecting", "Connecting to CCTV stream...")
 
-        if isinstance(stream_url, str) and stream_url.isdigit():
-            cam_index = int(stream_url)
-            if os.name == "nt" and hasattr(cv2, "CAP_DSHOW"):
+        if isinstance(stream_source, str):
+            stream_source = stream_source.strip()
+
+        if isinstance(stream_source, str) and stream_source.isdigit():
+            stream_source = int(stream_source)
+
+        if isinstance(stream_source, int):
+            cam_index = stream_source
+            if sys.platform.startswith("win") and hasattr(cv2, "CAP_DSHOW"):
                 cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
             else:
                 cap = cv2.VideoCapture(cam_index)
         else:
-            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+            cap = cv2.VideoCapture(stream_source, cv2.CAP_FFMPEG)
             if not cap.isOpened():
-                cap = cv2.VideoCapture(stream_url)
+                cap = cv2.VideoCapture(stream_source)
 
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -320,8 +325,11 @@ class CLIApplication:
 
         self._draw_text_block(frame, lines, 10, frame_height - 110, (0, 220, 255), scale=0.7, thickness=2)
 
-    def process_cctv_stream(self, stream_url, frame_width=1600, frame_height=900):
-        camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
+    def process_cctv_stream(self, stream_source=None, frame_width=1280, frame_height=720):
+        if stream_source is None:
+            stream_source = self.config.resolved_cctv_stream_source()
+
+        camera = self.connect_to_cctv_stream(stream_source, frame_width, frame_height, target_fps=30)
         if camera is None:
             self._set_stream_status("disconnected", "Camera stream is unavailable.")
             return
@@ -357,7 +365,7 @@ class CLIApplication:
                 continue
 
             if camera is None:
-                camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
+                camera = self.connect_to_cctv_stream(stream_source, frame_width, frame_height, target_fps=30)
                 if camera is None:
                     self._set_stream_status("reconnecting", "Retrying camera stream connection...")
                     time.sleep(1.0)
@@ -371,7 +379,7 @@ class CLIApplication:
             if not success:
                 print("[WARN] Lost connection to CCTV stream. Reconnecting...")
                 self._set_stream_status("reconnecting", "Camera stream lost. Reconnecting...")
-                camera = self.connect_to_cctv_stream(stream_url, frame_width, frame_height, target_fps=30)
+                camera = self.connect_to_cctv_stream(stream_source, frame_width, frame_height, target_fps=30)
                 if camera is None:
                     self._set_stream_status("disconnected", "Camera stream disconnected.")
                     break
@@ -749,7 +757,6 @@ class CLIApplication:
         print("The pending samples will stay available until the website registration is completed or reset.")
 
     def main_menu(self):
-        stream_url = os.environ.get("CCTV_STREAM_URL", "0").strip() or "0"
         print("The website is running at the same time with detection and recognition.")
         print("Use the registration page controls to start and manage first-time registration sessions.")
-        self.process_cctv_stream(stream_url)
+        self.process_cctv_stream()
