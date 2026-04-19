@@ -95,10 +95,41 @@ def first_embedding(embeddings_by_model, model_name: str):
 class EmbeddingService:
     def __init__(self, config: AppConfig):
         self.config = config
+        self._deepface = None
+
+    def _get_deepface(self):
+        if self._deepface is None:
+            from deepface import DeepFace
+
+            self._deepface = DeepFace
+        return self._deepface
+
+    def warm_up_models(self, logger=None) -> None:
+        """Preload DeepFace and all configured embedding models."""
+        face_rgb = np.zeros((160, 160, 3), dtype=np.uint8)
+        deepface = self._get_deepface()
+
+        for model_name in self.config.models:
+            try:
+                deepface.represent(
+                    img_path=face_rgb,
+                    model_name=model_name,
+                    enforce_detection=False,
+                    detector_backend="skip",
+                    align=False,
+                    normalization="base",
+                )
+                if logger:
+                    logger(f"Warm-up complete for {model_name}")
+            except Exception as exc:
+                if logger:
+                    logger(f"Warm-up warning for {model_name}: {exc}", status="WARN")
+                else:
+                    print(f"  [WARN] Warm-up warning for {model_name}: {exc}")
 
     def extract_embedding_ensemble(self, face_crop):
         try:
-            from deepface import DeepFace
+            deepface = self._get_deepface()
 
             if len(face_crop.shape) == 3 and face_crop.shape[2] == 3:
                 face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
@@ -112,7 +143,7 @@ class EmbeddingService:
 
             for model_name in self.config.models:
                 try:
-                    embedding_obj = DeepFace.represent(
+                    embedding_obj = deepface.represent(
                         img_path=face_rgb,
                         model_name=model_name,
                         enforce_detection=False,

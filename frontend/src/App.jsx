@@ -91,7 +91,10 @@ export default function App() {
           return;
         }
         const registrationReady = Boolean(
-          payload?.ready_to_submit || payload?.has_pending_registration || payload?.is_in_progress
+          payload?.ready_to_submit
+            || payload?.has_pending_registration
+            || payload?.is_in_progress
+            || payload?.web_session_active
         );
         if (registrationReady && location.pathname !== '/register') {
           navigate('/register', { replace: true });
