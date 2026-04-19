@@ -2249,9 +2249,46 @@ body.dark .back-to-top:hover {
 }
 
 @media (min-width: 992px) {
-    .error-404 img {
+.error-404 img {
         max-width: 50%;
     }
+}
+
+.error-403 {
+    padding: 30px;
+    min-height: calc(100vh - 160px);
+}
+
+.error-403 h1 {
+    font-size: 160px;
+    font-weight: 700;
+    color: var(--primary-color);
+    margin-bottom: 0;
+    line-height: 1;
+}
+
+.error-403 h2 {
+    font-size: var(--font-size-5xl);
+    font-weight: 700;
+    color: var(--primary-color);
+    margin-bottom: 16px;
+}
+
+.error-403 p {
+    max-width: 520px;
+    color: var(--light-text);
+    font-size: var(--font-size-2xl);
+}
+
+.error-403 .btn {
+    background: var(--secondary-color);
+    color: #ffffff;
+    padding: 8px 30px;
+}
+
+.error-403 .btn:hover {
+    background: var(--primary-color);
+    color: #ffffff;
 }
 
 /*--------------------------------------------------------------

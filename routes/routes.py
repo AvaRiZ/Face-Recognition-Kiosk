@@ -1253,7 +1253,7 @@ def create_routes_blueprint(deps):
     @bp.route("/entry-logs/export", endpoint="export_entry_logs")
     @bp.route("/entry-exit-logs/export", endpoint="export_logs")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def export_logs():
         import csv
         import io

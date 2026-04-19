@@ -15,6 +15,7 @@ import SettingsPage from './pages/Settings.jsx';
 import PolicyPage from './pages/Policy.jsx';
 import ProfileSettingsPage from './pages/ProfileSettings.jsx';
 import RegisterPage from './pages/Register.jsx';
+import UnauthorizedPage from './pages/Unauthorized.jsx';
 
 const THEME_STORAGE_KEY = 'theme';
 
@@ -167,11 +168,12 @@ export default function App() {
     <ThemeContext.Provider value={themeState}>
       <SessionContext.Provider value={sessionState}>
         <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route
-            path="/"
-            element={
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/unauthorized" element={<UnauthorizedPage />} />
+        <Route
+          path="/"
+          element={
               <ProtectedRoute>
                 <Layout />
               </ProtectedRoute>

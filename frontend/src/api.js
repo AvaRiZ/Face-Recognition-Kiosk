@@ -11,6 +11,9 @@ export async function fetchJson(url, options = {}) {
   const isJson = resp.headers.get('content-type')?.includes('application/json');
   const data = isJson ? await resp.json() : null;
   if (!resp.ok) {
+    if (resp.status === 403 && typeof window !== 'undefined' && window.location.pathname !== '/unauthorized') {
+      window.location.href = '/unauthorized';
+    }
     const error = new Error(data?.message || 'Request failed');
     error.status = resp.status;
     error.data = data;

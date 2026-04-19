@@ -107,7 +107,7 @@ class AppConfig:
 
     # Camera / stream source used by the live CCTV loop.
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    cctv_stream_source: str = "1"
+    cctv_stream_source: str = "0"
     
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
     cli_top_bar_enabled: bool = True
