@@ -38,7 +38,7 @@ export default function Sidebar() {
   const role = session?.role || '';
   const isAdmin = role === 'super_admin' || role === 'library_admin';
   const isStaff = role === 'super_admin' || role === 'library_admin' || role === 'library_staff';
-  const canSeeManagement = isAdmin || role === 'super_admin';
+  const canSeeManagement = isStaff;
   const displayName = session?.full_name || session?.username || 'System User';
   const roleLabel = formatRoleLabel(role);
   const initials = getInitials(displayName);
@@ -76,7 +76,7 @@ export default function Sidebar() {
             {role ? <NavItem to="/program-monthly-visits" icon="bi bi-bar-chart" label="Program Monthly Visits" /> : null}
 
             {canSeeManagement ? <li className="nav-heading">Management</li> : null}
-            {isAdmin ? <NavItem to="/analytics-reports" icon="bi bi-graph-up-arrow" label="Reports & Analytics" /> : null}
+            {isStaff ? <NavItem to="/analytics-reports" icon="bi bi-graph-up-arrow" label="Reports & Analytics" /> : null}
             {isAdmin ? <NavItem to="/route-list" icon="bi bi-diagram-3" label="Route List" /> : null}
             {role === 'super_admin' ? <NavItem to="/settings" icon="bi bi-gear" label="Settings" /> : null}
           </ul>

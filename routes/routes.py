@@ -628,7 +628,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/policy", endpoint="policy_page")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def policy_page():
         return _spa_index()
 
@@ -838,7 +838,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/analytics-reports", endpoint="analytics_reports")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def analytics_reports():
         range_key = request.args.get("range", "14d").strip().lower()
         range_map = {
@@ -1729,7 +1729,7 @@ def create_routes_blueprint(deps):
     @bp.route("/api/analytics-reports", methods=["GET"], endpoint="api_analytics_reports")
 
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_analytics_reports():
         try:
             result = run_ml_analytics(deps["db_path"])
@@ -1866,7 +1866,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/policy", methods=["GET"], endpoint="api_policy")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_policy():
         policy_html = deps["render_markdown_as_html"](Path("static/content/markdown/policy.md"))
         return jsonify({"policy": policy_html})
