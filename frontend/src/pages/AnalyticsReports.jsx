@@ -2916,6 +2916,8 @@ function AnomalySection({ anomalies, mean, stdDev }) {
 export default function AnalyticsReports() {
   const [data, setData] = React.useState(null);
   const [error, setError] = React.useState(false);
+  const [socketConnected, setSocketConnected] = React.useState(socket.connected);
+  const [lastUpdatedAt, setLastUpdatedAt] = React.useState(null);
   const headerRef = React.useRef(null);
   const refreshInFlightRef = React.useRef(false);
   const hasLoadedDataRef = React.useRef(false);
@@ -2934,6 +2936,7 @@ export default function AnalyticsReports() {
       const d = await fetchJson("/api/analytics-reports");
       setData(d);
       setError(false);
+      setLastUpdatedAt(new Date());
     } catch {
       if (!hasLoadedDataRef.current) {
         setError(true);
@@ -2958,8 +2961,22 @@ export default function AnalyticsReports() {
       runAnalyticsPipeline({ silent: true });
     }
 
+    function handleConnect() {
+      setSocketConnected(true);
+    }
+
+    function handleDisconnect() {
+      setSocketConnected(false);
+    }
+
+    socket.on("connect", handleConnect);
+    socket.on("disconnect", handleDisconnect);
     socket.on("analytics_updated", handleAnalyticsUpdated);
-    return () => socket.off("analytics_updated", handleAnalyticsUpdated);
+    return () => {
+      socket.off("connect", handleConnect);
+      socket.off("disconnect", handleDisconnect);
+      socket.off("analytics_updated", handleAnalyticsUpdated);
+    };
   }, []);
 
   React.useEffect(() => {
@@ -2983,17 +3000,24 @@ export default function AnalyticsReports() {
   const correlation = data?.correlation ?? {};
   const anova = data?.anova ?? {};
   const noAnalyticsData = Boolean(data?.error);
+  const lastUpdatedLabel = lastUpdatedAt
+    ? lastUpdatedAt.toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+    : "Waiting for first sync";
 
   return (
     <section className="section">
       <div className="pagetitle">
-        <h1>Analytics &amp; Reports</h1>
+        <h1>Live Analytics</h1>
         <nav>
           <ol className="breadcrumb mb-0">
             <li className="breadcrumb-item">
               <a href="/dashboard">Home</a>
             </li>
-            <li className="breadcrumb-item active">Analytics &amp; Reports</li>
+            <li className="breadcrumb-item active">Live Analytics</li>
           </ol>
         </nav>
       </div>
@@ -3024,22 +3048,59 @@ export default function AnalyticsReports() {
             style={{
               display: "flex",
               justifyContent: "space-between",
-              alignItems: "center",
+              alignItems: "flex-start",
               gap: 12,
               flexWrap: "wrap",
-              marginBottom: 14,
             }}
           >
-            <h5 className="card-title" style={{ padding: 0, margin: 0 }}>
-              Data Pipeline
-            </h5>
+            <div>
+              <h5 className="card-title" style={{ padding: 0, margin: 0 }}>
+                Realtime Library Activity
+              </h5>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#6c757d",
+                  marginTop: 4,
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "4px 10px",
+                    borderRadius: 999,
+                    background: socketConnected ? "rgba(25,135,84,0.1)" : "rgba(255,193,7,0.12)",
+                    color: socketConnected ? "#198754" : "#a06a00",
+                    fontWeight: 600,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: socketConnected ? "#198754" : "#ffc107",
+                    }}
+                  ></span>
+                  {socketConnected ? "Live connection active" : "Fallback polling mode"}
+                </span>
+                <span>Last sync: {lastUpdatedLabel}</span>
+                <span>Auto-refreshes on analytics events</span>
+              </div>
+            </div>
             <div className="d-flex align-items-center gap-2 flex-wrap">
               <button
-                className="btn btn-sm btn-primary d-flex align-items-center gap-1 px-2 py-1"
+                className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
                 onClick={() => runAnalyticsPipeline()}
               >
                 <i className="bi bi-arrow-clockwise"></i>
-                Refresh Report
+                Sync Now
               </button>
               <ImportModal
                 onImportSuccess={() => {
@@ -3048,7 +3109,6 @@ export default function AnalyticsReports() {
               />
             </div>
           </div>
-          <PipelineStepper activeStep={6} isLoading={false} />
         </div>
       </div>
 
@@ -3399,10 +3459,10 @@ export default function AnalyticsReports() {
           >
             <i className="bi bi-check-circle-fill text-success fs-5"></i>
             <span>
-              <strong>Stage 6 — Visualization &amp; Reporting complete.</strong>{" "}
-              Pipeline processed <strong>{fmt(dq?.total_raw || 0)}</strong> raw
+              <strong>Analytics view is live and in sync.</strong>{" "}
+              The dashboard is currently summarizing <strong>{fmt(dq?.total_raw || 0)}</strong> raw
               records into <strong>{fmt(data?.total_cleaned_logs || 0)}</strong>{" "}
-              clean unique daily visits, achieving a quality score of{" "}
+              clean unique daily visits, with a current quality score of{" "}
               <strong
                 style={{
                   color: dq?.quality_score >= 90 ? "#198754" : "#ffc107",

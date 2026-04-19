@@ -9,6 +9,7 @@ from ultralytics import YOLO
 
 from app.cli import CLIApplication
 from app.flask_app import create_flask_app
+from app.realtime import socketio
 from auth import init_auth_db
 from core.config import AppConfig, configure_devices, resolve_yolo_device
 from core.state import AppStateManager
@@ -95,7 +96,8 @@ def build_runtime() -> AppRuntime:
 def start_web_server(host: str, port: int, debug: bool, runtime: AppRuntime):
     app = create_flask_app(runtime.config, runtime.state, runtime.repository, runtime.cli)
     server_thread = threading.Thread(
-        target=app.run,
+        target=socketio.run,
+        args=(app,),
         kwargs={
             "host": host,
             "port": port,
