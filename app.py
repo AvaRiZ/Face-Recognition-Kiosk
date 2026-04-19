@@ -116,7 +116,7 @@ def main() -> None:
     host = os.environ.get("FLASK_RUN_HOST", "127.0.0.1")
     port = int(os.environ.get("FLASK_RUN_PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-    stream_url = os.environ.get("CCTV_STREAM_URL", "0").strip() or "0"
+    stream_source = runtime.config.resolved_cctv_stream_source()
 
     log_header("CCTV Face Recognition System - Initialization")
     log_step(f"Database: {runtime.config.db_path}")
@@ -126,10 +126,10 @@ def main() -> None:
     log_step(f"The website is running at the same time with detection and recognition.")
     log_step("Registration workflow is managed from the website while capture runs in the CCTV window.")
     log_step(f"Starting web server at http://{host}:{port}")
-    log_step(f"Starting detection and recognition using stream source: {stream_url}")
+    log_step(f"Starting detection and recognition using stream source: {stream_source}")
 
     start_web_server(host, port, debug, runtime)
-    runtime.cli.process_cctv_stream(stream_url)
+    runtime.cli.process_cctv_stream(stream_source)
 
 
 if __name__ == "__main__":

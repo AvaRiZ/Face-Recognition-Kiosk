@@ -104,9 +104,13 @@ class AppConfig:
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
+
+    # Camera / stream source used by the live CCTV loop.
+    # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
+    cctv_stream_source: str = "1"
     
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
-    cli_top_bar_enabled: bool = False
+    cli_top_bar_enabled: bool = True
 
     # ------------------------------------------------------------------
     # Quality scoring: face size
@@ -206,6 +210,12 @@ class AppConfig:
     @property
     def models(self) -> list[str]:
         return [self.primary_model, self.secondary_model]
+
+    def resolved_cctv_stream_source(self) -> str | int:
+        source = str(self.cctv_stream_source).strip()
+        if source.isdigit():
+            return int(source)
+        return source
 
 
 def configure_devices(

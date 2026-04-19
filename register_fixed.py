@@ -335,7 +335,7 @@ def extract_embedding_ensemble(face_crop):
 # Face Capture (Enhanced)
 # -------------------------------
 def capture_best_face():
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         print("Error: Cannot open webcam")
         return None
