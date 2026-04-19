@@ -1,5 +1,6 @@
 import React from 'react';
 import { fetchJson } from '../api.js';
+import { confirmAction, getErrorMessage, showError, showSuccess } from '../alerts.js';
 
 function formatRole(role) {
   if (role === 'super_admin') return 'SuperAdmin';
@@ -33,23 +34,42 @@ export default function ManageUsersPage() {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  function handleCreate(ev) {
+  async function handleCreate(ev) {
     ev.preventDefault();
-    fetchJson('/api/manage-users/create', {
-      method: 'POST',
-      body: JSON.stringify(form)
-    })
-      .then(() => {
-        setForm({ full_name: '', username: '', password: '', role: 'library_admin' });
-        loadRows();
-      })
-      .catch(() => undefined);
+    try {
+      await fetchJson('/api/manage-users/create', {
+        method: 'POST',
+        body: JSON.stringify(form)
+      });
+      setForm({ full_name: '', username: '', password: '', role: 'library_admin' });
+      loadRows();
+      await showSuccess('User Created', 'The new account was created successfully.');
+    } catch (error) {
+      await showError('Create Failed', getErrorMessage(error));
+    }
   }
 
-  function toggleStaff(staffId) {
-    fetchJson(`/api/manage-users/toggle/${staffId}`, { method: 'POST' })
-      .then(loadRows)
-      .catch(() => undefined);
+  async function toggleStaff(staffId, currentlyActive) {
+    const confirmed = await confirmAction({
+      title: currentlyActive ? 'Deactivate User?' : 'Activate User?',
+      text: currentlyActive
+        ? 'This account will no longer be able to sign in until it is activated again.'
+        : 'This account will be able to sign in again.',
+      confirmButtonText: currentlyActive ? 'Deactivate' : 'Activate',
+      confirmButtonColor: currentlyActive ? '#dc3545' : '#198754'
+    });
+    if (!confirmed) return;
+
+    try {
+      await fetchJson(`/api/manage-users/toggle/${staffId}`, { method: 'POST' });
+      loadRows();
+      await showSuccess(
+        currentlyActive ? 'User Deactivated' : 'User Activated',
+        currentlyActive ? 'The account was deactivated successfully.' : 'The account was activated successfully.'
+      );
+    } catch (error) {
+      await showError('Update Failed', getErrorMessage(error));
+    }
   }
 
   if (loading) {
@@ -163,7 +183,7 @@ export default function ManageUsersPage() {
                               <button
                                 type="button"
                                 className={`btn btn-sm ${row.is_active ? 'btn-outline-danger' : 'btn-outline-success'}`}
-                                onClick={() => toggleStaff(row.staff_id)}
+                                onClick={() => toggleStaff(row.staff_id, row.is_active)}
                               >
                                 {row.is_active ? 'Deactivate' : 'Activate'}
                               </button>

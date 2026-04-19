@@ -1,5 +1,6 @@
 import React from "react";
 import { fetchJson } from "../api.js";
+import { confirmAction, getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { socket } from "../socket.js";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -64,6 +65,7 @@ function ImportModal({ onImportSuccess }) {
   async function uploadFile(file) {
     if (!file.name.endsWith(".csv")) {
       setResult({ success: false, message: "Only CSV files accepted." });
+      await showError("Invalid File", "Only CSV files accepted.");
       return;
     }
     setUploading(true);
@@ -77,17 +79,27 @@ function ImportModal({ onImportSuccess }) {
       if (d.success) {
         const s = await fetchJson("/api/import-logs/summary");
         setSummary(s);
+        await showSuccess("Import Completed", d.message || "Historical analytics data imported successfully.");
         if (onImportSuccess) onImportSuccess();
+      } else {
+        await showError("Import Failed", d.message || "Upload failed.");
       }
-    } catch {
+    } catch (error) {
       setResult({ success: false, message: "Upload failed." });
+      await showError("Import Failed", getErrorMessage(error, "Upload failed."));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
   async function deleteBatch(id) {
-    if (!confirm("Delete this batch?")) return;
+    const confirmed = await confirmAction({
+      title: "Delete Import Batch?",
+      text: "This will remove the selected imported analytics batch.",
+      confirmButtonText: "Delete",
+      confirmButtonColor: "#dc3545"
+    });
+    if (!confirmed) return;
     setResult(null);
     try {
       const response = await fetchJson(`/api/import-logs/delete/${id}`, {
@@ -100,6 +112,7 @@ function ImportModal({ onImportSuccess }) {
         message: `Deleted import batch successfully.`,
         deleted: response?.deleted ?? 0,
       });
+      await showSuccess("Batch Deleted", "The imported analytics batch was deleted successfully.");
       if (onImportSuccess) onImportSuccess();
     } catch (error) {
       const status = error?.status;
@@ -108,6 +121,7 @@ function ImportModal({ onImportSuccess }) {
           ? "You are not allowed to delete imported data."
           : error?.data?.message || error?.message || "Delete failed.";
       setResult({ success: false, message });
+      await showError("Delete Failed", message);
     }
   }
   const live = summary?.live_logs || 0,

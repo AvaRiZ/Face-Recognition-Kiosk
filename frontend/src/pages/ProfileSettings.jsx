@@ -1,5 +1,6 @@
 import React from 'react';
 import { fetchJson } from '../api.js';
+import { getErrorMessage, showError, showSuccess } from '../alerts.js';
 
 export default function ProfileSettingsPage() {
   const [staff, setStaff] = React.useState(null);
@@ -18,7 +19,7 @@ export default function ProfileSettingsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  function handleProfileSubmit(ev) {
+  async function handleProfileSubmit(ev) {
     ev.preventDefault();
     const formData = new FormData();
     formData.append('full_name', fullName);
@@ -28,19 +29,24 @@ export default function ProfileSettingsPage() {
       formData.append('profile_image', fileInput.files[0]);
     }
 
-    fetch('/api/profile', {
-      method: 'POST',
-      body: formData,
-      credentials: 'include'
-    })
-      .then((res) => res.json())
-      .then((resp) => {
-        setStaff(resp.staff);
-      })
-      .catch(() => undefined);
+    try {
+      const res = await fetch('/api/profile', {
+        method: 'POST',
+        body: formData,
+        credentials: 'include'
+      });
+      const resp = await res.json();
+      if (!res.ok) {
+        throw new Error(resp?.message || 'Unable to save profile.');
+      }
+      setStaff(resp.staff);
+      await showSuccess('Profile Saved', 'Your profile was updated successfully.');
+    } catch (error) {
+      await showError('Save Failed', getErrorMessage(error));
+    }
   }
 
-  function handlePasswordSubmit(ev) {
+  async function handlePasswordSubmit(ev) {
     ev.preventDefault();
     const form = ev.currentTarget;
     const payload = {
@@ -49,10 +55,16 @@ export default function ProfileSettingsPage() {
       confirm_password: form.confirm_password.value
     };
 
-    fetchJson('/api/profile/password', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }).catch(() => undefined);
+    try {
+      await fetchJson('/api/profile/password', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      form.reset();
+      await showSuccess('Password Updated', 'Your password was changed successfully.');
+    } catch (error) {
+      await showError('Update Failed', getErrorMessage(error));
+    }
   }
 
   if (loading) {
