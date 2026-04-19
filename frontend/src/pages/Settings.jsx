@@ -1,31 +1,6 @@
 import React from 'react';
 import { fetchJson } from '../api.js';
-
-async function confirmDialog(title, text, confirmText, confirmButtonColor) {
-  if (window.Swal) {
-    const result = await window.Swal.fire({
-      icon: 'warning',
-      title,
-      text,
-      showCancelButton: true,
-      confirmButtonText: confirmText,
-      cancelButtonText: 'Cancel',
-      confirmButtonColor,
-      cancelButtonColor: '#6c757d',
-      reverseButtons: true
-    });
-    return result.isConfirmed;
-  }
-  return window.confirm(text);
-}
-
-async function showDialog(icon, title, text) {
-  if (window.Swal) {
-    await window.Swal.fire({ icon, title, text });
-    return;
-  }
-  window.alert(`${title}: ${text}`);
-}
+import { confirmAction, getErrorMessage, showError, showSuccess } from '../alerts.js';
 
 export default function SettingsPage() {
   const [data, setData] = React.useState(null);
@@ -49,57 +24,59 @@ export default function SettingsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  function handleSubmit(ev) {
+  async function handleSubmit(ev) {
     ev.preventDefault();
-    fetchJson('/api/settings', {
-      method: 'POST',
-      body: JSON.stringify({
-        max_occupancy: maxOccupancy,
-        threshold,
-        quality_threshold: qualityThreshold,
-        vector_index_top_k: vectorIndexTopK
-      })
-    })
-      .then((resp) => setData(resp))
-      .catch(() => undefined);
+    try {
+      const resp = await fetchJson('/api/settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          max_occupancy: maxOccupancy,
+          threshold,
+          quality_threshold: qualityThreshold,
+          vector_index_top_k: vectorIndexTopK
+        })
+      });
+      setData(resp);
+      await showSuccess('Settings Saved', 'Recognition settings were updated successfully.');
+    } catch (error) {
+      await showError('Save Failed', getErrorMessage(error));
+    }
   }
 
   async function resetDatabase() {
-    const confirmed = await confirmDialog(
-      'Reset Database?',
-      'This will delete all registered users and face data. This action cannot be undone.',
-      'Yes, reset',
-      '#dc3545'
-    );
+    const confirmed = await confirmAction({
+      title: 'Reset Database?',
+      text: 'This will delete all registered users and face data. This action cannot be undone.',
+      confirmButtonText: 'Yes, reset',
+      confirmButtonColor: '#dc3545'
+    });
     if (!confirmed) return;
 
-    fetchJson('/api/reset_database', { method: 'POST' })
-      .then(async () => {
-        await showDialog('success', 'Completed', 'Database reset successfully. The system will restart.');
-        window.location.reload();
-      })
-      .catch(async (error) => {
-        await showDialog('error', 'Request Failed', error.message || 'Unexpected error occurred.');
-      });
+    try {
+      await fetchJson('/api/reset_database', { method: 'POST' });
+      await showSuccess('Completed', 'Database reset successfully. The system will restart.');
+      window.location.reload();
+    } catch (error) {
+      await showError('Request Failed', getErrorMessage(error));
+    }
   }
 
   async function clearRecognitionLog() {
-    const confirmed = await confirmDialog(
-      'Clear Recognition Log?',
-      'This will clear all recognition history. This action cannot be undone.',
-      'Yes, clear',
-      '#fd7e14'
-    );
+    const confirmed = await confirmAction({
+      title: 'Clear Recognition Log?',
+      text: 'This will clear all recognition history. This action cannot be undone.',
+      confirmButtonText: 'Yes, clear',
+      confirmButtonColor: '#fd7e14'
+    });
     if (!confirmed) return;
 
-    fetchJson('/api/clear_log', { method: 'POST' })
-      .then(async () => {
-        await showDialog('success', 'Completed', 'Recognition log cleared successfully.');
-        window.location.reload();
-      })
-      .catch(async (error) => {
-        await showDialog('error', 'Request Failed', error.message || 'Unexpected error occurred.');
-      });
+    try {
+      await fetchJson('/api/clear_log', { method: 'POST' });
+      await showSuccess('Completed', 'Recognition log cleared successfully.');
+      window.location.reload();
+    } catch (error) {
+      await showError('Request Failed', getErrorMessage(error));
+    }
   }
 
   if (loading) {

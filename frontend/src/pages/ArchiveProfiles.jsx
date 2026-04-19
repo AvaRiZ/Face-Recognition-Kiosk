@@ -1,5 +1,6 @@
 import React from 'react';
 import { fetchJson } from '../api.js';
+import { confirmAction, getErrorMessage, showError, showSuccess } from '../alerts.js';
 
 export default function ArchiveProfilesPage() {
   const [rows, setRows] = React.useState([]);
@@ -87,29 +88,51 @@ export default function ArchiveProfilesPage() {
     });
   }
 
-  function archiveSelected() {
+  async function archiveSelected() {
     const ids = Object.keys(selected).filter((id) => selected[id]);
     if (!ids.length) return;
-    fetchJson('/api/archive-profiles/submit', {
-      method: 'POST',
-      body: JSON.stringify({ user_ids: ids })
-    })
-      .then(() => {
-        setSelected({});
-        setSelectMode(false);
-        loadRows();
-      })
-      .catch(() => undefined);
+    const confirmed = await confirmAction({
+      title: 'Archive Selected Profiles?',
+      text: `This will archive ${ids.length} selected profile${ids.length === 1 ? '' : 's'}.`,
+      confirmButtonText: 'Archive',
+      confirmButtonColor: '#6c757d'
+    });
+    if (!confirmed) return;
+
+    try {
+      await fetchJson('/api/archive-profiles/submit', {
+        method: 'POST',
+        body: JSON.stringify({ user_ids: ids })
+      });
+      setSelected({});
+      setSelectMode(false);
+      loadRows();
+      await showSuccess('Profiles Archived', `Archived ${ids.length} profile${ids.length === 1 ? '' : 's'} successfully.`);
+    } catch (error) {
+      await showError('Archive Failed', getErrorMessage(error));
+    }
   }
 
-  function archiveSingle(userId) {
+  async function archiveSingle(userId) {
     if (!userId) return;
-    fetchJson('/api/archive-profiles/submit', {
-      method: 'POST',
-      body: JSON.stringify({ user_ids: [userId] })
-    })
-      .then(loadRows)
-      .catch(() => undefined);
+    const confirmed = await confirmAction({
+      title: 'Archive Profile?',
+      text: 'This profile will be moved to archived profiles.',
+      confirmButtonText: 'Archive',
+      confirmButtonColor: '#6c757d'
+    });
+    if (!confirmed) return;
+
+    try {
+      await fetchJson('/api/archive-profiles/submit', {
+        method: 'POST',
+        body: JSON.stringify({ user_ids: [userId] })
+      });
+      loadRows();
+      await showSuccess('Profile Archived', 'The profile was archived successfully.');
+    } catch (error) {
+      await showError('Archive Failed', getErrorMessage(error));
+    }
   }
 
   if (loading) {

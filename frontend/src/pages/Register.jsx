@@ -1,4 +1,5 @@
 import React from 'react';
+import { confirmAction, getErrorMessage, showError, showSuccess } from '../alerts.js';
 
 const DEFAULT_COLLEGE_PROGRAM_MAP = {
   'College of Engineering': [
@@ -245,7 +246,6 @@ export default function RegisterPage() {
   const [submitting, setSubmitting] = React.useState(false);
   const [sessionAction, setSessionAction] = React.useState('');
   const [result, setResult] = React.useState(null);
-  const [resetArmed, setResetArmed] = React.useState(false);
   const [programOptionsByCollege, setProgramOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
   const [collegeOptions, setCollegeOptions] = React.useState(DEFAULT_COLLEGE_OPTIONS);
   const [form, setForm] = React.useState({ name: '', sr_code: '', gender: '', college: '', program: '' });
@@ -356,8 +356,13 @@ export default function RegisterPage() {
   }
 
   async function handleReset() {
-    if (!resetArmed) {
-      setResetArmed(true);
+    const confirmed = await confirmAction({
+      title: 'Reset Captured Samples?',
+      text: 'This will clear the current registration capture set for the student in progress.',
+      confirmButtonText: 'Reset Samples',
+      confirmButtonColor: '#dc3545'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -375,7 +380,6 @@ export default function RegisterPage() {
         setCaptureError(payload.message || 'Unable to reset the capture session.');
         return;
       }
-      setResetArmed(false);
       setInfo((prev) => ({
         ...prev,
         capture_count: payload.capture_count ?? 0,
@@ -384,8 +388,11 @@ export default function RegisterPage() {
         is_in_progress: false,
         ready_to_submit: false
       }));
-    } catch {
-      setCaptureError('Unable to reset the current capture session.');
+      await showSuccess('Samples Reset', 'The current registration samples were cleared successfully.');
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to reset the current capture session.');
+      setCaptureError(message);
+      await showError('Reset Failed', message);
     }
   }
 
@@ -443,8 +450,11 @@ export default function RegisterPage() {
       window.setTimeout(() => {
         window.location.href = payload.redirect_url || '/registered-profiles';
       }, 1200);
-    } catch {
-      setCaptureError('Unable to reach the server. Please try again.');
+      await showSuccess('Registration Complete', payload.message || 'Student registration saved successfully.');
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to reach the server. Please try again.');
+      setCaptureError(message);
+      await showError('Registration Failed', message);
     } finally {
       setSubmitting(false);
     }
@@ -463,11 +473,15 @@ export default function RegisterPage() {
       const payload = await response.json();
       if (!response.ok || payload.success === false) {
         setCaptureError(payload.message || 'Unable to start registration session.');
+        await showError('Session Start Failed', payload.message || 'Unable to start registration session.');
         return;
       }
       setInfo((prev) => ({ ...prev, ...payload }));
-    } catch {
-      setCaptureError('Unable to start registration session.');
+      await showSuccess('Session Started', payload.message || 'Registration session started successfully.');
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to start registration session.');
+      setCaptureError(message);
+      await showError('Session Start Failed', message);
     } finally {
       setSessionAction('');
     }
@@ -486,12 +500,15 @@ export default function RegisterPage() {
       const payload = await response.json();
       if (!response.ok || payload.success === false) {
         setCaptureError(payload.message || 'Unable to cancel registration session.');
+        await showError('Cancel Failed', payload.message || 'Unable to cancel registration session.');
         return;
       }
-      setResetArmed(false);
       setInfo((prev) => ({ ...prev, ...payload }));
-    } catch {
-      setCaptureError('Unable to cancel registration session.');
+      await showSuccess('Session Canceled', payload.message || 'Registration session canceled successfully.');
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to cancel registration session.');
+      setCaptureError(message);
+      await showError('Cancel Failed', message);
     } finally {
       setSessionAction('');
     }
@@ -530,9 +547,7 @@ export default function RegisterPage() {
       : currentPose
       ? `The camera capture flow is still collecting samples. Current pose: ${currentPose}. Captured ${currentPoseCaptured} of ${currentPoseRequired} required samples for this pose.`
       : 'No active registration session yet. Start a session below, then keep the student in the camera window flow until required samples are collected.';
-  const resetHelperText = resetArmed
-    ? 'Click "Confirm Reset" to permanently clear the current captured samples for this student.'
-    : 'Use reset only when the wrong student was captured or the sample set is incomplete.';
+  const resetHelperText = 'Use reset only when the wrong student was captured or the sample set is incomplete.';
   const cameraState = (info.camera_stream?.state || 'unknown').toLowerCase();
   const cameraMessage = info.camera_stream?.message || '';
   const frameAgeSeconds = typeof info.camera_stream?.last_frame_age_seconds === 'number'
@@ -973,25 +988,14 @@ export default function RegisterPage() {
                           </button>
 
                           <button
-                            className={`btn ${resetArmed ? 'btn-outline-danger' : 'btn-outline-secondary'}`}
+                            className="btn btn-outline-secondary"
                             type="button"
                             onClick={handleReset}
                             disabled={submitting || sessionControlBusy}
                           >
-                            <i className={`bi ${resetArmed ? 'bi bi-exclamation-triangle me-2' : 'bi bi-arrow-counterclockwise me-2'}`}></i>
-                            {resetArmed ? 'Confirm Reset' : 'Reset Samples'}
+                            <i className="bi bi-arrow-counterclockwise me-2"></i>
+                            Reset Samples
                           </button>
-
-                          {resetArmed ? (
-                            <button
-                              className="btn btn-link text-decoration-none px-1"
-                              type="button"
-                              onClick={() => setResetArmed(false)}
-                              disabled={submitting || sessionControlBusy}
-                            >
-                              Cancel
-                            </button>
-                          ) : null}
 
                           <a
                             className="btn btn-outline-danger ms-lg-auto"
@@ -1001,7 +1005,7 @@ export default function RegisterPage() {
                             View Profiles
                           </a>
                         </div>
-                        <div className={`small mt-2 ${resetArmed ? 'text-danger' : 'text-muted'}`}>
+                        <div className="small mt-2 text-muted">
                           {resetHelperText}
                         </div>
                       </div>

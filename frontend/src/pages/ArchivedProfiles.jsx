@@ -1,5 +1,6 @@
 import React from 'react';
 import { fetchJson } from '../api.js';
+import { confirmAction, getErrorMessage, showError, showSuccess } from '../alerts.js';
 
 export default function ArchivedProfilesPage() {
   const [rows, setRows] = React.useState([]);
@@ -76,29 +77,51 @@ export default function ArchivedProfilesPage() {
     });
   }
 
-  function restoreSelected() {
+  async function restoreSelected() {
     const ids = Object.keys(selected).filter((id) => selected[id]);
     if (!ids.length) return;
-    fetchJson('/api/archived-profiles/restore', {
-      method: 'POST',
-      body: JSON.stringify({ user_ids: ids })
-    })
-      .then(() => {
-        setSelected({});
-        setSelectMode(false);
-        loadRows();
-      })
-      .catch(() => undefined);
+    const confirmed = await confirmAction({
+      title: 'Restore Selected Profiles?',
+      text: `This will restore ${ids.length} selected profile${ids.length === 1 ? '' : 's'}.`,
+      confirmButtonText: 'Restore',
+      confirmButtonColor: '#198754'
+    });
+    if (!confirmed) return;
+
+    try {
+      await fetchJson('/api/archived-profiles/restore', {
+        method: 'POST',
+        body: JSON.stringify({ user_ids: ids })
+      });
+      setSelected({});
+      setSelectMode(false);
+      loadRows();
+      await showSuccess('Profiles Restored', `Restored ${ids.length} profile${ids.length === 1 ? '' : 's'} successfully.`);
+    } catch (error) {
+      await showError('Restore Failed', getErrorMessage(error));
+    }
   }
 
-  function restoreSingle(userId) {
+  async function restoreSingle(userId) {
     if (!userId) return;
-    fetchJson('/api/archived-profiles/restore', {
-      method: 'POST',
-      body: JSON.stringify({ user_ids: [userId] })
-    })
-      .then(loadRows)
-      .catch(() => undefined);
+    const confirmed = await confirmAction({
+      title: 'Restore Profile?',
+      text: 'This profile will be returned to the active profile list.',
+      confirmButtonText: 'Restore',
+      confirmButtonColor: '#198754'
+    });
+    if (!confirmed) return;
+
+    try {
+      await fetchJson('/api/archived-profiles/restore', {
+        method: 'POST',
+        body: JSON.stringify({ user_ids: [userId] })
+      });
+      loadRows();
+      await showSuccess('Profile Restored', 'The profile was restored successfully.');
+    } catch (error) {
+      await showError('Restore Failed', getErrorMessage(error));
+    }
   }
 
   if (loading) {
