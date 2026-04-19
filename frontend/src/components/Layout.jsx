@@ -4,9 +4,22 @@ import Header from './Header.jsx';
 import Sidebar from './Sidebar.jsx';
 
 export default function Layout() {
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+
+  React.useEffect(() => {
+    document.body.classList.toggle('toggle-sidebar', sidebarCollapsed);
+    return () => {
+      document.body.classList.remove('toggle-sidebar');
+    };
+  }, [sidebarCollapsed]);
+
+  function handleToggleSidebar() {
+    setSidebarCollapsed((current) => !current);
+  }
+
   return (
     <div>
-      <Header />
+      <Header onToggleSidebar={handleToggleSidebar} />
       <Sidebar />
       <main id="main" className="main">
         <Outlet />

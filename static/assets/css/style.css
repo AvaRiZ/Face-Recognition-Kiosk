@@ -926,6 +926,17 @@ body.dark .back-to-top:hover {
     padding-left: 8px;
     cursor: pointer;
     color: #ffffff;
+    outline: none;
+    box-shadow: none;
+    background: transparent;
+    border: 0;
+}
+
+.header .toggle-sidebar-btn:focus,
+.header .toggle-sidebar-btn:active,
+.header .toggle-sidebar-btn:focus-visible {
+    outline: none;
+    box-shadow: none;
 }
 
 .header .search-bar {

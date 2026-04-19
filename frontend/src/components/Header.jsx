@@ -9,7 +9,7 @@ function getInitials(name) {
   return (first + second).toLowerCase();
 }
 
-export default function Header() {
+export default function Header({ onToggleSidebar }) {
   const { session, refresh } = useSession();
   const displayName = session?.full_name || session?.username || 'Admin';
   const initials = getInitials(displayName);
@@ -28,7 +28,14 @@ export default function Header() {
         <a href="/dashboard" className="logo d-flex align-items-center">
           <span className="d-none d-lg-block">Library Management</span>
         </a>
-        <i className="bi bi-list toggle-sidebar-btn"></i>
+        <button
+          type="button"
+          className="btn btn-link p-0 border-0 text-decoration-none toggle-sidebar-btn"
+          onClick={onToggleSidebar}
+          aria-label="Toggle sidebar"
+        >
+          <i className="bi bi-list"></i>
+        </button>
       </div>
 
       <nav className="header-nav ms-auto">
