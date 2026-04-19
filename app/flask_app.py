@@ -8,6 +8,7 @@ from flask import Flask, redirect, request, session, url_for
 from core.config import AppConfig
 from core.state import AppStateManager
 from database.repository import UserRepository
+from app.realtime import socketio
 from routes.auth_routes import create_auth_blueprint
 from routes.profile_routes import create_profile_blueprint
 from routes.routes import create_routes_blueprint
@@ -54,6 +55,7 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
     app.register_blueprint(create_routes_blueprint(deps))
     app.register_blueprint(create_auth_blueprint())
     app.register_blueprint(create_profile_blueprint(save_profile_image))
+    socketio.init_app(app)
 
     @app.before_request
     def sync_detection_with_page():

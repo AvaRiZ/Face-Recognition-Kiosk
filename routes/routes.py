@@ -25,6 +25,7 @@ from auth import (
 from core.models import RegistrationSample, User
 from db import connect as db_connect
 from routes.ml_analytics import run_ml_analytics
+from app.realtime import emit_analytics_update
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
 from utils.image_utils import crop_face_region
 
@@ -1686,6 +1687,7 @@ def create_routes_blueprint(deps):
         conn.close()
 
         log_action("IMPORT_LOGS", target=f"{inserted} rows, batch={batch_id}")
+        emit_analytics_update("import_logs", {"batch_id": batch_id, "inserted": inserted})
 
         return jsonify(
             {
@@ -1747,7 +1749,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/import-logs/delete/<batch_id>", methods=["POST"], endpoint="api_import_logs_delete")
     @login_required
-    @role_required("super_admin")
+    @role_required("super_admin", "library_admin")
     def api_import_logs_delete(batch_id):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -1756,7 +1758,11 @@ def create_routes_blueprint(deps):
         conn.commit()
         conn.close()
 
+        if deleted <= 0:
+            return jsonify({"success": False, "message": "Import batch not found or already deleted."}), 404
+
         log_action("DELETE_IMPORT_BATCH", target=batch_id)
+        emit_analytics_update("delete_import_batch", {"batch_id": batch_id, "deleted": deleted})
         return jsonify({"success": True, "deleted": deleted})
 
     @bp.route("/api/analytics-reports", methods=["GET"], endpoint="api_analytics_reports")
@@ -1766,7 +1772,7 @@ def create_routes_blueprint(deps):
     def api_analytics_reports():
         try:
             result = run_ml_analytics(deps["db_path"])
-            status = 400 if result.get("error") else 200
+            status = 200
             return jsonify(result), status
         except Exception as e:
             return jsonify({

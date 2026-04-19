@@ -5,6 +5,7 @@ from typing import Optional
 
 import numpy as np
 
+from app.realtime import emit_analytics_update
 from core.models import RecognitionResult, User
 from core.program_catalog import OTHER_COLLEGE_LABEL, iter_program_catalog
 from db import connect as db_connect
@@ -271,6 +272,7 @@ class UserRepository:
 
         conn.commit()
         conn.close()
+        emit_analytics_update("user_saved", {"user_id": int(user_id)})
         return int(user_id)
 
     def update_embeddings(self, user_id: int, new_embeddings: dict[str, list[np.ndarray]], image_path: str | None = None) -> User | None:
@@ -311,6 +313,7 @@ class UserRepository:
         )
         conn.commit()
         conn.close()
+        emit_analytics_update("user_embeddings_updated", {"user_id": int(user_id)})
 
         return User(
             id=user_id,
@@ -330,6 +333,7 @@ class UserRepository:
         c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         conn.commit()
         conn.close()
+        emit_analytics_update("user_deleted", {"user_id": int(user_id)})
 
     def reset_database(self) -> None:
         conn = db_connect(self.db_path)
@@ -338,6 +342,7 @@ class UserRepository:
         c.execute("DELETE FROM recognition_log")
         conn.commit()
         conn.close()
+        emit_analytics_update("database_reset")
 
     def log_recognition(
         self,
@@ -368,6 +373,7 @@ class UserRepository:
         )
         conn.commit()
         conn.close()
+        emit_analytics_update("recognition_logged", {"user_id": int(result.user_id)})
 
     def get_recognition_statistics(self):
         conn = db_connect(self.db_path)

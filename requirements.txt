@@ -27,3 +27,4 @@ keras-facenet
 deepface
 tf-keras
 psycopg[binary]
+Flask-SocketIO>=5.3,<6

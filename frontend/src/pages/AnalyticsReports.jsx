@@ -1,5 +1,6 @@
 import React from "react";
 import { fetchJson } from "../api.js";
+import { socket } from "../socket.js";
 
 // ── Helpers ───────────────────────────────────────────────────
 function fmt(n) {
@@ -87,10 +88,27 @@ function ImportModal({ onImportSuccess }) {
   }
   async function deleteBatch(id) {
     if (!confirm("Delete this batch?")) return;
-    await fetch(`/api/import-logs/delete/${id}`, { method: "POST" });
-    const s = await fetchJson("/api/import-logs/summary");
-    setSummary(s);
-    if (onImportSuccess) onImportSuccess();
+    setResult(null);
+    try {
+      const response = await fetchJson(`/api/import-logs/delete/${id}`, {
+        method: "POST",
+      });
+      const s = await fetchJson("/api/import-logs/summary");
+      setSummary(s);
+      setResult({
+        success: true,
+        message: `Deleted import batch successfully.`,
+        deleted: response?.deleted ?? 0,
+      });
+      if (onImportSuccess) onImportSuccess();
+    } catch (error) {
+      const status = error?.status;
+      const message =
+        status === 403
+          ? "You are not allowed to delete imported data."
+          : error?.data?.message || error?.message || "Delete failed.";
+      setResult({ success: false, message });
+    }
   }
   const live = summary?.live_logs || 0,
     imported = summary?.total_imported || 0;
@@ -315,8 +333,9 @@ function ImportModal({ onImportSuccess }) {
                   </div>
                   {result.success && (
                     <div style={{ color: "#555", marginTop: 2 }}>
-                      {result.inserted} imported
-                      {result.skipped > 0 ? ` · ${result.skipped} skipped` : ""}
+                      {typeof result.deleted === "number"
+                        ? `${result.deleted} deleted`
+                        : `${result.inserted} imported${result.skipped > 0 ? ` · ${result.skipped} skipped` : ""}`}
                     </div>
                   )}
                 </div>
@@ -2896,40 +2915,52 @@ function AnomalySection({ anomalies, mean, stdDev }) {
 // ── Main Page ─────────────────────────────────────────────────
 export default function AnalyticsReports() {
   const [data, setData] = React.useState(null);
-  const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState(false);
-  const [hasRun, setHasRun] = React.useState(false);
-  const [activeStep, setActive] = React.useState(1);
   const headerRef = React.useRef(null);
+  const refreshInFlightRef = React.useRef(false);
+  const hasLoadedDataRef = React.useRef(false);
 
   React.useEffect(() => {
-    if (!loading) return undefined;
-    setActive(1);
-    let step = 1;
-    const timer = window.setInterval(() => {
-      step = step >= 6 ? 6 : step + 1;
-      setActive(step);
-      if (step >= 6) window.clearInterval(timer);
-    }, 550);
-    return () => window.clearInterval(timer);
-  }, [loading]);
+    hasLoadedDataRef.current = Boolean(data);
+  }, [data]);
 
-  async function runAnalyticsPipeline() {
-    setLoading(true);
+  async function runAnalyticsPipeline({ silent = false } = {}) {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+
     setError(false);
-    setActive(1);
+
     try {
       const d = await fetchJson("/api/analytics-reports");
       setData(d);
-      setActive(6);
-      setHasRun(true);
+      setError(false);
     } catch {
-      setError(true);
-      setActive(1);
+      if (!hasLoadedDataRef.current) {
+        setError(true);
+      }
     } finally {
-      setLoading(false);
+      refreshInFlightRef.current = false;
     }
   }
+
+  React.useEffect(() => {
+    runAnalyticsPipeline();
+
+    const timer = window.setInterval(() => {
+      runAnalyticsPipeline({ silent: true });
+    }, 60000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  React.useEffect(() => {
+    function handleAnalyticsUpdated() {
+      runAnalyticsPipeline({ silent: true });
+    }
+
+    socket.on("analytics_updated", handleAnalyticsUpdated);
+    return () => socket.off("analytics_updated", handleAnalyticsUpdated);
+  }, []);
 
   React.useEffect(() => {
     const el = headerRef.current;
@@ -2951,6 +2982,7 @@ export default function AnalyticsReports() {
   const chiSquare = data?.chi_square ?? {};
   const correlation = data?.correlation ?? {};
   const anova = data?.anova ?? {};
+  const noAnalyticsData = Boolean(data?.error);
 
   return (
     <section className="section">
@@ -3004,33 +3036,19 @@ export default function AnalyticsReports() {
             <div className="d-flex align-items-center gap-2 flex-wrap">
               <button
                 className="btn btn-sm btn-primary d-flex align-items-center gap-1 px-2 py-1"
-                onClick={runAnalyticsPipeline}
-                disabled={loading}
+                onClick={() => runAnalyticsPipeline()}
               >
-                {loading ? (
-                  <>
-                    <span
-                      className="spinner-border spinner-border-sm"
-                      role="status"
-                      aria-hidden="true"
-                    ></span>
-                    Running...
-                  </>
-                ) : (
-                  <>
-                    <i className="bi bi-play-circle"></i>
-                    {hasRun ? "Run Again" : "Run Pipeline"}
-                  </>
-                )}
+                <i className="bi bi-arrow-clockwise"></i>
+                Refresh Report
               </button>
               <ImportModal
                 onImportSuccess={() => {
-                  if (hasRun) runAnalyticsPipeline();
+                  runAnalyticsPipeline();
                 }}
               />
             </div>
           </div>
-          <PipelineStepper activeStep={activeStep} isLoading={loading} />
+          <PipelineStepper activeStep={6} isLoading={false} />
         </div>
       </div>
 
@@ -3041,65 +3059,14 @@ export default function AnalyticsReports() {
         </div>
       )}
 
-      {!hasRun && !loading && !error && (
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: 12,
-            border: "1px solid #e9ecef",
-            padding: "32px 24px",
-            textAlign: "center",
-            boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
-            marginBottom: 16,
-          }}
-        >
-          <div
-            style={{
-              width: 56,
-              height: 56,
-              borderRadius: 16,
-              background: "rgba(13,110,253,0.08)",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#0d6efd",
-              fontSize: 24,
-              marginBottom: 12,
-            }}
-          >
-            <i className="bi bi-cpu"></i>
-          </div>
-          <h5 style={{ color: "#1a1a2e", marginBottom: 8 }}>
-            Analytics pipeline is ready
-          </h5>
-          <p style={{ color: "#6c757d", marginBottom: 16 }}>
-            Run the pipeline when you want to generate the latest analytics and
-            report sections.
-          </p>
-          <button className="btn btn-primary" onClick={runAnalyticsPipeline}>
-            <i className="bi bi-play-circle me-1"></i>Run Analytics Pipeline
-          </button>
+      {noAnalyticsData && (
+        <div className="alert alert-info">
+          <i className="bi bi-info-circle me-2"></i>
+          {data?.error} Import historical logs or collect live recognition logs to generate analytics.
         </div>
       )}
 
-      {loading && !hasRun && (
-        <div
-          className="d-flex justify-content-center align-items-center"
-          style={{ minHeight: "30vh", marginBottom: 16 }}
-        >
-          <div style={{ textAlign: "center" }}>
-            <div
-              className="spinner-border text-primary mb-3"
-              role="status"
-            ></div>
-            <div style={{ fontSize: 13, color: "#aaa" }}>
-              Running analytics pipeline...
-            </div>
-          </div>
-        </div>
-      )}
-
-      {data && (
+      {data && !noAnalyticsData && (
         <>
           {/* Stage 1 */}
           <Section

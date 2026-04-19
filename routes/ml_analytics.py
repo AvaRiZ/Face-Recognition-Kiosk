@@ -1,11 +1,22 @@
 
 import math
+import threading
+import time
 import warnings
 import struct
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from db import connect as db_connect
 from routes.forecasting import run_all_forecasts
+
+
+_FORECAST_CACHE_TTL_SECONDS = 60
+_forecast_cache_lock = threading.Lock()
+_forecast_cache = {
+    "signature": None,
+    "computed_at": 0.0,
+    "result": None,
+}
 
 def _coerce_confidence(value):
     """Mirror of the one in routes.py — needed here for standalone use."""
@@ -46,6 +57,55 @@ def _to_builtin(value):
             pass
 
     return value
+
+
+def _build_forecast_signature(daily_df):
+    if daily_df.empty:
+        return ()
+    return tuple(
+        (row.date.strftime("%Y-%m-%d"), int(row.count))
+        for row in daily_df.itertuples(index=False)
+    )
+
+
+def _get_cached_forecast(daily_df, today):
+    signature = _build_forecast_signature(daily_df)
+    now = time.time()
+
+    with _forecast_cache_lock:
+        cache_hit = (
+            _forecast_cache["result"] is not None
+            and _forecast_cache["signature"] == signature
+            and (now - float(_forecast_cache["computed_at"])) < _FORECAST_CACHE_TTL_SECONDS
+        )
+        if cache_hit:
+            return _forecast_cache["result"], {
+                "status": "hit",
+                "ttl_seconds": _FORECAST_CACHE_TTL_SECONDS,
+                "age_seconds": round(now - float(_forecast_cache["computed_at"]), 1),
+                "computed_at": datetime.fromtimestamp(
+                    float(_forecast_cache["computed_at"]),
+                    ZoneInfo("Asia/Manila"),
+                ).isoformat(),
+            }
+
+    forecast_result = run_all_forecasts(daily_df, today)
+    computed_at = time.time()
+
+    with _forecast_cache_lock:
+        _forecast_cache["signature"] = signature
+        _forecast_cache["computed_at"] = computed_at
+        _forecast_cache["result"] = forecast_result
+
+    return forecast_result, {
+        "status": "miss",
+        "ttl_seconds": _FORECAST_CACHE_TTL_SECONDS,
+        "age_seconds": 0,
+        "computed_at": datetime.fromtimestamp(
+            computed_at,
+            ZoneInfo("Asia/Manila"),
+        ).isoformat(),
+    }
 
 
 def run_ml_analytics(db_path):
@@ -271,8 +331,14 @@ def run_ml_analytics(db_path):
     # ARIMA · SARIMA · Prophet · Holt-Winters
     # ══════════════════════════════════════════════════════
     forecast_result = {}
+    forecast_cache = {
+        "status": "disabled",
+        "ttl_seconds": _FORECAST_CACHE_TTL_SECONDS,
+        "age_seconds": 0,
+        "computed_at": None,
+    }
     try:
-        forecast_result = run_all_forecasts(daily_df, today)
+        forecast_result, forecast_cache = _get_cached_forecast(daily_df, today)
     except Exception as e:
         # Full fallback to weighted moving average so the UI still has 7 days to render.
         last_28 = [
@@ -313,6 +379,12 @@ def run_ml_analytics(db_path):
             "best_model":    "Moving Average",
             "errors":        {"all": str(e)},
             "comparison_interpretation": "Models could not be evaluated.",
+        }
+        forecast_cache = {
+            "status": "fallback",
+            "ttl_seconds": _FORECAST_CACHE_TTL_SECONDS,
+            "age_seconds": 0,
+            "computed_at": datetime.now(ZoneInfo("Asia/Manila")).isoformat(),
         }
 
     # ══════════════════════════════════════════════════════════
@@ -617,6 +689,7 @@ def run_ml_analytics(db_path):
         "forecast_warnings":     forecast_result.get("warnings", {}),
         "forecast_successful_models": forecast_result.get("successful_models", 0),
         "forecast_attempted_models":  forecast_result.get("attempted_models", 0),
+        "forecast_cache":        forecast_cache,
         "forecast_comparison_interpretation": forecast_result.get("comparison_interpretation", ""),
         "regression":           regression,
         "regression_interpretation": regression_interpretation,

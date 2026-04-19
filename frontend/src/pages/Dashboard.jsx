@@ -1,5 +1,6 @@
 import React from "react";
 import { fetchJson } from "../api.js";
+import { socket } from "../socket.js";
 
 // ── Stat Card ────────────────────────────────────────────────
 function StatCard({ title, value, subtext, iconClass, cardClass }) {
@@ -523,12 +524,54 @@ export default function Dashboard() {
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
+  const refreshInFlightRef = React.useRef(false);
+  const hasLoadedDataRef = React.useRef(false);
 
   React.useEffect(() => {
-    fetchJson("/api/dashboard")
-      .then((resp) => setData(resp))
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
+    hasLoadedDataRef.current = Boolean(data);
+  }, [data]);
+
+  async function loadDashboardData({ silent = false } = {}) {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+
+    if (!silent) {
+      setLoading(true);
+    }
+
+    try {
+      const resp = await fetchJson("/api/dashboard");
+      setData(resp);
+      setError(false);
+    } catch {
+      if (!hasLoadedDataRef.current) {
+        setError(true);
+      }
+    } finally {
+      if (!silent) {
+        setLoading(false);
+      }
+      refreshInFlightRef.current = false;
+    }
+  }
+
+  React.useEffect(() => {
+    loadDashboardData();
+
+    const timer = window.setInterval(() => {
+      loadDashboardData({ silent: true });
+    }, 30000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  React.useEffect(() => {
+    function handleAnalyticsUpdated() {
+      loadDashboardData({ silent: true });
+    }
+
+    socket.on("analytics_updated", handleAnalyticsUpdated);
+    return () => socket.off("analytics_updated", handleAnalyticsUpdated);
   }, []);
 
   if (loading) {
