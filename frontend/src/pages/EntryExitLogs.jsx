@@ -22,7 +22,7 @@ export default function EntryExitLogsPage() {
   const [activeTab, setActiveTab] = React.useState('all');
 
   React.useEffect(() => {
-    fetchJson('/api/entry-exit-logs')
+    fetchJson('/api/entry-logs')
       .then((resp) => setRows(resp.rows || []))
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
@@ -62,7 +62,7 @@ export default function EntryExitLogsPage() {
 
   const pageLimit = parseInt(pageSize, 10) || 10;
   const pageRows = filtered.slice(0, pageLimit);
-  const exportHref = dateFilter ? `/entry-exit-logs/export?date=${dateFilter}` : '/entry-exit-logs/export';
+  const exportHref = dateFilter ? `/entry-logs/export?date=${dateFilter}` : '/entry-logs/export';
 
   function handleTab(tab) {
     setActiveTab(tab);
@@ -84,13 +84,13 @@ export default function EntryExitLogsPage() {
   return (
     <section className="section">
       <div className="pagetitle">
-        <h1>Entry / Exit Logs</h1>
+        <h1>Entry Logs</h1>
         <nav>
           <ol className="breadcrumb mb-0">
             <li className="breadcrumb-item">
               <a href="/dashboard">Home</a>
             </li>
-            <li className="breadcrumb-item active">Entry / Exit Logs</li>
+            <li className="breadcrumb-item active">Entry Logs</li>
           </ol>
         </nav>
       </div>

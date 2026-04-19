@@ -72,7 +72,7 @@ export default function Sidebar() {
             <li className="nav-heading">Library System</li>
             <NavItem to="/dashboard" icon="bi bi-house-door" label="Dashboard" />
             {isAdmin ? <NavItem to="/registered-profiles" icon="bi bi-people" label="Registered Profiles" /> : null}
-            {isStaff ? <NavItem to="/entry-exit-logs" icon="bi bi-clipboard-check" label="Entry / Exit Logs" /> : null}
+            {isStaff ? <NavItem to="/entry-logs" icon="bi bi-clipboard-check" label="Entry Logs" /> : null}
             {role ? <NavItem to="/program-monthly-visits" icon="bi bi-bar-chart" label="Program Monthly Visits" /> : null}
 
             {canSeeManagement ? <li className="nav-heading">Management</li> : null}

@@ -182,7 +182,7 @@ export default function App() {
             <Route path="registered-profiles" element={<RegisteredProfilesPage />} />
             <Route path="archive-profiles" element={<ArchiveProfilesPage />} />
             <Route path="archived-profiles" element={<ArchivedProfilesPage />} />
-            <Route path="entry-exit-logs" element={<EntryExitLogsPage />} />
+            <Route path="entry-logs" element={<EntryExitLogsPage />} />
             <Route path="program-monthly-visits" element={<ProgramMonthlyVisitsPage />} />
             <Route path="analytics-reports" element={<AnalyticsReportsPage />} />
             <Route path="routes" element={<RouteListPage />} />

@@ -1225,10 +1225,11 @@ def create_routes_blueprint(deps):
  
         return redirect(url_for("routes.registered_profiles"))
  
+    @bp.route("/entry-logs", endpoint="entry_logs")
     @bp.route("/entry-exit-logs", endpoint="entry_exit_logs")
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
-    def entry_exit_logs():
+    def entry_logs():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
  
@@ -1249,6 +1250,7 @@ def create_routes_blueprint(deps):
 
         return _spa_index()
  
+    @bp.route("/entry-logs/export", endpoint="export_entry_logs")
     @bp.route("/entry-exit-logs/export", endpoint="export_logs")
     @login_required
     @role_required("super_admin", "library_admin")
@@ -1293,7 +1295,7 @@ def create_routes_blueprint(deps):
             writer.writerow([name, sr_code, program, conf_value, timestamp])
  
         response = make_response(output.getvalue())
-        filename = f"library_logs_{date_for_name.strftime('%m-%d-%Y')}.csv"
+        filename = f"library_entry_logs_{date_for_name.strftime('%m-%d-%Y')}.csv"
         response.headers['Content-Disposition'] = f'attachment; filename={filename}'
         response.headers['Content-Disposition'] = f'attachment; filename={filename}'
         response.headers['Content-type'] = 'text/csv'
@@ -1741,10 +1743,11 @@ def create_routes_blueprint(deps):
                 "details": str(e),
             }), 500
 
+    @bp.route("/api/entry-logs", methods=["GET"], endpoint="api_entry_logs")
     @bp.route("/api/entry-exit-logs", methods=["GET"], endpoint="api_entry_exit_logs")
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
-    def api_entry_exit_logs():
+    def api_entry_logs():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(

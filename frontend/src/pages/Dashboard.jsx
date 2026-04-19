@@ -808,8 +808,8 @@ export default function Dashboard() {
         <i className="bi bi-info-circle-fill"></i>
         <span className="small">
           <strong>Note:</strong> This system currently records{" "}
-          <strong>entry logs only</strong>. Occupancy and average stay duration
-          require exit tracking to be enabled.
+          <strong>entry logs only</strong>. Exit tracking is not used in the
+          current setup.
         </span>
       </div>
     </section>
