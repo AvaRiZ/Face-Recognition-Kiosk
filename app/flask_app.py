@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from flask import Flask, redirect, request, session, url_for
+from flask import Flask, redirect, session, url_for
 
 from core.config import AppConfig
 from core.state import AppStateManager
@@ -38,8 +38,11 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
         "get_current_registration_pose": state.get_current_registration_pose,
         "get_registration_progress": state.get_registration_progress,
         "is_registration_ready": state.is_registration_ready,
+        "expire_registration_session_if_needed": state.expire_registration_session_if_needed,
         "reset_database_state": state.reset_database_state,
         "reset_registration_state": state.reset_registration_state,
+        "start_web_registration_session": state.start_web_registration_session,
+        "cancel_web_registration_session": state.cancel_web_registration_session,
         "complete_registration": state.complete_registration,
         "remove_user_embedding": state.remove_user,
         "replace_user": state.replace_user,
@@ -49,22 +52,14 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
         "pause_detection": cli.pause_detection if cli else (lambda: None),
         "resume_detection": cli.resume_detection if cli else (lambda: None),
         "detection_paused": cli.detection_paused if cli else (lambda: False),
+        "stream_status": cli.get_stream_status
+        if cli
+        else (lambda: {"state": "unknown", "message": "Camera status unavailable."}),
     }
 
     app.register_blueprint(create_routes_blueprint(deps))
     app.register_blueprint(create_auth_blueprint())
     app.register_blueprint(create_profile_blueprint(save_profile_image))
-
-    @app.before_request
-    def sync_detection_with_page():
-        if cli is None:
-            return None
-        if request.method != "GET":
-            return None
-        if request.path.startswith("/static") or request.path.startswith("/api/detection/"):
-            return None
-        cli.resume_detection()
-        return None
 
     @app.route("/")
     def index():

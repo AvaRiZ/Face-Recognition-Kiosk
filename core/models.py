@@ -59,9 +59,14 @@ class RegistrationState:
     samples_per_pose_target: int = 10
     retained_samples_per_pose: int = 5
     max_captures: int = 30
-    manual_requested: bool = False
-    manual_active: bool = False
-    manual_track_id: Optional[int] = None
+    capture_requested: bool = False
+    capture_active: bool = False
+    capture_track_id: Optional[int] = None
+    selected_track_id: Optional[int] = None
+    session_active: bool = False
+    session_expired: bool = False
+    session_started_at: Optional[float] = None
+    last_activity_at: Optional[float] = None
 
     @property
     def capture_count(self) -> int:
@@ -85,6 +90,39 @@ class RegistrationState:
     def total_retained_samples(self) -> int:
         return len(self.required_poses) * int(self.retained_samples_per_pose)
 
+    # Backward-compatible aliases used by existing route/frontend payloads.
+    @property
+    def manual_requested(self) -> bool:
+        return bool(self.capture_requested)
+
+    @manual_requested.setter
+    def manual_requested(self, value: bool) -> None:
+        self.capture_requested = bool(value)
+
+    @property
+    def manual_active(self) -> bool:
+        return bool(self.capture_active)
+
+    @manual_active.setter
+    def manual_active(self, value: bool) -> None:
+        self.capture_active = bool(value)
+
+    @property
+    def manual_track_id(self) -> Optional[int]:
+        return self.capture_track_id
+
+    @manual_track_id.setter
+    def manual_track_id(self, value: Optional[int]) -> None:
+        self.capture_track_id = value
+
+    @property
+    def web_session_active(self) -> bool:
+        return bool(self.session_active)
+
+    @web_session_active.setter
+    def web_session_active(self, value: bool) -> None:
+        self.session_active = bool(value)
+
 
 @dataclass
 class FaceStabilityState:
@@ -100,6 +138,21 @@ class TrackingState:
     last_seen: float = 0.0
     last_recognition_time: float = 0.0
     last_bbox: Optional[tuple[int, int, int, int]] = None
+    last_detection_confidence: Optional[float] = None
+    last_quality_score: float = 0.0
+    last_quality_status: str = "Poor"
+    last_quality_debug: dict = field(default_factory=dict)
+    last_landmarks: Optional[dict] = None
+    last_pose: Optional[str] = None
+    last_stable: bool = False
+    last_area: int = 0
+    last_analysis_frame_index: int = -1
+    last_label: str = "Tracking"
+    last_label_color: tuple[int, int, int] = (180, 180, 180)
+    last_recognition_confidence: Optional[float] = None
+    last_recognition_threshold: Optional[float] = None
+    failed_good_quality_attempts: int = 0
+    selected_for_registration: bool = False
 
 
 def recognized_user_payload(result: RecognitionResult) -> dict[str, str]:
@@ -109,5 +162,7 @@ def recognized_user_payload(result: RecognitionResult) -> dict[str, str]:
         "gender": result.user.gender,
         "program": result.user.program,
         "confidence": f"{result.confidence:.2%}",
+        "confidence_value": f"{result.confidence:.4f}",
+        "threshold_value": f"{result.threshold:.4f}",
         "distance": f"{result.distance:.4f}",
     }

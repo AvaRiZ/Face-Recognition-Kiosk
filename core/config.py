@@ -78,7 +78,7 @@ class AppConfig:
     #   reason a face was marked poor.
     # - Enable `quality_debug_show_all_scores` while tuning thresholds so you
     #   can inspect every component score and raw metric value.
-    quality_debug_enabled: bool = True
+    quality_debug_enabled: bool = False
     quality_debug_show_primary_issue: bool = True
     quality_debug_show_all_scores: bool = True
 
@@ -95,25 +95,31 @@ class AppConfig:
     #   images per pose are kept for final enrollment.
     registration_samples_per_pose_target: int = 5
     registration_retained_samples_per_pose: int = 5
+    registration_session_timeout_seconds: int = 180
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 2
     recognition_cooldown_seconds: int = 1
+    recognition_confidence_threshold: float = 0.72
+    unknown_person_attempt_threshold: int = 3
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
+    
+    # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
+    cli_top_bar_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Quality scoring: face size
     # ------------------------------------------------------------------
     # Area is measured in pixels (`width * height` of the face crop).
     # Example:
-    # - `50 * 50` means crops smaller than roughly 50px by 50px fail size.
-    # - `130 * 130` means crops around that size get full size credit.
+    # - `260 * 260` means crops smaller than roughly 260px by 260px fail size.
+    # - `280 * 280` means crops around that size get full size credit.
     # Tuning:
     # - Raise `quality_face_area_min` to reject small, low-detail faces.
     # - Lower it if your camera is farther away and valid faces look smaller.
-    quality_face_area_min: int = 50 * 50
-    quality_face_area_good: int = 130 * 130
+    quality_face_area_min: int = 260 * 260
+    quality_face_area_good: int = 280 * 280
 
     # ------------------------------------------------------------------
     # Quality scoring: detector confidence
@@ -131,7 +137,7 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_sharpness_min` to be stricter against blur.
     # - Lower it if motion blur is common but recognition still works.
-    quality_sharpness_min: float = 60.0
+    quality_sharpness_min: float = 10.0
     quality_sharpness_good: float = 128.0
 
     # ------------------------------------------------------------------
@@ -189,7 +195,7 @@ class AppConfig:
     # Registration distance gate (face-size proxy).
     # The closest detected face is selected for registration; this threshold
     # ensures that selected face is close enough to camera before capture.
-    registration_min_face_area: int = 120 * 120
+    registration_min_face_area: int = 260 * 260
 
     # ------------------------------------------------------------------
     # Device configuration

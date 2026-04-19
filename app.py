@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass
 
 from ultralytics import YOLO
@@ -62,6 +63,12 @@ def build_runtime() -> AppRuntime:
     log_step(f"YOLOv8 model loaded on {yolo_device}")
 
     embedding_service = EmbeddingService(config)
+    log_step("Warming up embedding models...")
+    warmup_started = time.perf_counter()
+    embedding_service.warm_up_models(logger=log_step)
+    warmup_elapsed = time.perf_counter() - warmup_started
+    log_step(f"Embedding warm-up finished in {warmup_elapsed:.2f}s")
+
     quality_service = FaceQualityService(config)
     tracking_service = TrackingService(config, state)
     recognition_service = FaceRecognitionService(
@@ -115,7 +122,7 @@ def main() -> None:
     log_step(f"Base threshold: {runtime.state.base_threshold}")
     log_step(f"Users in database: {runtime.state.user_count}")
     log_step(f"The website is running at the same time with detection and recognition.")
-    log_step(f"The register is only on the website, there should be no options on the terminal.")
+    log_step("Registration workflow is managed from the website while capture runs in the CCTV window.")
     log_step(f"Starting web server at http://{host}:{port}")
     log_step(f"Starting detection and recognition using stream source: {stream_url}")
 
