@@ -19,7 +19,7 @@ export default function Layout() {
 
   return (
     <div>
-      <Header onToggleSidebar={handleToggleSidebar} />
+      <Header onToggleSidebar={handleToggleSidebar} sidebarCollapsed={sidebarCollapsed} />
       <Sidebar />
       <main id="main" className="main">
         <Outlet />

@@ -9,7 +9,7 @@ function getInitials(name) {
   return (first + second).toLowerCase();
 }
 
-export default function Header({ onToggleSidebar }) {
+export default function Header({ onToggleSidebar, sidebarCollapsed = false }) {
   const { session, refresh } = useSession();
   const displayName = session?.full_name || session?.username || 'Admin';
   const initials = getInitials(displayName);
@@ -24,18 +24,36 @@ export default function Header({ onToggleSidebar }) {
 
   return (
     <header id="header" className="header fixed-top d-flex align-items-center">
-      <div className="d-flex align-items-center justify-content-between">
-        <a href="/dashboard" className="logo d-flex align-items-center">
-          <span className="d-none d-lg-block">Library Management</span>
-        </a>
-        <button
-          type="button"
-          className="btn btn-link p-0 border-0 text-decoration-none toggle-sidebar-btn"
-          onClick={onToggleSidebar}
-          aria-label="Toggle sidebar"
-        >
-          <i className="bi bi-list"></i>
-        </button>
+      <div className={`header-brand d-flex align-items-center flex-nowrap${sidebarCollapsed ? ' is-collapsed' : ''}`}>
+        {sidebarCollapsed ? (
+          <>
+            <a href="/dashboard" className="logo d-flex align-items-center" aria-label="Dashboard">
+              <img src="/static/assets/img/bsu-neu-logo.png" alt="BatStateU Logo" className="header-collapsed-logo" />
+            </a>
+            <button
+              type="button"
+              className="btn btn-link p-0 border-0 text-decoration-none toggle-sidebar-btn"
+              onClick={onToggleSidebar}
+              aria-label="Toggle sidebar"
+            >
+              <i className="bi bi-list"></i>
+            </button>
+          </>
+        ) : (
+          <>
+            <a href="/dashboard" className="logo d-flex align-items-center">
+              <span className="d-none d-lg-block">Library Management</span>
+            </a>
+            <button
+              type="button"
+              className="btn btn-link p-0 border-0 text-decoration-none toggle-sidebar-btn"
+              onClick={onToggleSidebar}
+              aria-label="Toggle sidebar"
+            >
+              <i className="bi bi-list"></i>
+            </button>
+          </>
+        )}
       </div>
 
       <nav className="header-nav ms-auto">

@@ -5,7 +5,12 @@ import { useSession } from '../App.jsx';
 function NavItem({ to, icon, label }) {
   return (
     <li className="nav-item">
-      <NavLink className={({ isActive }) => `nav-link ${isActive ? '' : 'collapsed'}`} to={to}>
+      <NavLink
+        className={({ isActive }) => `nav-link ${isActive ? '' : 'collapsed'}`}
+        to={to}
+        title={label}
+        aria-label={label}
+      >
         <i className={icon}></i>
         <span>{label}</span>
       </NavLink>
