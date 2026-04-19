@@ -1157,11 +1157,7 @@ def create_routes_blueprint(deps):
 
         deps["complete_registration"]()
         total_embeddings = count_embeddings(normalize_embeddings_by_model(all_embeddings))
-        redirect_url = (
-            url_for("routes.registered_profiles")
-            if "staff_id" in session
-            else url_for("auth_routes.auth_login", next=url_for("routes.registered_profiles"))
-        )
+        redirect_url = url_for("routes.react_app", path="register")
         profile_payload = None
         if saved_user:
             profile_payload = {

@@ -119,6 +119,8 @@ const INITIAL_INFO = {
   }
 };
 
+const INITIAL_FORM = { name: '', sr_code: '', gender: '', college: '', program: '' };
+
 const ALLOWED_GENDERS = new Set(['Male', 'Female', 'Other']);
 const NAME_PATTERN = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
 const SR_CODE_PATTERN = /^\d{2}-\d{5}$/;
@@ -248,7 +250,7 @@ export default function RegisterPage() {
   const [result, setResult] = React.useState(null);
   const [programOptionsByCollege, setProgramOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
   const [collegeOptions, setCollegeOptions] = React.useState(DEFAULT_COLLEGE_OPTIONS);
-  const [form, setForm] = React.useState({ name: '', sr_code: '', gender: '', college: '', program: '' });
+  const [form, setForm] = React.useState(INITIAL_FORM);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -445,11 +447,13 @@ export default function RegisterPage() {
         ...prev,
         capture_count: 0,
         has_pending_registration: false,
-        is_in_progress: false
+        is_in_progress: false,
+        ready_to_submit: false,
+        web_session_active: false,
+        session_expired: false,
+        sample_previews: []
       }));
-      window.setTimeout(() => {
-        window.location.href = payload.redirect_url || '/registered-profiles';
-      }, 1200);
+      setForm(INITIAL_FORM);
       await showSuccess('Registration Complete', payload.message || 'Student registration saved successfully.');
     } catch (error) {
       const message = getErrorMessage(error, 'Unable to reach the server. Please try again.');
@@ -669,7 +673,7 @@ export default function RegisterPage() {
                     {result?.profile ? (
                       <StatusAlert tone="success" title={result.message}>
                         Saved as {result.profile.name} ({result.profile.sr_code}) - {result.profile.gender},{' '}
-                        {result.profile.program}. Redirecting to the profile list now.
+                        {result.profile.program}. You can start another registration when you are ready.
                       </StatusAlert>
                     ) : null}
 
@@ -997,13 +1001,6 @@ export default function RegisterPage() {
                             Reset Samples
                           </button>
 
-                          <a
-                            className="btn btn-outline-danger ms-lg-auto"
-                            href="/registered-profiles"
-                          >
-                            <i className="bi bi-people me-2"></i>
-                            View Profiles
-                          </a>
                         </div>
                         <div className="small mt-2 text-muted">
                           {resetHelperText}
