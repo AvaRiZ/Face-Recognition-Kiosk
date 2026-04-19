@@ -37,6 +37,8 @@ window.addEventListener('load', function () {
     const applyTheme = (theme) => {
         const isDark = theme === 'dark'
         document.body.classList.toggle('dark', isDark)
+        document.documentElement.setAttribute('data-bs-theme', theme)
+        document.body.setAttribute('data-bs-theme', theme)
 
         const toggleBtn = select('#profileThemeToggle')
         if (!toggleBtn) {

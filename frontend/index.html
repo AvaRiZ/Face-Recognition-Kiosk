@@ -6,8 +6,16 @@
     <title>Library Management</title>
     <link rel="icon" type="image/png" href="/static/assets/img/bsu-neu-logo.png" />
     <link rel="stylesheet" href="/static/assets/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/static/assets/css/bootstrap-overrides.css" />
     <link rel="stylesheet" href="/static/assets/css/bootstrap-icons.css" />
     <link rel="stylesheet" href="/static/assets/css/style.css" />
+    <script>
+      (() => {
+        const theme = localStorage.getItem('theme') === 'dark' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-bs-theme', theme);
+        document.body?.classList.toggle('dark', theme === 'dark');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useSession } from '../App.jsx';
+import { useSession, useTheme } from '../App.jsx';
 
 function getInitials(name) {
   if (!name) return 'a';
@@ -11,9 +11,11 @@ function getInitials(name) {
 
 export default function Header({ onToggleSidebar, sidebarCollapsed = false }) {
   const { session, refresh } = useSession();
+  const { theme, toggleTheme } = useTheme();
   const displayName = session?.full_name || session?.username || 'Admin';
   const initials = getInitials(displayName);
   const isAdmin = session?.role === 'super_admin' || session?.role === 'library_admin';
+  const isDark = theme === 'dark';
 
   async function handleLogout(ev) {
     ev.preventDefault();
@@ -77,9 +79,9 @@ export default function Header({ onToggleSidebar, sidebarCollapsed = false }) {
                 <hr className="dropdown-divider" />
               </li>
               <li>
-                <button id="profileThemeToggle" className="dropdown-item d-flex align-items-center" type="button">
-                  <i className="bi bi-moon me-2"></i>
-                  <span>Dark Mode</span>
+                <button className="dropdown-item d-flex align-items-center" type="button" onClick={toggleTheme}>
+                  <i className={`bi ${isDark ? 'bi-sun' : 'bi-moon'} me-2`}></i>
+                  <span>{isDark ? 'Light Mode' : 'Dark Mode'}</span>
                 </button>
               </li>
               <li>
