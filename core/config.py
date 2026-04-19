@@ -53,9 +53,9 @@ class AppConfig:
     # ------------------------------------------------------------------
     primary_model: str = "ArcFace"
     secondary_model: str = "Facenet"
-    primary_threshold: float = 0.7
-    secondary_threshold: float = 0.6
-    base_threshold: float = 0.5
+    primary_threshold: float = 0.82
+    secondary_threshold: float = 0.78
+    base_threshold: float = 0.70
     vector_index_top_k: int = 20
 
     # ------------------------------------------------------------------
@@ -64,12 +64,12 @@ class AppConfig:
     # `face_quality_threshold`:
     # - Raise this to make registration / recognition gatekeeping stricter.
     # - Lower this if usable real-world faces are being rejected too often.
-    face_quality_threshold: float = 0.58
+    face_quality_threshold: float = 0.80
 
     # `face_quality_good_threshold`:
     # - Raise this if you want the `Good` label to be harder to earn.
     # - Lower this if strong samples are rarely reaching `Good`.
-    face_quality_good_threshold: float = 0.75
+    face_quality_good_threshold: float = 0.90
 
     # CLI/debug output for face quality assessment.
     # - Enable `quality_debug_enabled` to include richer quality diagnostics in
@@ -78,7 +78,7 @@ class AppConfig:
     #   reason a face was marked poor.
     # - Enable `quality_debug_show_all_scores` while tuning thresholds so you
     #   can inspect every component score and raw metric value.
-    quality_debug_enabled: bool = False
+    quality_debug_enabled: bool = True
     quality_debug_show_primary_issue: bool = True
     quality_debug_show_all_scores: bool = True
 
@@ -96,8 +96,9 @@ class AppConfig:
     registration_samples_per_pose_target: int = 5
     registration_retained_samples_per_pose: int = 5
     registration_session_timeout_seconds: int = 180
+
     confidence_smoothing_window: int = 3
-    detection_every_n_frames: int = 2
+    detection_every_n_frames: int = 3
     recognition_cooldown_seconds: int = 1
     recognition_confidence_threshold: float = 0.72
     unknown_person_attempt_threshold: int = 3
@@ -131,8 +132,8 @@ class AppConfig:
     # Tuning:
     # - Raise these if false detections are slipping through.
     # - Lower these if the detector is generally conservative but still right.
-    quality_detection_confidence_min: float = 0.35
-    quality_detection_confidence_good: float = 0.80
+    quality_detection_confidence_min: float = 0.50
+    quality_detection_confidence_good: float = 0.70
 
     # ------------------------------------------------------------------
     # Quality scoring: sharpness / blur
@@ -141,8 +142,8 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_sharpness_min` to be stricter against blur.
     # - Lower it if motion blur is common but recognition still works.
-    quality_sharpness_min: float = 10.0
-    quality_sharpness_good: float = 128.0
+    quality_sharpness_min: float = 35.0
+    quality_sharpness_good: float = 100.0
 
     # ------------------------------------------------------------------
     # Quality scoring: brightness / exposure
@@ -155,7 +156,7 @@ class AppConfig:
     # - Lower `quality_brightness_max` if overexposed faces should fail sooner.
     # - Widen the `good_min` to `good_max` band if lighting is more variable.
     quality_brightness_min: float = 55.0
-    quality_brightness_good_min: float = 85.0
+    quality_brightness_good_min: float = 70.0
     quality_brightness_good_max: float = 185.0
     quality_brightness_max: float = 215.0
 
