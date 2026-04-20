@@ -4,9 +4,36 @@ import { socket } from "../socket.js";
 
 // ── Stat Card ────────────────────────────────────────────────
 function StatCard({ title, value, subtext, iconClass, cardClass }) {
+  const highlightStyles = {
+    "customers-card": {
+      background: "linear-gradient(90deg, rgba(13,110,253,0.9), rgba(13,110,253,0.2))",
+    },
+    "sales-card": {
+      background: "linear-gradient(90deg, rgba(25,135,84,0.9), rgba(25,135,84,0.2))",
+    },
+    "revenue-card": {
+      background: "linear-gradient(90deg, rgba(255,193,7,0.95), rgba(255,193,7,0.2))",
+    },
+  };
+
   return (
     <div className="col-md-6 col-xl-3">
-      <div className={`card info-card ${cardClass}`}>
+      <div
+        className={`card info-card ${cardClass}`}
+        style={{ position: "relative", overflow: "hidden" }}
+      >
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: "4px",
+            borderRadius: 0,
+            ...highlightStyles[cardClass],
+          }}
+        />
         <div className="card-body py-3">
           <h5 className="card-title">{title}</h5>
           <div className="d-flex align-items-center">

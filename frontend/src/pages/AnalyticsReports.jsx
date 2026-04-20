@@ -2,6 +2,7 @@ import React from "react";
 import { fetchJson } from "../api.js";
 import { confirmAction, getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { socket } from "../socket.js";
+import { useSession } from "../App.jsx";
 
 // ── Helpers ───────────────────────────────────────────────────
 function fmt(n) {
@@ -2928,6 +2929,7 @@ function AnomalySection({ anomalies, mean, stdDev }) {
 
 // ── Main Page ─────────────────────────────────────────────────
 export default function AnalyticsReports() {
+  const { session } = useSession();
   const [data, setData] = React.useState(null);
   const [error, setError] = React.useState(false);
   const [socketConnected, setSocketConnected] = React.useState(socket.connected);
@@ -3014,6 +3016,8 @@ export default function AnalyticsReports() {
   const correlation = data?.correlation ?? {};
   const anova = data?.anova ?? {};
   const noAnalyticsData = Boolean(data?.error);
+  const canManageImports =
+    session?.role === "super_admin" || session?.role === "library_admin";
   const lastUpdatedLabel = lastUpdatedAt
     ? lastUpdatedAt.toLocaleTimeString([], {
         hour: "numeric",
@@ -3116,11 +3120,13 @@ export default function AnalyticsReports() {
                 <i className="bi bi-arrow-clockwise"></i>
                 Sync Now
               </button>
-              <ImportModal
-                onImportSuccess={() => {
-                  runAnalyticsPipeline();
-                }}
-              />
+              {canManageImports ? (
+                <ImportModal
+                  onImportSuccess={() => {
+                    runAnalyticsPipeline();
+                  }}
+                />
+              ) : null}
             </div>
           </div>
         </div>

@@ -1669,3 +1669,145 @@ body.dark .back-to-top:hover {
   font-size: var(--font-size-md);
   color: var(--secondary-color);
 }
+
+body.register-kiosk-page {
+  overflow: hidden;
+}
+
+body.register-kiosk-page #root {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.register-kiosk-shell,
+.register-kiosk-frame,
+.register-kiosk-section,
+.register-kiosk-container {
+  height: 100%;
+}
+
+.register-kiosk-shell {
+  overflow: hidden;
+}
+
+.register-kiosk-frame {
+  padding-inline: 16px;
+}
+
+.register-kiosk-container {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.register-kiosk-brand {
+  flex: 0 0 auto;
+}
+
+.register-kiosk-card {
+  max-height: calc(100vh - 88px);
+  overflow: hidden;
+}
+
+.register-kiosk-card-body {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.05fr);
+  gap: 20px;
+  align-items: start;
+  overflow: hidden;
+}
+
+.register-kiosk-card-body > .d-flex:first-child {
+  grid-column: 1 / -1;
+  margin-bottom: 0 !important;
+}
+
+.register-kiosk-status-pane,
+.register-kiosk-form-pane {
+  min-height: 0;
+}
+
+.register-kiosk-status-pane {
+  overflow: hidden;
+}
+
+.register-kiosk-form-pane {
+  display: flex;
+}
+
+.register-kiosk-form-pane form {
+  width: 100%;
+  align-content: start;
+}
+
+.register-kiosk-guidance-card,
+.register-kiosk-saving-card {
+  margin-bottom: 1rem !important;
+}
+
+.register-kiosk-guidance-card {
+  display: none;
+}
+
+.register-kiosk-guidance-list {
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+
+.register-kiosk-metrics .col-md-4 {
+  display: flex;
+}
+
+.register-kiosk-metrics .col-md-4 > div {
+  width: 100%;
+}
+
+.register-kiosk-previews-card {
+  margin-bottom: 0 !important;
+}
+
+.register-kiosk-preview-grid {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.register-kiosk-preview-tile {
+  min-width: 0;
+}
+
+.register-kiosk-empty-previews {
+  min-height: 88px !important;
+}
+
+.register-kiosk-footer {
+  display: none;
+}
+
+@media (max-width: 1399.98px) {
+  body.register-kiosk-page {
+    overflow: auto;
+  }
+
+  body.register-kiosk-page #root,
+  .register-kiosk-shell,
+  .register-kiosk-frame,
+  .register-kiosk-section,
+  .register-kiosk-container {
+    height: auto;
+    overflow: visible;
+  }
+
+  .register-kiosk-card {
+    max-height: none;
+  }
+
+  .register-kiosk-card-body {
+    display: block;
+  }
+
+  .register-kiosk-status-pane,
+  .register-kiosk-form-pane {
+    overflow: visible;
+  }
+}

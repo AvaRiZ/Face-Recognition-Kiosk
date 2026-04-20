@@ -283,6 +283,13 @@ export default function RegisterPage() {
   }, []);
 
   React.useEffect(() => {
+    document.body.classList.add('register-kiosk-page');
+    return () => {
+      document.body.classList.remove('register-kiosk-page');
+    };
+  }, []);
+
+  React.useEffect(() => {
     let cancelled = false;
 
     async function loadProgramOptions() {
@@ -529,6 +536,7 @@ export default function RegisterPage() {
   const canCancelSession = (webSessionActive || captureInProgress) && !submitting && !sessionControlBusy;
   const filteredProgramOptions = form.college ? programOptionsByCollege[form.college] || [] : [];
   const sampleCount = info.sample_previews?.length || 0;
+  const visibleSamplePreviews = React.useMemo(() => (info.sample_previews || []).slice(0, 8), [info.sample_previews]);
   const currentPose = info.current_pose || null;
   const currentPoseProgress = currentPose ? info.pose_progress?.[currentPose] : null;
   const currentPoseCaptured = currentPoseProgress?.captured ?? 0;
@@ -609,24 +617,24 @@ export default function RegisterPage() {
   }
 
   return (
-    <main className="auth-page animate__animated animate__fadeIn animate__fast">
-      <div className="container">
-        <section className="section register min-vh-100 d-flex flex-column justify-content-center py-4">
-          <div className="container animate__animated animate__fadeInUp animate__fast">
-            <div className="d-flex justify-content-center mb-4">
+    <main className="auth-page register-kiosk-shell animate__animated animate__fadeIn animate__fast">
+      <div className="container-fluid register-kiosk-frame">
+        <section className="section register register-kiosk-section min-vh-100 d-flex flex-column justify-content-center py-3">
+          <div className="container-fluid register-kiosk-container animate__animated animate__fadeInUp animate__fast">
+            <div className="d-flex justify-content-center mb-3 register-kiosk-brand">
               <a href="/login">
                 <img
                   src="/static/assets/img/bsu-new-logo.png"
                   alt="BatStateU Logo"
-                  style={{ width: '24rem', height: 'auto' }}
+                  style={{ width: '18rem', height: 'auto' }}
                 />
               </a>
             </div>
 
             <div className="row justify-content-center">
-              <div className="col-xl-8 col-lg-9">
-                <div className="card">
-                  <div className="card-body p-4 p-xl-5">
+              <div className="col-12 col-xxl-11">
+                <div className="card register-kiosk-card">
+                  <div className="card-body p-3 p-xl-4 register-kiosk-card-body">
                     <div className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
                       <div>
                         <div className="text-uppercase text-muted fw-semibold" style={{ fontSize: '11px', letterSpacing: '0.08em' }}>
@@ -649,6 +657,8 @@ export default function RegisterPage() {
                               : 'Session not started'}
                       </span>
                     </div>
+
+                    <div className="register-kiosk-status-pane">
 
                     <div className="d-flex flex-wrap gap-2 align-items-center mb-3">
                       <span className={`badge ${healthVariant}`}>{healthLabel}</span>
@@ -723,19 +733,19 @@ export default function RegisterPage() {
                       </div>
                     </div>
 
-                    <div className="rounded-3 border bg-white p-3 p-md-4 mb-4">
+                    <div className="rounded-3 border bg-white p-3 p-md-4 mb-4 register-kiosk-guidance-card">
                       <div className="d-flex justify-content-between align-items-center mb-2">
                         <div className="fw-semibold" style={{ color: '#012970' }}>Live Capture Guidance</div>
                         <span className="small text-muted">Updates every 1.5s</span>
                       </div>
-                      <ul className="mb-0 ps-3 text-muted" style={{ fontSize: '13px', lineHeight: 1.7 }}>
+                      <ul className="mb-0 ps-3 text-muted register-kiosk-guidance-list" style={{ fontSize: '13px', lineHeight: 1.7 }}>
                         {guidanceSteps.map((step, index) => (
                           <li key={`${step}-${index}`}>{step}</li>
                         ))}
                       </ul>
                     </div>
 
-                    <div className="row g-3 mb-4">
+                    <div className="row g-3 mb-4 register-kiosk-metrics">
                       <div className="col-md-4">
                         <MetricPill icon="bi bi-camera" label="Captured" value={`${info.capture_count}/${info.max_captures}`} />
                       </div>
@@ -771,20 +781,22 @@ export default function RegisterPage() {
                       </div>
                     </div>
 
-                    <div className="rounded-3 border bg-light p-3 p-md-4 mb-4">
+                    <div className="rounded-3 border bg-light p-3 p-md-4 mb-4 register-kiosk-previews-card">
                       <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
                         <div className="fw-semibold" style={{ color: '#012970' }}>Captured face previews</div>
-                        <div className="small text-muted">{sampleCount} preview{sampleCount === 1 ? '' : 's'} available</div>
+                        <div className="small text-muted">
+                          {sampleCount} preview{sampleCount === 1 ? '' : 's'} available
+                          {sampleCount > visibleSamplePreviews.length ? ` - showing ${visibleSamplePreviews.length}` : ''}
+                        </div>
                       </div>
 
                       {sampleCount ? (
-                        <div className="d-flex gap-2 flex-wrap">
-                          {info.sample_previews.map((sample, index) => (
+                        <div className="d-flex gap-2 flex-wrap register-kiosk-preview-grid">
+                          {visibleSamplePreviews.map((sample, index) => (
                             <div
                               key={sample.id ?? index}
-                              className="text-center"
+                              className="text-center register-kiosk-preview-tile"
                               style={{
-                                width: '88px',
                                 padding: '6px',
                                 border: '1px solid #e6e7eb',
                                 background: '#fff'
@@ -801,15 +813,18 @@ export default function RegisterPage() {
                           ))}
                         </div>
                       ) : (
-                        <div className="rounded-3 d-flex align-items-center justify-content-center text-center px-4 border border-secondary-subtle bg-white text-muted" style={{ minHeight: '112px', borderStyle: 'dashed' }}>
+                        <div className="rounded-3 d-flex align-items-center justify-content-center text-center px-4 border border-secondary-subtle bg-white text-muted register-kiosk-empty-previews" style={{ minHeight: '112px', borderStyle: 'dashed' }}>
                           No preview tiles yet. Stay on the CCTV capture flow until the sample set is completed.
                         </div>
                       )}
                     </div>
 
+                    </div>
+
+                    <div className="register-kiosk-form-pane">
                     <form className="row g-3" onSubmit={handleSubmit}>
                       <div className="col-12">
-                        <div className="rounded-3 border bg-light p-3">
+                        <div className="rounded-3 border bg-light p-3 register-kiosk-saving-card">
                       <div className="fw-semibold mb-2" style={{ color: '#012970' }}>Before saving</div>
                           <ul className="mb-0 ps-3 text-muted" style={{ fontSize: '13px', lineHeight: 1.7 }}>
                             <li>Use the format Last Name, First Name.</li>
@@ -1007,12 +1022,13 @@ export default function RegisterPage() {
                         </div>
                       </div>
                     </form>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            <footer className="text-center mt-4">
+            <footer className="text-center mt-4 register-kiosk-footer">
               <div className="copyright">
                 <strong>Batangas State University The National Engineering University</strong>
               </div>
