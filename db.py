@@ -14,8 +14,18 @@ def resolve_database_target(db_path: Optional[str] = None) -> str:
 
 
 def is_postgres_target(db_path: Optional[str] = None) -> bool:
-    target = resolve_database_target(db_path)
-    return str(target).startswith(("postgres://", "postgresql://"))
+    target = str(resolve_database_target(db_path)).strip().lower()
+    return target.startswith(("postgres://", "postgresql://", "postgres+", "postgresql+"))
+
+
+def _normalize_postgres_dsn_for_driver(target: str) -> str:
+    normalized = str(target).strip()
+    if "://" not in normalized:
+        return normalized
+    scheme, rest = normalized.split("://", 1)
+    if "+" in scheme:
+        scheme = scheme.split("+", 1)[0]
+    return f"{scheme}://{rest}"
 
 
 def connect(db_path: Optional[str] = None):
@@ -23,7 +33,7 @@ def connect(db_path: Optional[str] = None):
     if is_postgres_target(target):
         if psycopg is None:
             raise RuntimeError("PostgreSQL selected but `psycopg` is not installed.")
-        raw = psycopg.connect(target)
+        raw = psycopg.connect(_normalize_postgres_dsn_for_driver(target))
         return CompatConnection(raw, "postgres")
     raw = sqlite3.connect(target)
     return CompatConnection(raw, "sqlite")

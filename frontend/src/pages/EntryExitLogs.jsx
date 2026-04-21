@@ -22,7 +22,7 @@ export default function EntryExitLogsPage() {
   const [activeTab, setActiveTab] = React.useState('all');
 
   React.useEffect(() => {
-    fetchJson('/api/entry-logs')
+    fetchJson('/api/events')
       .then((resp) => setRows(resp.rows || []))
       .catch(() => setRows([]))
       .finally(() => setLoading(false));

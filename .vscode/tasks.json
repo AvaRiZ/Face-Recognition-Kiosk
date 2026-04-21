@@ -1,4 +1,36 @@
 {
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start API",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-File",
+        "scripts/start_api.ps1"
+      ]
+    },
+    {
+      "label": "Start Worker",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-File",
+        "scripts/start_worker.ps1"
+      ]
+    },
+    {
+      "label": "Start System (API + Worker)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-File",
+        "scripts/start_system.ps1"
+      ]
+    }
+  ]
+}
+{
     // See https://go.microsoft.com/fwlink/?LinkId=733558
     // for the documentation about the tasks.json format
     "version": "2.0.0",

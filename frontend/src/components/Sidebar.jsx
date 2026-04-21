@@ -52,7 +52,7 @@ export default function Sidebar() {
       confirmButtonColor: '#dc3545'
     });
     if (!confirmed) return;
-    await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     refresh();
     window.location.href = '/login';
   }
