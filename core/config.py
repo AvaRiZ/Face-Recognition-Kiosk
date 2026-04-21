@@ -34,7 +34,7 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Paths and dataset locations
     # ------------------------------------------------------------------
-    model_path: str = "models/yolov8n-face.pt"
+    model_path: str = "models/yolov8m-face.pt"
     db_path: str = "database/faces_improved.db"
     base_save_dir: str = "faces_improved"
     detector_dataset_dir: str = "detector_dataset"
