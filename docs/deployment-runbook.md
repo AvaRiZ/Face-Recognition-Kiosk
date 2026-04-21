@@ -1,4 +1,4 @@
-# LAN Deployment Runbook (Web API + Worker)
+# LAN Deployment Runbook (Host Stack: Web API + Worker)
 
 ## 1) Prerequisites
 - Python environment with `requirements.txt` installed.
@@ -20,15 +20,16 @@
    - Bash/Zsh: `python scripts/migrate_sqlite_to_postgres.py --sqlite-path database/faces_improved.db --postgres-url "$DATABASE_URL"`
 
 
-## 3) Quick Start (API + Worker together)
+## 3) Quick Start (Recommended: Unified Host Stack)
 1. Optional: create a persistent local env file:
    - `Copy-Item .env.local.example .env.local`
    - Edit `.env.local` and set your real `DATABASE_URL`.
 2. If you do not use `.env.local`, set database URL for your shell (once per session):
    - PowerShell: `$env:DATABASE_URL = "postgresql://<user>:<password>@127.0.0.1:5432/facerec_kiosk"`
-3. Start both services in separate windows:
+3. Start unified host stack:
     - `pwsh -File scripts/start_system.ps1`
    - Or (Python wrapper): `python scripts/start_system.py`
+   - This now starts API + recognition worker together in one host process.
 
 Important:
 - Do not run `python scripts/start_system.ps1`; `.ps1` files must be launched by PowerShell.
@@ -37,13 +38,17 @@ Optional flags:
 - `-EnvFile "C:\path\to\.env"` to load variables from a specific env file.
 - `-DatabaseUrl "postgresql://..."` to pass DB URL directly.
 - `-ApiPort 5050` to change API port.
-- `-ApiOnly` or `-WorkerOnly` to launch one service.
-- `-Foreground` (with `-ApiOnly` or `-WorkerOnly`) to run in the current terminal and show full errors.
+- `-Foreground` to run the unified host stack in the current terminal and show full errors.
+- `-SplitMode` to run API/worker as separate processes (advanced/debug only).
+- `-ApiOnly` or `-WorkerOnly` (with `-SplitMode`) to launch one service for troubleshooting.
 
 VS Code task shortcut:
 - Run task: `Start System (API + Worker)`
 
 ## 4) Start Services Individually (if needed)
+Only use this section for debugging. Registration capture requires the unified host stack.
+For split launch via one command, use: `pwsh -File scripts/start_system.ps1 -SplitMode`.
+
 Start API service (LAN-exposed):
 - `pwsh -File scripts/start_api.ps1`
 - Defaults:

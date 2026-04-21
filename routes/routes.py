@@ -143,6 +143,7 @@ def create_routes_blueprint(deps):
         total_progress = progress.get("total_progress", {})
         captured_total = int(total_progress.get("captured", reg_state.capture_count))
         stream_status = deps["stream_status"]() if deps.get("stream_status") else {"state": "unknown", "message": "Camera status unavailable."}
+        worker_attached = bool(deps.get("worker_runtime_attached"))
         return {
             "capture_count": captured_total,
             "max_captures": reg_state.max_captures,
@@ -150,6 +151,7 @@ def create_routes_blueprint(deps):
             "is_in_progress": reg_state.in_progress,
             "web_session_active": bool(reg_state.web_session_active),
             "session_expired": bool(getattr(reg_state, "session_expired", False)),
+            "worker_attached": worker_attached,
             "detection_paused": bool(deps["detection_paused"]()),
             "sample_previews": _registration_sample_previews(reg_state),
             "required_poses": progress["required_poses"],
@@ -1028,6 +1030,12 @@ def create_routes_blueprint(deps):
     def api_register_session_start():
         deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
+        if not deps.get("worker_runtime_attached"):
+            payload = _registration_error_payload(
+                reg_state,
+                "Recognition worker is not attached to this API process. Start the host stack (API + worker together) on the host PC.",
+            )
+            return jsonify(payload), 503
         if reg_state.in_progress and reg_state.pending_registration:
             payload = _registration_error_payload(
                 reg_state,
@@ -1160,7 +1168,7 @@ def create_routes_blueprint(deps):
 
         deps["complete_registration"]()
         total_embeddings = count_embeddings(normalize_embeddings_by_model(all_embeddings))
-        redirect_url = url_for("routes.react_app", path="register")
+        redirect_url = url_for("spa_public_routes")
         profile_payload = None
         if saved_user:
             profile_payload = {
