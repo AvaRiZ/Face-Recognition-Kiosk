@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import math
 
 import cv2
 
@@ -144,12 +145,18 @@ class CLIApplication:
         keypoints_xy = getattr(result_obj.keypoints, "xy", None)
         if keypoints_xy is None:
             return None
+        keypoints_conf = getattr(result_obj.keypoints, "conf", None)
 
         try:
             if hasattr(keypoints_xy, "detach"):
                 keypoints_xy = keypoints_xy.detach().cpu().numpy()
             else:
                 keypoints_xy = keypoints_xy.cpu().numpy() if hasattr(keypoints_xy, "cpu") else keypoints_xy
+            if keypoints_conf is not None:
+                if hasattr(keypoints_conf, "detach"):
+                    keypoints_conf = keypoints_conf.detach().cpu().numpy()
+                else:
+                    keypoints_conf = keypoints_conf.cpu().numpy() if hasattr(keypoints_conf, "cpu") else keypoints_conf
         except Exception:
             return None
 
@@ -159,14 +166,31 @@ class CLIApplication:
         points = keypoints_xy[detection_index]
         if points is None or len(points) < 3:
             return None
+        point_conf = None
+        if keypoints_conf is not None and detection_index < len(keypoints_conf):
+            point_conf = keypoints_conf[detection_index]
 
-        x1, y1, _x2, _y2 = bbox
+        x1, y1, x2, y2 = bbox
+        box_w = max(float(x2 - x1), 1.0)
+        box_h = max(float(y2 - y1), 1.0)
 
         def _to_crop_pt(idx):
             if idx >= len(points):
                 return None
+            if point_conf is not None and idx < len(point_conf):
+                kp_conf = float(point_conf[idx])
+                if math.isnan(kp_conf) or kp_conf < 0.25:
+                    return None
             px, py = points[idx][:2]
-            return float(px - x1), float(py - y1)
+            if not math.isfinite(float(px)) or not math.isfinite(float(py)):
+                return None
+            cx = float(px - x1)
+            cy = float(py - y1)
+            if cx < (-0.10 * box_w) or cx > (1.10 * box_w):
+                return None
+            if cy < (-0.10 * box_h) or cy > (1.10 * box_h):
+                return None
+            return min(max(cx, 0.0), box_w - 1.0), min(max(cy, 0.0), box_h - 1.0)
 
         landmarks = {
             "left_eye": _to_crop_pt(0),
@@ -409,8 +433,8 @@ class CLIApplication:
                     frame,
                     persist=True,
                     tracker="bytetrack.yaml",
-                    conf=0.3,
-                    imgsz=768,
+                    conf=float(self.config.yolo_detection_confidence),
+                    imgsz=int(self.config.yolo_inference_imgsz),
                     device=self.yolo_device,
                     verbose=False,
                 )

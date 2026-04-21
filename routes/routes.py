@@ -225,6 +225,8 @@ def create_routes_blueprint(deps):
                     source=image,
                     verbose=False,
                     device=deps.get("yolo_device", "cpu"),
+                    conf=float(getattr(deps["config"], "yolo_detection_confidence", 0.20)),
+                    imgsz=int(getattr(deps["config"], "yolo_inference_imgsz", 960)),
                 )
                 for result in yolo_results or []:
                     if result.boxes is None:
@@ -247,24 +249,60 @@ def create_routes_blueprint(deps):
 
                     if best_box is not None:
                         x1, y1, x2, y2 = map(int, best_box.xyxy[0])
-                        face_crop, _clamped_bbox = crop_face_region(image, x1, y1, x2, y2)
+                        face_crop, clamped_bbox = crop_face_region(image, x1, y1, x2, y2)
                         if face_crop is not None:
+                            if clamped_bbox is not None:
+                                x1, y1, x2, y2 = clamped_bbox
                             landmarks = None
                             keypoints_xy = getattr(getattr(result, "keypoints", None), "xy", None)
+                            keypoints_conf = getattr(getattr(result, "keypoints", None), "conf", None)
                             if keypoints_xy is not None and best_index >= 0:
                                 try:
                                     if hasattr(keypoints_xy, "detach"):
                                         keypoints_xy = keypoints_xy.detach().cpu().numpy()
                                     else:
                                         keypoints_xy = keypoints_xy.cpu().numpy() if hasattr(keypoints_xy, "cpu") else keypoints_xy
+                                    if keypoints_conf is not None:
+                                        if hasattr(keypoints_conf, "detach"):
+                                            keypoints_conf = keypoints_conf.detach().cpu().numpy()
+                                        else:
+                                            keypoints_conf = keypoints_conf.cpu().numpy() if hasattr(keypoints_conf, "cpu") else keypoints_conf
                                     if best_index < len(keypoints_xy):
                                         points = keypoints_xy[best_index]
+                                        point_conf = None
+                                        if keypoints_conf is not None and best_index < len(keypoints_conf):
+                                            point_conf = keypoints_conf[best_index]
+                                        box_w = max(float(x2 - x1), 1.0)
+                                        box_h = max(float(y2 - y1), 1.0)
+
+                                        def _to_crop_pt(idx):
+                                            if idx >= len(points):
+                                                return None
+                                            if point_conf is not None and idx < len(point_conf):
+                                                kp_conf = float(point_conf[idx])
+                                                if math.isnan(kp_conf) or kp_conf < 0.25:
+                                                    return None
+                                            px = float(points[idx][0])
+                                            py = float(points[idx][1])
+                                            if not math.isfinite(px) or not math.isfinite(py):
+                                                return None
+                                            cx = px - float(x1)
+                                            cy = py - float(y1)
+                                            if cx < (-0.10 * box_w) or cx > (1.10 * box_w):
+                                                return None
+                                            if cy < (-0.10 * box_h) or cy > (1.10 * box_h):
+                                                return None
+                                            return (
+                                                min(max(cx, 0.0), box_w - 1.0),
+                                                min(max(cy, 0.0), box_h - 1.0),
+                                            )
+
                                         landmarks = {
-                                            "left_eye": (float(points[0][0] - x1), float(points[0][1] - y1)) if len(points) > 0 else None,
-                                            "right_eye": (float(points[1][0] - x1), float(points[1][1] - y1)) if len(points) > 1 else None,
-                                            "nose": (float(points[2][0] - x1), float(points[2][1] - y1)) if len(points) > 2 else None,
-                                            "mouth_left": (float(points[3][0] - x1), float(points[3][1] - y1)) if len(points) > 3 else None,
-                                            "mouth_right": (float(points[4][0] - x1), float(points[4][1] - y1)) if len(points) > 4 else None,
+                                            "left_eye": _to_crop_pt(0),
+                                            "right_eye": _to_crop_pt(1),
+                                            "nose": _to_crop_pt(2),
+                                            "mouth_left": _to_crop_pt(3),
+                                            "mouth_right": _to_crop_pt(4),
                                         }
                                 except Exception:
                                     landmarks = None

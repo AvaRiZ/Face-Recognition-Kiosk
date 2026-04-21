@@ -85,9 +85,12 @@ class FaceQualityService:
         nose = normalized.get("nose")
         if left_eye is None or right_eye is None or nose is None:
             return None
+        eye_span = abs(float(right_eye[0]) - float(left_eye[0]))
+        if eye_span < max(float(width) * 0.08, 8.0):
+            return None
 
         eye_mid_x = (left_eye[0] + right_eye[0]) * 0.5
-        half_eye_span = max(abs(right_eye[0] - left_eye[0]) * 0.5, 1.0)
+        half_eye_span = max(eye_span * 0.5, 1.0)
         signed_yaw_ratio = float((nose[0] - eye_mid_x) / half_eye_span)
         abs_yaw_ratio = abs(signed_yaw_ratio)
 
@@ -116,6 +119,9 @@ class FaceQualityService:
             "alignment": "tilted face",
             "pose": "face turned away",
             "truncation": "face cut off",
+            "landmarks": "face landmarks unavailable",
+            "landmarks_unavailable": "face landmarks not detected",
+            "landmarks_unreliable": "unstable face landmarks",
         }
         return labels.get(check_name, check_name.replace("_", " "))
 
@@ -150,6 +156,12 @@ class FaceQualityService:
             "occlusion_score": "truncation",
         }
         weakest_name, weakest_score = min(component_scores.items(), key=lambda item: item[1])
+        quality_degraded_reason = debug_info.get("quality_degraded_reason")
+        if (
+            quality_degraded_reason in {"landmarks_unavailable", "landmarks_unreliable"}
+            and weakest_name in {"pose_score", "occlusion_score"}
+        ):
+            return quality_degraded_reason, self._describe_check(quality_degraded_reason)
         issue_name = aliases.get(weakest_name, weakest_name)
         return issue_name, f"{self._describe_check(issue_name)} ({weakest_score:.2f})"
 
@@ -188,8 +200,9 @@ class FaceQualityService:
 
         pose_score = 0.5
         eye_mid_x = (left_eye[0] + right_eye[0]) * 0.5
-        half_eye_span = max(abs(right_eye[0] - left_eye[0]) * 0.5, 1.0)
-        if nose is not None:
+        eye_span = abs(float(right_eye[0]) - float(left_eye[0]))
+        half_eye_span = max(eye_span * 0.5, 1.0)
+        if nose is not None and eye_span >= max(float(width) * 0.08, 8.0):
             yaw_ratio = abs(nose[0] - eye_mid_x) / half_eye_span
             pose_score = _score_lower_better(
                 yaw_ratio,
@@ -305,7 +318,15 @@ class FaceQualityService:
         exposure_metrics = self._compute_exposure_metrics(gray)
         normalized_landmarks = _normalize_landmarks(landmarks)
         quality_degraded_reason = None
-        if normalized_landmarks is not None:
+        left_eye = normalized_landmarks.get("left_eye") if normalized_landmarks else None
+        right_eye = normalized_landmarks.get("right_eye") if normalized_landmarks else None
+        landmarks_reliable = (
+            left_eye is not None
+            and right_eye is not None
+            and abs(float(right_eye[0]) - float(left_eye[0])) >= max(float(w) * 0.08, 8.0)
+        )
+
+        if landmarks_reliable:
             alignment_score, pose_score, occlusion_score = self._alignment_pose_from_landmarks(
                 normalized_landmarks,
                 w,
@@ -313,12 +334,14 @@ class FaceQualityService:
             )
             alignment_source = "landmarks"
         else:
-            # Without landmarks, avoid treating the crop as perfectly aligned.
-            alignment_score = 0.5
-            pose_score = 0.5
-            occlusion_score = 0.6
+            alignment_score = 0.0
+            pose_score = 0.0
+            occlusion_score = 0.0
             alignment_source = "unavailable"
-            quality_degraded_reason = "landmarks_unavailable"
+            if normalized_landmarks is None:
+                quality_degraded_reason = "landmarks_unavailable"
+            else:
+                quality_degraded_reason = "landmarks_unreliable"
 
         component_scores = [
             size_score,
@@ -329,8 +352,6 @@ class FaceQualityService:
             occlusion_score,
         ]
         quality_score = _clamp01(float(np.mean(component_scores)))
-        if normalized_landmarks is None:
-            quality_score = _clamp01(quality_score - 0.12)
 
         failed_checks = []
         if area < self.config.quality_face_area_min:
@@ -343,13 +364,15 @@ class FaceQualityService:
             failed_checks.append("exposure")
         if exposure_metrics["dynamic_range"] < self.config.quality_dynamic_range_min:
             failed_checks.append("dynamic_range")
-        if normalized_landmarks is not None:
+        if landmarks_reliable:
             if alignment_score < 0.4:
                 failed_checks.append("alignment")
             if pose_score < 0.4:
                 failed_checks.append("pose")
             if occlusion_score < 0.4:
                 failed_checks.append("truncation")
+        else:
+            failed_checks.append("landmarks")
 
         if failed_checks:
             quality_score = min(quality_score, max(0.0, self.config.face_quality_threshold - 0.01))
@@ -360,9 +383,6 @@ class FaceQualityService:
             quality_status = "Acceptable"
         else:
             quality_status = "Poor"
-
-        if normalized_landmarks is None and quality_status == "Good":
-            quality_status = "Acceptable"
 
         debug_info = {
             "sharpness": laplacian_var,
@@ -379,6 +399,7 @@ class FaceQualityService:
             "occlusion_score": occlusion_score,
             "alignment_source": alignment_source,
             "landmarks_available": normalized_landmarks is not None,
+            "landmarks_reliable": landmarks_reliable,
             "quality_degraded_reason": quality_degraded_reason,
             "failed_checks": failed_checks,
             "component_scores": {
