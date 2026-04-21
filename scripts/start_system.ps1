@@ -7,6 +7,7 @@ param(
   [string]$WorkerInternalToken,
   [string]$EnvFile,
   [switch]$Foreground,
+  [switch]$SplitMode,
   [switch]$ApiOnly,
   [switch]$WorkerOnly
 )
@@ -17,11 +18,13 @@ if ($ApiOnly -and $WorkerOnly) {
   throw "Choose either -ApiOnly or -WorkerOnly, not both."
 }
 
-if ($Foreground -and (-not ($ApiOnly -xor $WorkerOnly))) {
-  throw "-Foreground requires exactly one of -ApiOnly or -WorkerOnly."
+$launchHostStack = (-not $ApiOnly -and -not $WorkerOnly -and -not $SplitMode)
+if ($Foreground -and (-not ($ApiOnly -xor $WorkerOnly)) -and (-not $launchHostStack)) {
+  throw "-Foreground requires host mode (default) or exactly one of -ApiOnly or -WorkerOnly."
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$hostScript = Join-Path $PSScriptRoot "start_host.ps1"
 $apiScript = Join-Path $PSScriptRoot "start_api.ps1"
 $workerScript = Join-Path $PSScriptRoot "start_worker.ps1"
 
@@ -73,6 +76,9 @@ if (-not (Test-Path $apiScript)) {
 if (-not (Test-Path $workerScript)) {
   throw "Missing script: $workerScript"
 }
+if ($launchHostStack -and (-not (Test-Path $hostScript))) {
+  throw "Missing script: $hostScript"
+}
 
 if ($DatabaseUrl) {
   $env:DATABASE_URL = $DatabaseUrl
@@ -113,8 +119,31 @@ Write-Host "- Repo root: $repoRoot"
 Write-Host "- API host/port: $($env:FLASK_RUN_HOST):$($env:FLASK_RUN_PORT)"
 Write-Host "- Worker API base URL: $($env:WORKER_API_BASE_URL)"
 Write-Host "- Worker queue dir: $($env:WORKER_QUEUE_DIR)"
+if ($launchHostStack) {
+  Write-Host "- Mode: Unified host stack (API + worker together)" -ForegroundColor Green
+} elseif ($SplitMode) {
+  Write-Host "- Mode: Split processes (API and worker in separate processes)" -ForegroundColor Yellow
+}
+
+if ($launchHostStack -and $Foreground) {
+  Write-Host "Running unified host stack in foreground..." -ForegroundColor Yellow
+  & $hostScript
+  exit $LASTEXITCODE
+}
+
+if ($launchHostStack) {
+  Write-Host "Starting host stack window..." -ForegroundColor Green
+  $hostProc = Start-Process -FilePath $shellExe -ArgumentList ($shellArgs + $hostScript) -WorkingDirectory $repoRoot -PassThru
+  Start-Sleep -Seconds 2
+  if ($hostProc.HasExited) {
+    Write-Host "Host stack exited immediately. Re-run with -Foreground to view full error output." -ForegroundColor Red
+  }
+  Write-Host "Done. Close the host stack window to stop API + worker." -ForegroundColor Cyan
+  exit 0
+}
 
 if ($Foreground -and $ApiOnly) {
+  Write-Host "Warning: API-only mode disables live registration capture and recognition." -ForegroundColor Yellow
   Write-Host "Running API in foreground (debug mode)..." -ForegroundColor Yellow
   & $apiScript
   exit $LASTEXITCODE
@@ -129,6 +158,9 @@ if ($Foreground -and $WorkerOnly) {
 $launched = @()
 
 if (-not $WorkerOnly) {
+  if ($ApiOnly) {
+    Write-Host "Warning: API-only mode disables live registration capture and recognition." -ForegroundColor Yellow
+  }
   Write-Host "Starting API window..." -ForegroundColor Green
   $apiProc = Start-Process -FilePath $shellExe -ArgumentList ($shellArgs + $apiScript) -WorkingDirectory $repoRoot -PassThru
   $launched += @{ Name = "API"; Process = $apiProc }

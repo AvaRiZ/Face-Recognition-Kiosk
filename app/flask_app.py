@@ -30,6 +30,7 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
         "db_path": config.db_path,
         "base_save_dir": config.base_save_dir,
         "repository": repository,
+        "worker_runtime_attached": bool(cli),
         "embedding_service": EmbeddingService(config),
         "quality_service": FaceQualityService(config),
         "get_thresholds": state.get_thresholds,
