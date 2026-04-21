@@ -96,8 +96,6 @@ class FaceQualityService:
 
         if abs_yaw_ratio <= self.config.registration_pose_front_max_yaw_ratio:
             return "front"
-        if abs_yaw_ratio < self.config.registration_pose_side_min_yaw_ratio:
-            return None
         # Signed yaw is measured in image coordinates.
         return "left" if signed_yaw_ratio < 0 else "right"
 
@@ -334,9 +332,11 @@ class FaceQualityService:
             )
             alignment_source = "landmarks"
         else:
-            alignment_score = 0.0
-            pose_score = 0.0
-            occlusion_score = 0.0
+            # Landmarks can be missing in real-world frames; degrade confidence
+            # but do not auto-fail if other quality signals are strong.
+            alignment_score = 0.7
+            pose_score = 0.7
+            occlusion_score = 0.7
             alignment_source = "unavailable"
             if normalized_landmarks is None:
                 quality_degraded_reason = "landmarks_unavailable"
@@ -352,6 +352,8 @@ class FaceQualityService:
             occlusion_score,
         ]
         quality_score = _clamp01(float(np.mean(component_scores)))
+        if not landmarks_reliable:
+            quality_score = _clamp01(quality_score * 0.95)
 
         failed_checks = []
         if area < self.config.quality_face_area_min:
@@ -371,8 +373,6 @@ class FaceQualityService:
                 failed_checks.append("pose")
             if occlusion_score < 0.4:
                 failed_checks.append("truncation")
-        else:
-            failed_checks.append("landmarks")
 
         if failed_checks:
             quality_score = min(quality_score, max(0.0, self.config.face_quality_threshold - 0.01))

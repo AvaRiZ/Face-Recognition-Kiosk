@@ -7,7 +7,7 @@ import io
 import math
 import time
 import base64
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -17,13 +17,15 @@ from flask import Blueprint, flash, redirect, request, session, url_for, current
 from auth import (
     create_staff,
     get_all_staff,
+    api_login_required,
+    api_role_required,
     log_action,
     login_required,
     role_required,
     toggle_staff_status,
 )
 from core.models import User
-from db import connect as db_connect
+from db import connect as db_connect, table_columns
 from routes.ml_analytics import run_ml_analytics
 from app.realtime import emit_analytics_update
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
@@ -69,6 +71,47 @@ def create_routes_blueprint(deps):
     bp = Blueprint("routes", __name__)
     init_imported_logs_table(deps["db_path"])
     ensure_version_settings(deps["db_path"])
+
+    def _utc_now_iso():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _resolve_registration_status_reason(reg_state, stream_status, worker_attached, detection_paused):
+        code = (getattr(reg_state, "status_reason_code", None) or "").strip() or None
+        message = (getattr(reg_state, "status_reason_message", "") or "").strip()
+        updated_at = (getattr(reg_state, "status_updated_at", None) or "").strip() or None
+
+        stream_state = str((stream_status or {}).get("state") or "").strip().lower()
+        stream_message = str((stream_status or {}).get("message") or "").strip()
+
+        if not worker_attached:
+            return (
+                "worker_unattached",
+                "Recognition worker is not attached. Start the host stack (API + worker) on the host PC.",
+                _utc_now_iso(),
+            )
+
+        if detection_paused:
+            return (
+                "detection_paused",
+                "Detection is paused while website registration uses the camera stream.",
+                _utc_now_iso(),
+            )
+
+        if stream_state in {"disconnected", "reconnecting", "connecting"}:
+            return (
+                f"stream_{stream_state}",
+                stream_message or "Camera stream is unavailable. Check camera source and reconnect.",
+                _utc_now_iso(),
+            )
+
+        if getattr(reg_state, "session_expired", False):
+            return (
+                "session_expired",
+                "Registration session expired due to inactivity. Start a new session to continue.",
+                updated_at or _utc_now_iso(),
+            )
+
+        return code, message, updated_at
 
     def _spa_index():
         built_path = os.path.join(current_app.static_folder, "react", "index.html")
@@ -144,6 +187,13 @@ def create_routes_blueprint(deps):
         captured_total = int(total_progress.get("captured", reg_state.capture_count))
         stream_status = deps["stream_status"]() if deps.get("stream_status") else {"state": "unknown", "message": "Camera status unavailable."}
         worker_attached = bool(deps.get("worker_runtime_attached"))
+        detection_paused = bool(deps["detection_paused"]())
+        reason_code, reason_message, reason_updated_at = _resolve_registration_status_reason(
+            reg_state=reg_state,
+            stream_status=stream_status,
+            worker_attached=worker_attached,
+            detection_paused=detection_paused,
+        )
         return {
             "capture_count": captured_total,
             "max_captures": reg_state.max_captures,
@@ -152,7 +202,7 @@ def create_routes_blueprint(deps):
             "web_session_active": bool(reg_state.web_session_active),
             "session_expired": bool(getattr(reg_state, "session_expired", False)),
             "worker_attached": worker_attached,
-            "detection_paused": bool(deps["detection_paused"]()),
+            "detection_paused": detection_paused,
             "sample_previews": _registration_sample_previews(reg_state),
             "required_poses": progress["required_poses"],
             "current_pose": progress["current_pose"],
@@ -161,9 +211,14 @@ def create_routes_blueprint(deps):
             "total_progress": progress["total_progress"],
             "ready_to_submit": progress["ready_to_submit"],
             "camera_stream": stream_status,
+            "status_reason_code": reason_code,
+            "status_reason_message": reason_message,
+            "status_updated_at": reason_updated_at,
         }
 
-    def _registration_error_payload(reg_state, message: str, **extra):
+    def _registration_error_payload(reg_state, message: str, status_reason_code: str | None = None, **extra):
+        if deps.get("set_registration_status_reason"):
+            deps["set_registration_status_reason"](status_reason_code or "registration_error", message)
         payload = _registration_status_payload(reg_state)
         payload.update({"success": False, "message": message, **extra})
         return payload
@@ -1001,8 +1056,16 @@ def create_routes_blueprint(deps):
         try:
             conn = db_connect(deps["db_path"])
             c = conn.cursor()
-            c.execute("DELETE FROM users")
-            c.execute("DELETE FROM recognition_log")
+            # Delete dependent/child tables before parent `users` to satisfy FK constraints.
+            delete_order = [
+                "recognition_events",
+                "user_embeddings",
+                "recognition_log",
+                "users",
+            ]
+            for table_name in delete_order:
+                if table_columns(conn, table_name):
+                    c.execute(f"DELETE FROM {table_name}")
             conn.commit()
             conn.close()
 
@@ -1012,6 +1075,11 @@ def create_routes_blueprint(deps):
             deps["reset_database_state"]()
             return {"success": True, "message": "Database reset successfully"}
         except Exception as e:
+            try:
+                conn.rollback()
+                conn.close()
+            except Exception:
+                pass
             return {"success": False, "message": str(e)}, 500
 
     @bp.route("/api/clear_log", methods=["POST"], endpoint="clear_log")
@@ -1036,24 +1104,47 @@ def create_routes_blueprint(deps):
         return {"success": True, "message": "Registration state reset"}
 
     @bp.route("/api/register-info", methods=["GET"], endpoint="api_register_info")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
     def api_register_info():
         deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
         return jsonify(_registration_status_payload(reg_state))
 
     @bp.route("/api/detection/pause", methods=["POST"], endpoint="api_detection_pause")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
     def api_detection_pause():
         deps["pause_detection"]()
+        if deps.get("set_registration_status_reason"):
+            deps["set_registration_status_reason"](
+                "detection_paused",
+                "Detection paused while website registration uses the camera.",
+            )
         return jsonify({"success": True, "detection_paused": True})
 
     @bp.route("/api/detection/resume", methods=["POST"], endpoint="api_detection_resume")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
     def api_detection_resume():
         deps["resume_detection"]()
+        if deps.get("set_registration_status_reason"):
+            deps["set_registration_status_reason"](
+                "detection_resumed",
+                "Detection resumed and camera monitoring is active.",
+            )
         return jsonify({"success": True, "detection_paused": False})
 
     @bp.route("/api/register-reset", methods=["POST"], endpoint="api_register_reset")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
     def api_register_reset():
         deps["reset_registration_state"]()
+        if deps.get("set_registration_status_reason"):
+            deps["set_registration_status_reason"](
+                "session_reset",
+                "Registration capture session reset.",
+            )
         reg_state = deps["get_registration_state"]()
         payload = _registration_status_payload(reg_state)
         payload.update(
@@ -1065,6 +1156,8 @@ def create_routes_blueprint(deps):
         return jsonify(payload)
 
     @bp.route("/api/register-session/start", methods=["POST"], endpoint="api_register_session_start")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
     def api_register_session_start():
         deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
@@ -1072,12 +1165,14 @@ def create_routes_blueprint(deps):
             payload = _registration_error_payload(
                 reg_state,
                 "Recognition worker is not attached to this API process. Start the host stack (API + worker together) on the host PC.",
+                status_reason_code="worker_unattached",
             )
             return jsonify(payload), 503
         if reg_state.in_progress and reg_state.pending_registration:
             payload = _registration_error_payload(
                 reg_state,
                 "A registration capture is already complete. Submit it or reset before starting a new session.",
+                status_reason_code="capture_complete",
             )
             return jsonify(payload), 409
 
@@ -1085,6 +1180,7 @@ def create_routes_blueprint(deps):
             payload = _registration_error_payload(
                 reg_state,
                 "A registration capture is already in progress.",
+                status_reason_code="capture_in_progress",
             )
             return jsonify(payload), 409
 
@@ -1092,6 +1188,7 @@ def create_routes_blueprint(deps):
             payload = _registration_error_payload(
                 reg_state,
                 "A registration session is already active and waiting for a student.",
+                status_reason_code="session_already_active",
             )
             return jsonify(payload), 409
 
@@ -1105,8 +1202,18 @@ def create_routes_blueprint(deps):
                     "message": "Unable to start a new registration session because another registration step is already active.",
                 }
             )
+            if deps.get("set_registration_status_reason"):
+                deps["set_registration_status_reason"](
+                    "session_start_failed",
+                    payload["message"],
+                )
             return jsonify(payload), 409
 
+        if deps.get("set_registration_status_reason"):
+            deps["set_registration_status_reason"](
+                "session_started",
+                "Registration session started. Keep the student in frame to capture required samples.",
+            )
         payload.update(
             {
                 "success": True,
@@ -1116,9 +1223,16 @@ def create_routes_blueprint(deps):
         return jsonify(payload)
 
     @bp.route("/api/register-session/cancel", methods=["POST"], endpoint="api_register_session_cancel")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
     def api_register_session_cancel():
         deps["expire_registration_session_if_needed"]()
         deps["cancel_web_registration_session"]()
+        if deps.get("set_registration_status_reason"):
+            deps["set_registration_status_reason"](
+                "session_canceled",
+                "Registration session canceled.",
+            )
         reg_state = deps["get_registration_state"]()
         payload = _registration_status_payload(reg_state)
         payload.update(
@@ -1130,6 +1244,8 @@ def create_routes_blueprint(deps):
         return jsonify(payload)
 
     @bp.route("/register", methods=["POST"], endpoint="register_submit")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
     def register_submit():
         deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
@@ -1205,6 +1321,11 @@ def create_routes_blueprint(deps):
             deps["replace_user"](saved_user)
 
         deps["complete_registration"]()
+        if deps.get("set_registration_status_reason"):
+            deps["set_registration_status_reason"](
+                "registration_submitted",
+                f"Profile registered for {saved_user.name}." if saved_user else "Registration saved successfully.",
+            )
         total_embeddings = count_embeddings(normalize_embeddings_by_model(all_embeddings))
         redirect_url = url_for("spa_public_routes")
         profile_payload = None

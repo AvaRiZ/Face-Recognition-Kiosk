@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from core.config import AppConfig
@@ -29,6 +30,20 @@ class AppStateManager:
         self._base_threshold = float(config.base_threshold)
         self._face_quality_threshold = float(config.face_quality_threshold)
         self._reset_registration_collections()
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def set_registration_status_reason(self, code: str | None, message: str = "", updated_at: str | None = None) -> None:
+        state = self._registration_state
+        normalized_code = (code or "").strip()
+        state.status_reason_code = normalized_code or None
+        state.status_reason_message = (message or "").strip()
+        state.status_updated_at = (updated_at or self._utc_now_iso()) if state.status_reason_code else None
+
+    def clear_registration_status_reason(self) -> None:
+        self.set_registration_status_reason(None, "", updated_at=None)
 
     def _refresh_registration_limits(self) -> None:
         self._registration_state.max_captures = self._registration_state.total_required_captures
@@ -100,6 +115,10 @@ class AppStateManager:
         state.session_expired = True
         self._reset_registration_collections()
         self._clear_registration_session_timestamps()
+        self.set_registration_status_reason(
+            "session_expired",
+            "Registration session expired due to inactivity. Start a new session to continue.",
+        )
         return True
 
     def get_current_registration_pose(self) -> Optional[str]:
@@ -138,6 +157,10 @@ class AppStateManager:
             state.pending_registration = list(final_samples)
             state.in_progress = True
             self._sync_flat_captured_samples()
+            self.set_registration_status_reason(
+                "capture_complete",
+                "Required registration captures are complete. Enter student details to submit.",
+            )
             return False
         self._sync_flat_captured_samples()
         return True
@@ -254,6 +277,10 @@ class AppStateManager:
         self._registration_state.session_active = False
         self._registration_state.session_expired = False
         self._clear_registration_session_timestamps()
+        self.set_registration_status_reason(
+            "session_reset",
+            "Registration session was reset.",
+        )
 
     def reset_database_state(self) -> None:
         self.reset_registration_state()
@@ -285,6 +312,10 @@ class AppStateManager:
 
     def clear_captured_samples(self) -> None:
         self._reset_registration_collections()
+        self.set_registration_status_reason(
+            "samples_cleared",
+            "Captured registration samples were cleared.",
+        )
 
     def complete_registration(self) -> None:
         self._reset_registration_collections()
@@ -295,6 +326,10 @@ class AppStateManager:
         self._registration_state.session_active = False
         self._registration_state.session_expired = False
         self._clear_registration_session_timestamps()
+        self.set_registration_status_reason(
+            "registration_submitted",
+            "Registration submitted successfully.",
+        )
 
     def request_manual_registration(self) -> None:
         self._registration_state.capture_requested = True
@@ -305,6 +340,10 @@ class AppStateManager:
         self._registration_state.session_expired = False
         self._reset_registration_collections()
         self._mark_registration_session_started()
+        self.set_registration_status_reason(
+            "session_requested",
+            "Registration session requested. Waiting to lock onto an unregistered student.",
+        )
 
     def start_manual_registration(self, track_id: int) -> None:
         self._registration_state.capture_requested = False
@@ -315,6 +354,10 @@ class AppStateManager:
         self._registration_state.session_expired = False
         self._reset_registration_collections()
         self._mark_registration_session_started()
+        self.set_registration_status_reason(
+            "capture_locked",
+            "Student face locked. Capturing required pose samples.",
+        )
 
     def stop_manual_registration(self) -> None:
         self._registration_state.capture_requested = False
@@ -339,6 +382,10 @@ class AppStateManager:
         state.session_expired = False
         self._reset_registration_collections()
         self._mark_registration_session_started()
+        self.set_registration_status_reason(
+            "session_started",
+            "Registration session started. Keep one unregistered student in frame.",
+        )
         return True
 
     def cancel_web_registration_session(self) -> None:
@@ -351,6 +398,10 @@ class AppStateManager:
         state.session_expired = False
         self._reset_registration_collections()
         self._clear_registration_session_timestamps()
+        self.set_registration_status_reason(
+            "session_canceled",
+            "Registration session canceled.",
+        )
 
     def initialize_track_state(self, track_id: int, current_time: float) -> TrackingState:
         if track_id not in self._tracked_faces:

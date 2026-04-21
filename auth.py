@@ -173,6 +173,17 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
+
+def api_login_required(f):
+    """Return JSON 401 when request is not authenticated."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'staff_id' not in session:
+            return jsonify({"success": False, "message": "Authentication required."}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
 def role_required(*roles):
     """Allow access only to specified roles"""
     def decorator(f):
@@ -182,6 +193,22 @@ def role_required(*roles):
                 return redirect(url_for('auth_routes.auth_login', next=request.path))
             if session.get('role') not in roles:
                 return redirect(url_for('auth_routes.unauthorized'))
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
+def api_role_required(*roles):
+    """Return JSON 401/403 for API authorization checks."""
+    allowed_roles = {str(role) for role in roles}
+
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if 'staff_id' not in session:
+                return jsonify({"success": False, "message": "Authentication required."}), 401
+            if session.get('role') not in allowed_roles:
+                return jsonify({"success": False, "message": "Forbidden."}), 403
             return f(*args, **kwargs)
         return decorated
     return decorator

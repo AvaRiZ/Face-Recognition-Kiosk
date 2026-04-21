@@ -2985,6 +2985,7 @@ export default function AnalyticsReports() {
       setSocketConnected(false);
     }
 
+    socket.connect();
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("analytics_updated", handleAnalyticsUpdated);
@@ -2992,6 +2993,7 @@ export default function AnalyticsReports() {
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
       socket.off("analytics_updated", handleAnalyticsUpdated);
+      socket.disconnect();
     };
   }, []);
 

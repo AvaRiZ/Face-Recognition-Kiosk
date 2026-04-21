@@ -597,8 +597,12 @@ export default function Dashboard() {
       loadDashboardData({ silent: true });
     }
 
+    socket.connect();
     socket.on("analytics_updated", handleAnalyticsUpdated);
-    return () => socket.off("analytics_updated", handleAnalyticsUpdated);
+    return () => {
+      socket.off("analytics_updated", handleAnalyticsUpdated);
+      socket.disconnect();
+    };
   }, []);
 
   if (loading) {
