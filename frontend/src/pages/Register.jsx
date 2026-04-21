@@ -113,6 +113,9 @@ const INITIAL_INFO = {
   web_session_active: false,
   session_expired: false,
   ready_to_submit: false,
+  status_reason_code: null,
+  status_reason_message: '',
+  status_updated_at: null,
   sample_previews: [],
   camera_stream: {
     state: 'unknown',
@@ -566,6 +569,8 @@ export default function RegisterPage() {
   const frameAgeSeconds = typeof info.camera_stream?.last_frame_age_seconds === 'number'
     ? Math.round(info.camera_stream.last_frame_age_seconds)
     : null;
+  const statusReasonMessage = (info.status_reason_message || '').trim();
+  const statusReasonCode = (info.status_reason_code || '').trim();
   const streamStale = frameAgeSeconds != null && frameAgeSeconds > 4;
 
   let healthVariant = 'text-bg-success';
@@ -607,6 +612,10 @@ export default function RegisterPage() {
 
   if (sampleCount === 0 && webSessionActive) {
     guidanceSteps.push('No sample previews yet. Keep one face centered and well lit in the CCTV window.');
+  }
+
+  if (statusReasonMessage && !guidanceSteps.includes(statusReasonMessage)) {
+    guidanceSteps.unshift(statusReasonMessage);
   }
 
   if (loading) {
@@ -672,6 +681,15 @@ export default function RegisterPage() {
                     {captureError ? (
                       <StatusAlert tone="danger" title="Registration error">
                         {captureError}
+                      </StatusAlert>
+                    ) : null}
+
+                    {!captureError && statusReasonMessage ? (
+                      <StatusAlert
+                        tone={statusReasonCode === 'capture_complete' || statusReasonCode === 'registration_submitted' ? 'ready' : 'info'}
+                        title="Capture status"
+                      >
+                        {statusReasonMessage}
                       </StatusAlert>
                     ) : null}
 

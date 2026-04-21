@@ -716,9 +716,13 @@ export default function Dashboard() {
       loadDashboardData({ silent: true, filterKey: selectedFilter });
     }
 
+    socket.connect();
     socket.on("analytics_updated", handleAnalyticsUpdated);
-    return () => socket.off("analytics_updated", handleAnalyticsUpdated);
-  }, [selectedFilter]);
+    return () => {
+      socket.off("analytics_updated", handleAnalyticsUpdated);
+      socket.disconnect();
+    };
+  }, []);
 
   if (loading) {
     return (

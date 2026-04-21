@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from flask import Flask, redirect, session, url_for
+from flask import Flask, redirect, request, session, url_for
 
 from core.config import AppConfig
 from core.state import AppStateManager
@@ -46,6 +46,8 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
         "reset_registration_state": state.reset_registration_state,
         "start_web_registration_session": state.start_web_registration_session,
         "cancel_web_registration_session": state.cancel_web_registration_session,
+        "set_registration_status_reason": state.set_registration_status_reason,
+        "clear_registration_status_reason": state.clear_registration_status_reason,
         "complete_registration": state.complete_registration,
         "remove_user_embedding": state.remove_user,
         "replace_user": state.replace_user,
@@ -74,6 +76,10 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
 
     @app.route("/register")
     def spa_public_routes():
+        if "staff_id" not in session:
+            return redirect(url_for("auth_routes.auth_login", next=request.path))
+        if session.get("role") not in {"super_admin", "library_admin", "library_staff"}:
+            return redirect(url_for("auth_routes.unauthorized"))
         return app.send_static_file("react/index.html")
 
     return app

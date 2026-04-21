@@ -1,5 +1,5 @@
 import React from 'react';
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import Layout from './components/Layout.jsx';
 import LoginPage from './pages/Login.jsx';
 import DashboardPage from './pages/Dashboard.jsx';
@@ -123,53 +123,49 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
+function RoleProtectedRoute({ roles, children }) {
+  const { session, loading } = useSession();
+
+  if (loading) {
+    return (
+      <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '50vh' }}>
+        <div className="spinner-border text-primary" role="status">
+          <span className="visually-hidden">Loading...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!roles.includes(session.role)) {
+    return <Navigate to="/unauthorized" replace />;
+  }
+
+  return children;
+}
+
 export default function App() {
   const sessionState = useSessionState();
   const themeState = useThemeState();
-  const location = useLocation();
-  const navigate = useNavigate();
-
-  React.useEffect(() => {
-    let cancelled = false;
-
-    async function syncPendingRegistration() {
-      try {
-        const resp = await fetch('/api/register-info', { credentials: 'include' });
-        if (!resp.ok) {
-          return;
-        }
-        const payload = await resp.json();
-        if (cancelled) {
-          return;
-        }
-        const registrationReady = Boolean(
-          payload?.ready_to_submit
-            || payload?.has_pending_registration
-            || payload?.is_in_progress
-            || payload?.web_session_active
-        );
-        if (registrationReady && location.pathname !== '/register') {
-          navigate('/register', { replace: true });
-        }
-      } catch {
-        // Ignore polling failures and keep the current route.
-      }
-    }
-
-    syncPendingRegistration();
-    const timer = window.setInterval(syncPendingRegistration, 1500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [location.pathname, navigate]);
 
   return (
     <ThemeContext.Provider value={themeState}>
       <SessionContext.Provider value={sessionState}>
         <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
+        <Route
+          path="/register"
+          element={(
+            <ProtectedRoute>
+              <RoleProtectedRoute roles={['super_admin', 'library_admin', 'library_staff']}>
+                <RegisterPage />
+              </RoleProtectedRoute>
+            </ProtectedRoute>
+          )}
+        />
         <Route path="/unauthorized" element={<UnauthorizedPage />} />
         <Route
           path="/"

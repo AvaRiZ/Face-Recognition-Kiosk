@@ -1,4 +1,5 @@
 import React from 'react';
+import { useLocation } from 'react-router-dom';
 import { useSession, useTheme } from '../App.jsx';
 
 function getInitials(name) {
@@ -12,10 +13,59 @@ function getInitials(name) {
 export default function Header({ onToggleSidebar, sidebarCollapsed = false }) {
   const { session, refresh } = useSession();
   const { theme, toggleTheme } = useTheme();
+  const location = useLocation();
   const displayName = session?.full_name || session?.username || 'Admin';
   const initials = getInitials(displayName);
   const isAdmin = session?.role === 'super_admin' || session?.role === 'library_admin';
   const isDark = theme === 'dark';
+  const [registrationInfo, setRegistrationInfo] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!session) {
+      setRegistrationInfo(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    async function loadRegistrationInfo() {
+      try {
+        const response = await fetch('/api/register-info', { credentials: 'include' });
+        if (!response.ok) {
+          if (!cancelled && (response.status === 401 || response.status === 403)) {
+            setRegistrationInfo(null);
+          }
+          return;
+        }
+        const payload = await response.json();
+        if (!cancelled) {
+          setRegistrationInfo(payload);
+        }
+      } catch {
+        // Keep previous indicator state on transient fetch failures.
+      }
+    }
+
+    loadRegistrationInfo();
+    const timer = window.setInterval(loadRegistrationInfo, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [session]);
+
+  const registrationActive = Boolean(
+    registrationInfo
+    && (
+      registrationInfo.ready_to_submit
+      || registrationInfo.has_pending_registration
+      || registrationInfo.is_in_progress
+      || registrationInfo.web_session_active
+    )
+  );
+  const isRegistrationPage = location.pathname === '/register';
+  const registrationCtaVisible = registrationActive && !isRegistrationPage;
+  const registrationCtaLabel = registrationInfo?.ready_to_submit ? 'Open Registration (Ready)' : 'Open Registration';
+  const registrationReason = (registrationInfo?.status_reason_message || '').trim();
 
   async function handleLogout(ev) {
     ev.preventDefault();
@@ -60,6 +110,18 @@ export default function Header({ onToggleSidebar, sidebarCollapsed = false }) {
 
       <nav className="header-nav ms-auto">
         <ul className="d-flex align-items-center">
+          {registrationCtaVisible ? (
+            <li className="nav-item me-2">
+              <a
+                href="/register"
+                className="btn btn-sm btn-warning d-inline-flex align-items-center gap-2"
+                title={registrationReason || 'Registration activity is in progress.'}
+              >
+                <i className="bi bi-person-plus-fill"></i>
+                <span>{registrationCtaLabel}</span>
+              </a>
+            </li>
+          ) : null}
           <li className="nav-item dropdown pe-3">
             <a className="nav-link nav-profile d-flex align-items-center pe-0" href="#" data-bs-toggle="dropdown">
               {session?.profile_image ? (

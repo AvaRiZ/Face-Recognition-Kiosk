@@ -72,6 +72,13 @@ class CLIApplication:
                     "updated_at": time.time(),
                 }
             )
+        if hasattr(self.state, "set_registration_status_reason"):
+            if state == "paused":
+                self.state.set_registration_status_reason("detection_paused", message)
+            elif state == "disconnected":
+                self.state.set_registration_status_reason("stream_disconnected", message)
+            elif state == "reconnecting":
+                self.state.set_registration_status_reason("stream_reconnecting", message)
 
     def get_stream_status(self) -> dict:
         with self._stream_status_lock:
@@ -503,6 +510,11 @@ class CLIApplication:
                     selected_state = self.state.get_track_state(selected_track_id)
                     from_web_session = bool(reg_state.web_session_active)
                     if selected_state and selected_state.recognized and selected_state.user:
+                        if hasattr(self.state, "set_registration_status_reason"):
+                            self.state.set_registration_status_reason(
+                                "already_recognized",
+                                "Selected face is already recognized. Registration capture was canceled.",
+                            )
                         print(
                             "Web registration canceled because the selected face is already recognized."
                             if from_web_session
@@ -570,9 +582,47 @@ class CLIApplication:
                         if status == "recognized":
                             self.state.stop_manual_registration()
                             self.state.clear_captured_samples()
+                            if hasattr(self.state, "set_registration_status_reason"):
+                                self.state.set_registration_status_reason(
+                                    "recognized_existing",
+                                    "Face already exists in the database. First-time registration was canceled.",
+                                )
                             print("Face already exists in the database. First-time registration canceled.")
                         elif self.state.registration_state.in_progress:
                             self.state.stop_manual_registration()
+                        elif hasattr(self.state, "set_registration_status_reason"):
+                            if status == "pose_mismatch":
+                                expected_pose = result.get("expected_pose") or "front"
+                                detected_pose = result.get("detected_pose") or "unknown"
+                                self.state.set_registration_status_reason(
+                                    "pose_mismatch",
+                                    f"Pose mismatch: expected {expected_pose}, detected {detected_pose}.",
+                                )
+                            elif status == "low_quality":
+                                quality_debug = result.get("quality_debug") or {}
+                                issue_label = (quality_debug.get("primary_issue_label") or "low quality").strip()
+                                self.state.set_registration_status_reason(
+                                    "low_quality",
+                                    f"Capture quality too low ({issue_label}). Keep face centered and well lit.",
+                                )
+                            elif status == "registration_captured":
+                                expected_pose = result.get("expected_pose") or (self.state.get_current_registration_pose() or "front")
+                                capture_count = self.state.registration_state.capture_count
+                                max_captures = self.state.registration_state.max_captures
+                                self.state.set_registration_status_reason(
+                                    "capture_in_progress",
+                                    f"Captured sample for {expected_pose}. Progress {capture_count}/{max_captures}.",
+                                )
+                            elif status == "uncertain":
+                                self.state.set_registration_status_reason(
+                                    "uncertain_match",
+                                    "Face match is uncertain. Keep still and improve lighting for clearer capture.",
+                                )
+                            elif status == "no_match":
+                                self.state.set_registration_status_reason(
+                                    "no_match",
+                                    "No match yet. Continue holding position for registration capture.",
+                                )
 
             reg_state = self.state.registration_state
             selected_track_id = reg_state.manual_track_id if reg_state.manual_active else reg_state.selected_track_id

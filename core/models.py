@@ -67,6 +67,9 @@ class RegistrationState:
     session_expired: bool = False
     session_started_at: Optional[float] = None
     last_activity_at: Optional[float] = None
+    status_reason_code: Optional[str] = None
+    status_reason_message: str = ""
+    status_updated_at: Optional[str] = None
 
     @property
     def capture_count(self) -> int:

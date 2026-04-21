@@ -183,7 +183,7 @@ export default function SettingsPage() {
                     value={threshold}
                     onChange={(ev) => setThreshold(ev.target.value)}
                   />
-                  <div className="form-text">Lower values = stricter. Higher values = more lenient.</div>
+                  <div className="form-text">Higher values = stricter (requires higher confidence). Lower values = more lenient.</div>
                 </div>
 
                 <div className="col-12">

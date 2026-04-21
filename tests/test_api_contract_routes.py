@@ -32,6 +32,11 @@ class ApiContractRouteTests(unittest.TestCase):
         self.assertIn('/api/audit-log', source)
         self.assertIn('/api/profiles', source)
 
+    def test_settings_threshold_help_text_matches_comparator_semantics(self) -> None:
+        source = Path("frontend/src/pages/Settings.jsx").read_text(encoding="utf-8")
+        self.assertIn("Higher values = stricter", source)
+        self.assertIn("Lower values = more lenient", source)
+
 
 if __name__ == "__main__":
     unittest.main()

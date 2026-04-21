@@ -105,6 +105,8 @@ class AppConfig:
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
+
+    # YOLO detection parameters:
     yolo_detection_confidence: float = 0.20
     yolo_inference_imgsz: int = 960
 
@@ -125,7 +127,7 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_face_area_min` to reject small, low-detail faces.
     # - Lower it if your camera is farther away and valid faces look smaller.
-    quality_face_area_min: int = 260 * 260
+    quality_face_area_min: int = 230 * 230
     quality_face_area_good: int = 280 * 280
 
     # ------------------------------------------------------------------
@@ -144,8 +146,8 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_sharpness_min` to be stricter against blur.
     # - Lower it if motion blur is common but recognition still works.
-    quality_sharpness_min: float = 35.0
-    quality_sharpness_good: float = 100.0
+    quality_sharpness_min: float = 15.0
+    quality_sharpness_good: float = 30.0
 
     # ------------------------------------------------------------------
     # Quality scoring: brightness / exposure
@@ -184,8 +186,8 @@ class AppConfig:
     # Yaw:
     # - Based on nose offset from the eye midpoint.
     # - Lower the thresholds to prefer more front-facing faces.
-    quality_pose_yaw_good: float = 0.35
-    quality_pose_yaw_max: float = 0.50
+    quality_pose_yaw_good: float = 0.40
+    quality_pose_yaw_max: float = 0.70
 
     # Landmark margin:
     # - Measures how close key landmarks are to the crop edges.
@@ -196,13 +198,13 @@ class AppConfig:
     # Registration pose classifier thresholds.
     # These are used to classify the current head pose as front/left/right
     # using landmark yaw measured as nose offset from eye midpoint.
-    registration_pose_front_max_yaw_ratio: float = 0.30
-    registration_pose_side_min_yaw_ratio: float = 0.60
+    registration_pose_front_max_yaw_ratio: float = 0.20
+    registration_pose_side_min_yaw_ratio: float = 0.40
 
     # Registration distance gate (face-size proxy).
     # The closest detected face is selected for registration; this threshold
     # ensures that selected face is close enough to camera before capture.
-    registration_min_face_area: int = 260 * 260
+    registration_min_face_area: int = 240 * 240
 
     # ------------------------------------------------------------------
     # Device configuration

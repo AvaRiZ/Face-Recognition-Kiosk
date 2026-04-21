@@ -241,7 +241,10 @@ class FaceRecognitionService:
     ):
         reg_state = self.state.registration_state
         if reg_state.in_progress:
-            return {"status": "registration_pending"}
+            return {
+                "status": "registration_pending",
+                "reason_code": "registration_pending",
+            }
 
         if precomputed_quality is None:
             quality_score, quality_status, quality_debug = quality_service.assess_face_quality(
@@ -263,6 +266,7 @@ class FaceRecognitionService:
             print(message)
             return {
                 "status": "low_quality",
+                "reason_code": "low_quality",
                 "quality_score": quality_score,
                 "quality_status": quality_status,
                 "quality_debug": quality_debug,
@@ -288,6 +292,7 @@ class FaceRecognitionService:
             print("  Failed to extract embeddings")
             return {
                 "status": "embedding_failed",
+                "reason_code": "embedding_failed",
                 "quality_score": quality_score,
                 "quality_status": quality_status,
                 "quality_debug": quality_debug,
@@ -303,6 +308,7 @@ class FaceRecognitionService:
                 )
                 return {
                     "status": "uncertain",
+                    "reason_code": "uncertain_match",
                     "quality_score": quality_score,
                     "quality_status": quality_status,
                     "quality_debug": quality_debug,
@@ -357,6 +363,7 @@ class FaceRecognitionService:
             )
             return {
                 "status": "recognized",
+                "reason_code": "recognized_existing",
                 "quality_score": quality_score,
                 "quality_status": quality_status,
                 "quality_debug": quality_debug,
@@ -375,6 +382,7 @@ class FaceRecognitionService:
                 )
                 return {
                     "status": "pose_mismatch",
+                    "reason_code": "pose_mismatch",
                     "quality_score": quality_score,
                     "quality_status": quality_status,
                     "quality_debug": quality_debug,
@@ -404,6 +412,7 @@ class FaceRecognitionService:
 
             return {
                 "status": "registration_captured",
+                "reason_code": "registration_captured",
                 "quality_score": quality_score,
                 "quality_status": quality_status,
                 "quality_debug": quality_debug,
@@ -415,6 +424,7 @@ class FaceRecognitionService:
 
         return {
             "status": "no_match",
+            "reason_code": "no_match",
             "quality_score": quality_score,
             "quality_status": quality_status,
             "quality_debug": quality_debug,
