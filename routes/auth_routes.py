@@ -15,7 +15,8 @@ def create_auth_blueprint():
             return redirect(url_for("routes.dashboard_page"))
         return send_from_directory(os.path.join(current_app.static_folder, "react"), "index.html")
 
-    @bp.route("/api/login", methods=["POST"], endpoint="api_login")
+    @bp.route("/api/auth/login", methods=["POST"], endpoint="api_login")
+    @bp.route("/api/login", methods=["POST"])
     def api_login():
         payload = request.get_json(silent=True) or {}
         username = (payload.get("username") or "").strip()
@@ -43,12 +44,14 @@ def create_auth_blueprint():
         logout_user()
         return redirect(url_for("auth_routes.auth_login"))
 
-    @bp.route("/api/logout", methods=["POST"], endpoint="api_logout")
+    @bp.route("/api/auth/logout", methods=["POST"], endpoint="api_logout")
+    @bp.route("/api/logout", methods=["POST"])
     def api_logout():
         logout_user()
         return jsonify({"success": True})
 
-    @bp.route("/api/session", methods=["GET"], endpoint="api_session")
+    @bp.route("/api/auth/session", methods=["GET"], endpoint="api_session")
+    @bp.route("/api/session", methods=["GET"])
     def api_session():
         if "staff_id" not in session:
             return jsonify({"authenticated": False})

@@ -44,7 +44,7 @@ function useSessionState() {
 
   const refresh = React.useCallback(() => {
     setLoading(true);
-    fetch('/api/session', { credentials: 'include' })
+    fetch('/api/auth/session', { credentials: 'include' })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         setSession(data && data.authenticated ? data : null);

@@ -12,7 +12,7 @@ export default function SettingsPage() {
   const [maxOccupancy, setMaxOccupancy] = React.useState('300');
 
   React.useEffect(() => {
-    fetchJson('/api/settings')
+    fetchJson('/api/settings/recognition')
       .then((resp) => {
         setData(resp);
         setThreshold(String(resp.threshold ?? '0.3'));
@@ -27,7 +27,7 @@ export default function SettingsPage() {
   async function handleSubmit(ev) {
     ev.preventDefault();
     try {
-      const resp = await fetchJson('/api/settings', {
+      const resp = await fetchJson('/api/settings/recognition', {
         method: 'POST',
         body: JSON.stringify({
           max_occupancy: maxOccupancy,

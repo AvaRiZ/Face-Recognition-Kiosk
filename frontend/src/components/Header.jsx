@@ -19,7 +19,7 @@ export default function Header({ onToggleSidebar, sidebarCollapsed = false }) {
 
   async function handleLogout(ev) {
     ev.preventDefault();
-    await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     refresh();
     window.location.href = '/login';
   }

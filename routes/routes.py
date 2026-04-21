@@ -34,6 +34,7 @@ from db import connect as db_connect
 from routes.ml_analytics import run_ml_analytics
 from app.realtime import emit_analytics_update
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
+from services.versioning_service import bump_profiles_version, bump_settings_version, ensure_version_settings
 from utils.image_utils import crop_face_region
 
 
@@ -74,6 +75,7 @@ def init_imported_logs_table(db_path):
 def create_routes_blueprint(deps):
     bp = Blueprint("routes", __name__)
     init_imported_logs_table(deps["db_path"])
+    ensure_version_settings(deps["db_path"])
 
     def _spa_index():
         built_path = os.path.join(current_app.static_folder, "react", "index.html")
@@ -578,8 +580,7 @@ def create_routes_blueprint(deps):
             SELECT u.name, u.sr_code, COUNT(r.log_id) as visits
             FROM recognition_log r
             JOIN users u ON r.user_id = u.user_id
-            WHERE DATE(r.timestamp) BETWEEN ? AND ?
-            GROUP BY r.user_id
+            GROUP BY u.user_id, u.name, u.sr_code
             ORDER BY visits DESC
             LIMIT 10
         """, range_params)
@@ -1201,6 +1202,7 @@ def create_routes_blueprint(deps):
                 embedding_dim=0,
             )
         )
+        bump_profiles_version(deps["db_path"])
         saved_user = repository.get_user_by_sr_code(sr_code)
         if saved_user:
             saved_user.id = user_id
@@ -1260,6 +1262,7 @@ def create_routes_blueprint(deps):
             c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
             conn.commit()
             conn.close()
+            bump_profiles_version(deps["db_path"])
  
             # Remove from in-memory embeddings
             deps["remove_user_embedding"](user_id)
@@ -1381,16 +1384,24 @@ def create_routes_blueprint(deps):
     def api_dashboard():
         return jsonify(_dashboard_data(request.args.get("filter")))
 
-    @bp.route("/api/settings", methods=["GET", "POST"], endpoint="api_settings")
+    @bp.route("/api/settings/recognition", methods=["GET", "POST"], endpoint="api_settings")
+    @bp.route("/api/settings", methods=["GET", "POST"])
     @login_required
     @role_required("super_admin")
     def api_settings():
         if request.method == "POST":
             payload = request.get_json(silent=True) or {}
-            deps["set_thresholds"](
-                float(payload.get("threshold", deps["get_thresholds"]()[0])),
-                float(payload.get("quality_threshold", deps["get_thresholds"]()[1])),
-            )
+            try:
+                threshold_value = float(payload.get("threshold", deps["get_thresholds"]()[0]))
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "message": "Invalid threshold value."}), 400
+            try:
+                quality_threshold_value = float(payload.get("quality_threshold", deps["get_thresholds"]()[1]))
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "message": "Invalid quality threshold value."}), 400
+            deps["set_thresholds"](threshold_value, quality_threshold_value)
+            _set_setting(deps["db_path"], "threshold", threshold_value)
+            _set_setting(deps["db_path"], "quality_threshold", quality_threshold_value)
 
             vector_index_top_k_raw = str(payload.get("vector_index_top_k", "")).strip()
             if vector_index_top_k_raw:
@@ -1408,8 +1419,21 @@ def create_routes_blueprint(deps):
                 except ValueError:
                     max_occupancy_value = 300
                 _set_setting(deps["db_path"], "max_occupancy", max_occupancy_value)
+            bump_settings_version(deps["db_path"])
 
-        threshold, quality_threshold = deps["get_thresholds"]()
+        threshold_setting = _get_setting(deps["db_path"], "threshold", str(deps["get_thresholds"]()[0]))
+        quality_threshold_setting = _get_setting(
+            deps["db_path"], "quality_threshold", str(deps["get_thresholds"]()[1])
+        )
+        try:
+            threshold = float(threshold_setting)
+        except (TypeError, ValueError):
+            threshold = deps["get_thresholds"]()[0]
+        try:
+            quality_threshold = float(quality_threshold_setting)
+        except (TypeError, ValueError):
+            quality_threshold = deps["get_thresholds"]()[1]
+        deps["set_thresholds"](threshold, quality_threshold)
         vector_index_top_k_setting = _get_setting(
             deps["db_path"],
             "vector_index_top_k",
@@ -1464,6 +1488,94 @@ def create_routes_blueprint(deps):
         conn.close()
         return jsonify({"rows": rows})
 
+    @bp.route("/api/profiles", methods=["POST"], endpoint="api_profiles_create")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def api_profiles_create():
+        payload = request.get_json(silent=True) or {}
+        name = (payload.get("name") or "").strip()
+        sr_code = (payload.get("sr_code") or "").strip()
+        gender = (payload.get("gender") or "").strip()
+        program = (payload.get("program") or "").strip()
+
+        is_valid, validation_message, invalid_field = _validate_registration_fields(name, sr_code, gender, program)
+        if not is_valid:
+            return jsonify({"success": False, "message": validation_message, "field": invalid_field}), 400
+
+        repository = deps["repository"]
+        existing = repository.get_user_by_sr_code(sr_code)
+        if existing is not None:
+            return jsonify({"success": False, "message": f"SR Code {sr_code} already exists."}), 409
+
+        user_id = repository.save_user(
+            User(
+                id=0,
+                name=name,
+                sr_code=sr_code,
+                gender=gender,
+                program=program,
+                embeddings={},
+                image_paths=[],
+                embedding_dim=0,
+            )
+        )
+        saved_user = repository.get_user_by_sr_code(sr_code)
+        if saved_user:
+            deps["replace_user"](saved_user)
+        bump_profiles_version(deps["db_path"])
+        log_action("CREATE_PROFILE", target=f"{name} ({sr_code})")
+        return jsonify({"success": True, "user_id": int(user_id)})
+
+    @bp.route("/api/profiles/<int:user_id>", methods=["PUT"], endpoint="api_profiles_update")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def api_profiles_update(user_id):
+        payload = request.get_json(silent=True) or {}
+        name = (payload.get("name") or "").strip()
+        sr_code = (payload.get("sr_code") or "").strip()
+        gender = (payload.get("gender") or "").strip()
+        program = (payload.get("program") or "").strip()
+
+        is_valid, validation_message, invalid_field = _validate_registration_fields(name, sr_code, gender, program)
+        if not is_valid:
+            return jsonify({"success": False, "message": validation_message, "field": invalid_field}), 400
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"success": False, "message": "Profile not found."}), 404
+
+        existing_for_sr_code = deps["repository"].get_user_by_sr_code(sr_code)
+        if existing_for_sr_code is not None and int(existing_for_sr_code.id) != int(user_id):
+            conn.close()
+            return jsonify({"success": False, "message": f"SR Code {sr_code} already exists."}), 409
+
+        c.execute(
+            """
+            UPDATE users
+            SET name = ?, sr_code = ?, gender = ?, course = ?, last_updated = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (name, sr_code, gender, program, user_id),
+        )
+        try:
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "message": f"Failed to update profile: {exc}"}), 400
+        conn.close()
+
+        refreshed_user = deps["repository"].get_user_by_id(user_id)
+        if refreshed_user:
+            deps["replace_user"](refreshed_user)
+        bump_profiles_version(deps["db_path"])
+        log_action("UPDATE_PROFILE_RECORD", target=f"{name} ({sr_code})")
+        return jsonify({"success": True, "user_id": int(user_id)})
+
     @bp.route("/api/archive-profiles", methods=["GET"], endpoint="api_archive_profiles")
     @login_required
     @role_required("super_admin", "library_admin")
@@ -1515,6 +1627,7 @@ def create_routes_blueprint(deps):
         conn.commit()
         conn.close()
 
+        bump_profiles_version(deps["db_path"])
         log_action("ARCHIVE_PROFILES", target=",".join(map(str, user_ids)))
         return jsonify({"success": True})
 
@@ -1570,6 +1683,7 @@ def create_routes_blueprint(deps):
         conn.commit()
         conn.close()
 
+        bump_profiles_version(deps["db_path"])
         log_action("RESTORE_PROFILES", target=",".join(map(str, user_ids)))
         return jsonify({"success": True})
 
@@ -1886,23 +2000,39 @@ def create_routes_blueprint(deps):
                 "details": str(e),
             }), 500
 
-    @bp.route("/api/entry-logs", methods=["GET"], endpoint="api_entry_logs")
-    @bp.route("/api/entry-exit-logs", methods=["GET"], endpoint="api_entry_exit_logs")
+    @bp.route("/api/events", methods=["GET"], endpoint="api_events")
+    @bp.route("/api/entry-logs", methods=["GET"])
+    @bp.route("/api/entry-exit-logs", methods=["GET"])
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
-    def api_entry_logs():
+    def api_events():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             """
-            SELECT u.name, u.sr_code, r.confidence, r.timestamp
-            FROM recognition_log r
-            JOIN users u ON r.user_id = u.user_id
-            ORDER BY r.timestamp DESC
+            SELECT
+                COALESCE(u.name, '-') AS name,
+                COALESCE(e.sr_code, u.sr_code, '-') AS sr_code,
+                COALESCE(e.confidence, 0.0) AS confidence,
+                COALESCE(e.captured_at, e.ingested_at) AS event_time
+            FROM recognition_events e
+            LEFT JOIN users u ON e.user_id = u.user_id
+            ORDER BY e.ingested_at DESC, e.id DESC
             LIMIT 500
             """
         )
         raw_logs = c.fetchall()
+        if not raw_logs:
+            c.execute(
+                """
+                SELECT u.name, u.sr_code, r.confidence, r.timestamp
+                FROM recognition_log r
+                JOIN users u ON r.user_id = u.user_id
+                ORDER BY r.timestamp DESC
+                LIMIT 500
+                """
+            )
+            raw_logs = c.fetchall()
         rows = []
         for name, sr_code, confidence, timestamp in raw_logs:
             value = _coerce_confidence(confidence) or 0
@@ -1917,6 +2047,37 @@ def create_routes_blueprint(deps):
                     "date": date_value,
                 }
             )
+        conn.close()
+        return jsonify({"rows": rows})
+
+    @bp.route("/api/audit-log", methods=["GET"], endpoint="api_audit_log")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def api_audit_log():
+        limit = 500
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT audit_id, staff_id, username, action, target, ip_address, timestamp
+            FROM audit_log
+            ORDER BY timestamp DESC, audit_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = [
+            {
+                "audit_id": row[0],
+                "staff_id": row[1],
+                "username": row[2] or "",
+                "action": row[3] or "",
+                "target": row[4] or "",
+                "ip_address": row[5] or "",
+                "timestamp": row[6] or "",
+            }
+            for row in c.fetchall()
+        ]
         conn.close()
         return jsonify({"rows": rows})
 

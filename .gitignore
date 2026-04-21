@@ -25,6 +25,8 @@ Thumbs.db
 
 # Logs
 *.log
+data/worker_queue/*
+backups/*
 
 # Local config
 .env

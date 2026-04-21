@@ -19,7 +19,7 @@ export default function LoginPage() {
   function handleSubmit(ev) {
     ev.preventDefault();
     setError('');
-    fetchJson('/api/login', {
+    fetchJson('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify(form)
     })
