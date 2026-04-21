@@ -98,13 +98,15 @@ class AppConfig:
     registration_session_timeout_seconds: int = 180
 
     confidence_smoothing_window: int = 3
-    detection_every_n_frames: int = 3
+    detection_every_n_frames: int = 1
     recognition_cooldown_seconds: int = 1
     recognition_confidence_threshold: float = 0.72
     unknown_person_attempt_threshold: int = 3
     stability_time_required: float = 0.3
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
+    yolo_detection_confidence: float = 0.20
+    yolo_inference_imgsz: int = 960
 
     # Camera / stream source used by the live CCTV loop.
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
@@ -155,7 +157,7 @@ class AppConfig:
     # - Lower it if your environment is dim and faces are still usable.
     # - Lower `quality_brightness_max` if overexposed faces should fail sooner.
     # - Widen the `good_min` to `good_max` band if lighting is more variable.
-    quality_brightness_min: float = 55.0
+    quality_brightness_min: float = 50.0
     quality_brightness_good_min: float = 70.0
     quality_brightness_good_max: float = 185.0
     quality_brightness_max: float = 215.0
@@ -165,8 +167,8 @@ class AppConfig:
     # Tuning:
     # - Raise these to prefer richer contrast and facial detail.
     # - Lower them if your camera feed is naturally low-contrast.
-    quality_dynamic_range_min: float = 35.0
-    quality_dynamic_range_good: float = 85.0
+    quality_dynamic_range_min: float = 25.0
+    quality_dynamic_range_good: float = 65.0
 
     # ------------------------------------------------------------------
     # Quality scoring: landmark-based pose / truncation
@@ -176,14 +178,14 @@ class AppConfig:
     # Eye tilt:
     # - Lower values mean a more level face.
     # - Lower the thresholds to become stricter about roll / alignment.
-    quality_pose_eye_tilt_good: float = 0.15
-    quality_pose_eye_tilt_max: float = 0.50
+    quality_pose_eye_tilt_good: float = 0.25
+    quality_pose_eye_tilt_max: float = 0.80
 
     # Yaw:
     # - Based on nose offset from the eye midpoint.
     # - Lower the thresholds to prefer more front-facing faces.
     quality_pose_yaw_good: float = 0.35
-    quality_pose_yaw_max: float = 0.70
+    quality_pose_yaw_max: float = 0.50
 
     # Landmark margin:
     # - Measures how close key landmarks are to the crop edges.
@@ -194,8 +196,8 @@ class AppConfig:
     # Registration pose classifier thresholds.
     # These are used to classify the current head pose as front/left/right
     # using landmark yaw measured as nose offset from eye midpoint.
-    registration_pose_front_max_yaw_ratio: float = 0.20
-    registration_pose_side_min_yaw_ratio: float = 0.30
+    registration_pose_front_max_yaw_ratio: float = 0.30
+    registration_pose_side_min_yaw_ratio: float = 0.60
 
     # Registration distance gate (face-size proxy).
     # The closest detected face is selected for registration; this threshold
