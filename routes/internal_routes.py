@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import numpy as np
 from flask import Blueprint, jsonify, request
 
+from app.realtime import emit_analytics_update
 from core.models import User
 from db import connect as db_connect
 from services.versioning_service import bump_profiles_version, get_profiles_version, get_settings_version
@@ -182,29 +183,40 @@ def create_internal_blueprint(deps):
         )
         inserted = (c.rowcount or 0) > 0
 
-        if inserted and user_id:
-            c.execute(
-                """
-                INSERT INTO recognition_log (
-                    user_id, confidence, primary_confidence, secondary_confidence,
-                    primary_distance, secondary_distance, face_quality, method
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    confidence or 0.0,
-                    primary_confidence,
-                    secondary_confidence,
-                    primary_distance,
-                    secondary_distance,
-                    face_quality,
-                    method,
-                ),
-            )
-
         conn.commit()
+        if inserted and user_id:
+            try:
+                c.execute(
+                    """
+                    INSERT INTO recognition_log (
+                        user_id, confidence, primary_confidence, secondary_confidence,
+                        primary_distance, secondary_distance, face_quality, method
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        confidence or 0.0,
+                        primary_confidence,
+                        secondary_confidence,
+                        primary_distance,
+                        secondary_distance,
+                        face_quality,
+                        method,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
         conn.close()
+        if inserted:
+            emit_analytics_update(
+                "recognition_event_ingested",
+                {
+                    "event_id": event_id,
+                    "user_id": user_id,
+                },
+            )
         return jsonify({"success": True, "event_id": event_id, "duplicate": not inserted})
 
     @bp.route("/embedding-updates", methods=["POST"], endpoint="embedding_updates")

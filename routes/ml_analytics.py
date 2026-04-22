@@ -13,7 +13,7 @@ from core.program_catalog import (
     normalize_program_name,
     resolve_program_name,
 )
-from db import connect as db_connect
+from db import connect as db_connect, table_columns
 from routes.forecasting import run_all_forecasts
 
 
@@ -61,7 +61,27 @@ def _coerce_confidence(value):
             return float(raw.decode("utf-8", errors="ignore"))
         except (ValueError, TypeError):
             return None
-    return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except (ValueError, TypeError):
+            return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _timestamp_to_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    text = str(value).strip()
+    return text
 
 
 def _to_builtin(value):
@@ -227,7 +247,7 @@ def _year_level_sort_key(value: str | None) -> tuple[int, str]:
 def run_ml_analytics(db_path):
     """
     Full ML analytics pipeline.
-    Reads from recognition_log + imported_logs,
+    Reads from recognition_events (fallback: recognition_log) + imported_logs,
     runs ARIMA, Linear Regression, K-Means, Chi-square,
     Pearson Correlation, and ANOVA.
     Returns a dict ready to be passed to jsonify().
@@ -316,6 +336,7 @@ def run_ml_analytics(db_path):
     after_conf = []
     for row in all_raw:
         sr, name, prog, gender, yr, conf, ts, src = row
+        ts_text = _timestamp_to_text(ts)
         if src == "live":
             cv = _coerce_confidence(conf)
             if cv is None or cv < 0.50:
@@ -324,7 +345,7 @@ def run_ml_analytics(db_path):
         else:
             cv = float(conf) if conf else 0.85
         after_conf.append((sr, name, prog or "", gender or "",
-                           yr or "", cv, ts, src))
+                           yr or "", cv, ts_text, src))
 
     after_hrs = []
     for row in after_conf:

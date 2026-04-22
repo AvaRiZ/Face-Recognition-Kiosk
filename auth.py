@@ -246,7 +246,17 @@ def create_staff(username, password, full_name, role):
 def toggle_staff_status(staff_id):
     conn = connect(DB_PATH)
     c = conn.cursor()
-    c.execute("UPDATE staff_accounts SET is_active = NOT is_active WHERE staff_id = ?", (staff_id,))
+    c.execute(
+        """
+        UPDATE staff_accounts
+        SET is_active = CASE
+            WHEN COALESCE(is_active, 0) = 0 THEN 1
+            ELSE 0
+        END
+        WHERE staff_id = ?
+        """,
+        (staff_id,),
+    )
     conn.commit()
     conn.close()
 

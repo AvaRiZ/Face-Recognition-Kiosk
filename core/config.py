@@ -34,7 +34,7 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Paths and dataset locations
     # ------------------------------------------------------------------
-    model_path: str = "models/yolov8m-face.pt"
+    model_path: str = "models/yolov8n-face.pt"
     db_path: str = "database/faces_improved.db"
     base_save_dir: str = "faces_improved"
     detector_dataset_dir: str = "detector_dataset"
@@ -112,7 +112,7 @@ class AppConfig:
 
     # Camera / stream source used by the live CCTV loop.
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    cctv_stream_source: str = "1"
+    cctv_stream_source: str = "0"
     
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
     cli_top_bar_enabled: bool = True

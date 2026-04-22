@@ -40,6 +40,30 @@ from services.versioning_service import bump_profiles_version, bump_settings_ver
 from utils.image_utils import crop_face_region
 
 
+def _normalize_date_key(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:10]
+
+
+def _normalize_timestamp_for_json(value, default=""):
+    if value is None:
+        return default
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or default
+
+
 def init_imported_logs_table(db_path):
     conn = db_connect(db_path)
     c = conn.cursor()
@@ -145,7 +169,18 @@ def create_routes_blueprint(deps):
                 return float(raw.decode("utf-8", errors="ignore"))
             except (ValueError, TypeError):
                 return None
-        return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return float(text)
+            except (ValueError, TypeError):
+                return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _decode_uploaded_image(file_storage):
         if not file_storage:
@@ -628,7 +663,12 @@ def create_routes_blueprint(deps):
             GROUP BY day
             ORDER BY day ASC
         """, range_params)
-        date_map = {row[0]: row[1] for row in c.fetchall()}
+        date_map = {}
+        for day_value, count in c.fetchall():
+            normalized_day = _normalize_date_key(day_value)
+            if not normalized_day:
+                continue
+            date_map[normalized_day] = int(count or 0)
         daily_visitors = []
         for day_offset in range(filter_window["days"]):
             current_day = start_date + timedelta(days=day_offset)
@@ -1056,11 +1096,14 @@ def create_routes_blueprint(deps):
         daily_conf_sum = {}
         daily_conf_n = {}
         for day, confidence in c.fetchall():
-            daily_counts_map[day] = daily_counts_map.get(day, 0) + 1
+            day_key = _normalize_date_key(day)
+            if not day_key:
+                continue
+            daily_counts_map[day_key] = daily_counts_map.get(day_key, 0) + 1
             value = _coerce_confidence(confidence)
             if value is not None:
-                daily_conf_sum[day] = daily_conf_sum.get(day, 0.0) + value
-                daily_conf_n[day] = daily_conf_n.get(day, 0) + 1
+                daily_conf_sum[day_key] = daily_conf_sum.get(day_key, 0.0) + value
+                daily_conf_n[day_key] = daily_conf_n.get(day_key, 0) + 1
 
         chart_labels = []
         daily_counts = []
@@ -1647,8 +1690,8 @@ def create_routes_blueprint(deps):
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
                 "program": row[4] or "-",
-                "created_at": row[5] or "-",
-                "last_updated": row[6] or "-",
+                "created_at": _normalize_timestamp_for_json(row[5], "-"),
+                "last_updated": _normalize_timestamp_for_json(row[6], "-"),
             }
             for row in c.fetchall()
         ]
@@ -1764,8 +1807,8 @@ def create_routes_blueprint(deps):
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
                 "program": row[4] or "-",
-                "created_at": row[5] or "-",
-                "last_updated": row[6] or "-",
+                "created_at": _normalize_timestamp_for_json(row[5], "-"),
+                "last_updated": _normalize_timestamp_for_json(row[6], "-"),
             }
             for row in c.fetchall()
         ]
@@ -1819,9 +1862,9 @@ def create_routes_blueprint(deps):
                 "sr_code": row[2] or "-",
                 "gender": row[3] or "-",
                 "program": row[4] or "-",
-                "created_at": row[5] or "-",
-                "last_updated": row[6] or "-",
-                "archived_at": row[7] or "-",
+                "created_at": _normalize_timestamp_for_json(row[5], "-"),
+                "last_updated": _normalize_timestamp_for_json(row[6], "-"),
+                "archived_at": _normalize_timestamp_for_json(row[7], "-"),
             }
             for row in c.fetchall()
         ]
@@ -2175,42 +2218,55 @@ def create_routes_blueprint(deps):
     def api_events():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
-        c.execute(
-            """
-            SELECT
-                COALESCE(u.name, '-') AS name,
-                COALESCE(e.sr_code, u.sr_code, '-') AS sr_code,
-                COALESCE(e.confidence, 0.0) AS confidence,
-                COALESCE(e.captured_at, e.ingested_at) AS event_time
-            FROM recognition_events e
-            LEFT JOIN users u ON e.user_id = u.user_id
-            ORDER BY e.ingested_at DESC, e.id DESC
-            LIMIT 500
-            """
-        )
-        raw_logs = c.fetchall()
-        if not raw_logs:
+        raw_logs = []
+        try:
             c.execute(
                 """
-                SELECT u.name, u.sr_code, r.confidence, r.timestamp
-                FROM recognition_log r
-                JOIN users u ON r.user_id = u.user_id
-                ORDER BY r.timestamp DESC
+                SELECT
+                    COALESCE(u.name, '-') AS name,
+                    COALESCE(e.sr_code, u.sr_code, '-') AS sr_code,
+                    COALESCE(e.confidence, 0.0) AS confidence,
+                    COALESCE(e.captured_at, e.ingested_at) AS event_time
+                FROM recognition_events e
+                LEFT JOIN users u ON e.user_id = u.user_id
+                ORDER BY e.ingested_at DESC, e.id DESC
                 LIMIT 500
                 """
             )
             raw_logs = c.fetchall()
+        except Exception:
+            raw_logs = []
+        if not raw_logs:
+            try:
+                c.execute(
+                    """
+                    SELECT u.name, u.sr_code, r.confidence, r.timestamp
+                    FROM recognition_log r
+                    JOIN users u ON r.user_id = u.user_id
+                    ORDER BY r.timestamp DESC
+                    LIMIT 500
+                    """
+                )
+                raw_logs = c.fetchall()
+            except Exception:
+                raw_logs = []
         rows = []
         for name, sr_code, confidence, timestamp in raw_logs:
             value = _coerce_confidence(confidence) or 0
             conf_pct = int(value * 100)
-            date_value = timestamp[:10] if timestamp else ""
+            if isinstance(timestamp, datetime):
+                timestamp_text = timestamp.isoformat(sep=" ", timespec="seconds")
+            elif timestamp:
+                timestamp_text = str(timestamp)
+            else:
+                timestamp_text = ""
+            date_value = timestamp_text[:10] if timestamp_text else ""
             rows.append(
                 {
                     "name": name or "-",
                     "sr_code": sr_code or "-",
                     "conf_pct": conf_pct,
-                    "timestamp": timestamp or "",
+                    "timestamp": _normalize_timestamp_for_json(timestamp_text),
                     "date": date_value,
                 }
             )
@@ -2241,7 +2297,7 @@ def create_routes_blueprint(deps):
                 "action": row[3] or "",
                 "target": row[4] or "",
                 "ip_address": row[5] or "",
-                "timestamp": row[6] or "",
+                "timestamp": _normalize_timestamp_for_json(row[6]),
             }
             for row in c.fetchall()
         ]
