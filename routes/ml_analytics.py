@@ -6,7 +6,7 @@ import warnings
 import struct
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-from db import connect as db_connect
+from db import connect as db_connect, table_columns
 from routes.forecasting import run_all_forecasts
 
 
@@ -37,7 +37,27 @@ def _coerce_confidence(value):
             return float(raw.decode("utf-8", errors="ignore"))
         except (ValueError, TypeError):
             return None
-    return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except (ValueError, TypeError):
+            return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _timestamp_to_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    text = str(value).strip()
+    return text
 
 
 def _to_builtin(value):
@@ -108,10 +128,102 @@ def _get_cached_forecast(daily_df, today):
     }
 
 
+def _get_user_program_expr(conn):
+    try:
+        user_columns = table_columns(conn, "users")
+    except Exception:
+        user_columns = set()
+    if "course" in user_columns:
+        return "NULLIF(TRIM(u.course), '')"
+    if "program" in user_columns:
+        return "NULLIF(TRIM(u.program), '')"
+    return "NULL"
+
+
+def _fetch_live_rows(conn, cursor):
+    user_program_expr = _get_user_program_expr(conn)
+    try:
+        event_columns = table_columns(conn, "recognition_events")
+    except Exception:
+        event_columns = set()
+
+    try:
+        user_columns = table_columns(conn, "users")
+    except Exception:
+        user_columns = set()
+    has_users_table = bool(user_columns)
+
+    if event_columns:
+        decision_filter = ""
+        if "decision" in event_columns:
+            decision_filter = "WHERE COALESCE(e.decision, 'allowed') = 'allowed'"
+        event_time_expr = "COALESCE(e.captured_at, e.ingested_at)"
+        join_users_clause = ""
+        sr_expr = "COALESCE(e.sr_code, '')"
+        name_expr = "'-'"
+        program_expr = "NULL"
+        if has_users_table:
+            join_users_clause = (
+                "LEFT JOIN users u "
+                "ON (e.user_id IS NOT NULL AND u.user_id = e.user_id) "
+                "OR (e.sr_code IS NOT NULL AND u.sr_code = e.sr_code)"
+            )
+            sr_expr = "COALESCE(e.sr_code, u.sr_code, '')"
+            name_expr = "COALESCE(u.name, '-')"
+            program_expr = user_program_expr
+
+        cursor.execute(
+            f"""
+            SELECT
+                {sr_expr} AS sr_code,
+                {name_expr} AS name,
+                {program_expr} AS program,
+                NULL AS gender,
+                NULL AS year_level,
+                e.confidence,
+                {event_time_expr} AS event_time,
+                'live' AS source
+            FROM recognition_events e
+            {join_users_clause}
+            {decision_filter}
+            ORDER BY event_time ASC
+            """
+        )
+        event_rows = cursor.fetchall()
+        if event_rows:
+            return event_rows
+
+    if has_users_table:
+        try:
+            legacy_columns = table_columns(conn, "recognition_log")
+        except Exception:
+            legacy_columns = set()
+        if legacy_columns:
+            cursor.execute(
+                f"""
+                SELECT
+                    u.sr_code,
+                    u.name,
+                    {user_program_expr} AS program,
+                    NULL AS gender,
+                    NULL AS year_level,
+                    r.confidence,
+                    r.timestamp AS event_time,
+                    'live' AS source
+                FROM recognition_log r
+                JOIN users u ON r.user_id = u.user_id
+                ORDER BY r.timestamp ASC
+                """
+            )
+            return cursor.fetchall()
+
+    return []
+
+
 def run_ml_analytics(db_path):
     """
     Full ML analytics pipeline.
-    Reads from recognition_log + imported_logs,
+    Reads from recognition_events (fallback: recognition_log) + imported_logs,
     runs ARIMA, Linear Regression, K-Means, Chi-square,
     Pearson Correlation, and ANOVA.
     Returns a dict ready to be passed to jsonify().
@@ -141,15 +253,7 @@ def run_ml_analytics(db_path):
     # ══════════════════════════════════════════════════════════
     # STAGE 1 — RAW DATA COLLECTION
     # ══════════════════════════════════════════════════════════
-    c.execute("""
-        SELECT u.sr_code, u.name, NULLIF(TRIM(u.course),'') AS program,
-               NULL AS gender, NULL AS year_level,
-               r.confidence, r.timestamp, 'live' AS source
-        FROM recognition_log r
-        JOIN users u ON r.user_id = u.user_id
-        ORDER BY r.timestamp ASC
-    """)
-    live_rows = c.fetchall()
+    live_rows = _fetch_live_rows(conn, c)
 
     c.execute("""
         SELECT sr_code, name, NULLIF(TRIM(program),'') AS program,
@@ -160,8 +264,11 @@ def run_ml_analytics(db_path):
     """)
     imported_rows = c.fetchall()
 
-    c.execute("SELECT COUNT(*) FROM users")
-    total_students = c.fetchone()[0]
+    try:
+        c.execute("SELECT COUNT(*) FROM users")
+        total_students = c.fetchone()[0]
+    except Exception:
+        total_students = 0
     conn.close()
 
     all_raw    = live_rows + imported_rows
@@ -178,6 +285,7 @@ def run_ml_analytics(db_path):
     after_conf = []
     for row in all_raw:
         sr, name, prog, gender, yr, conf, ts, src = row
+        ts_text = _timestamp_to_text(ts)
         if src == "live":
             cv = _coerce_confidence(conf)
             if cv is None or cv < 0.50:
@@ -186,7 +294,7 @@ def run_ml_analytics(db_path):
         else:
             cv = float(conf) if conf else 0.85
         after_conf.append((sr, name, prog or "", gender or "",
-                           yr or "", cv, ts, src))
+                           yr or "", cv, ts_text, src))
 
     after_hrs = []
     for row in after_conf:

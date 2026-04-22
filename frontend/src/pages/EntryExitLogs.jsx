@@ -1,5 +1,6 @@
 import React from 'react';
 import { fetchJson } from '../api.js';
+import { socket } from '../socket.js';
 
 function formatDate(ts) {
   if (!ts) return '-';
@@ -14,18 +15,61 @@ function formatTime(ts) {
 export default function EntryExitLogsPage() {
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(false);
 
   const [search, setSearch] = React.useState('');
   const [pageSize, setPageSize] = React.useState('10');
   const [confFilter, setConfFilter] = React.useState('');
   const [dateFilter, setDateFilter] = React.useState('');
   const [activeTab, setActiveTab] = React.useState('all');
+  const refreshInFlightRef = React.useRef(false);
+  const hasLoadedDataRef = React.useRef(false);
+
+  async function loadLogs({ silent = false } = {}) {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    if (!silent) {
+      setLoading(true);
+    }
+    try {
+      const resp = await fetchJson('/api/events');
+      setRows(resp.rows || []);
+      hasLoadedDataRef.current = true;
+      setError(false);
+    } catch {
+      if (!hasLoadedDataRef.current) {
+        setError(true);
+      }
+      if (!silent) {
+        setRows([]);
+      }
+    } finally {
+      if (!silent) {
+        setLoading(false);
+      }
+      refreshInFlightRef.current = false;
+    }
+  }
 
   React.useEffect(() => {
-    fetchJson('/api/events')
-      .then((resp) => setRows(resp.rows || []))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
+    loadLogs();
+    const timer = window.setInterval(() => {
+      loadLogs({ silent: true });
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  React.useEffect(() => {
+    function handleAnalyticsUpdated() {
+      loadLogs({ silent: true });
+    }
+
+    socket.connect();
+    socket.on('analytics_updated', handleAnalyticsUpdated);
+    return () => {
+      socket.off('analytics_updated', handleAnalyticsUpdated);
+      socket.disconnect();
+    };
   }, []);
 
   const today = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
@@ -94,6 +138,12 @@ export default function EntryExitLogsPage() {
           </ol>
         </nav>
       </div>
+      {error ? (
+        <div className="alert alert-danger">
+          <i className="bi bi-exclamation-triangle me-2"></i>
+          Failed to load entry logs. Please refresh the page.
+        </div>
+      ) : null}
       <div className="card mb-3">
         <div className="card-body">
           <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3">

@@ -2,7 +2,57 @@ import React from "react";
 import { fetchJson } from "../api.js";
 import { socket } from "../socket.js";
 
-// ── Stat Card ────────────────────────────────────────────────
+const PEAK_HOUR_START = 7;
+const PEAK_HOUR_END = 19;
+const PEAK_HOUR_COUNT = PEAK_HOUR_END - PEAK_HOUR_START + 1;
+const DAYS_OF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function toNonNegativeNumber(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function normalizeCountList(raw, expectedLength) {
+  const normalized = Array.from({ length: expectedLength }, () => 0);
+  if (!Array.isArray(raw)) {
+    return normalized;
+  }
+  const limit = Math.min(raw.length, expectedLength);
+  for (let i = 0; i < limit; i += 1) {
+    normalized[i] = toNonNegativeNumber(raw[i]);
+  }
+  return normalized;
+}
+
+function normalizePeakHours(rawData) {
+  if (!Array.isArray(rawData)) {
+    return normalizeCountList([], PEAK_HOUR_COUNT);
+  }
+  if (rawData.length >= 24) {
+    return normalizeCountList(
+      rawData.slice(PEAK_HOUR_START, PEAK_HOUR_END + 1),
+      PEAK_HOUR_COUNT,
+    );
+  }
+  return normalizeCountList(rawData, PEAK_HOUR_COUNT);
+}
+
+function formatHourLabel(hour) {
+  if (hour === 0) return "12 AM";
+  if (hour < 12) return `${hour} AM`;
+  if (hour === 12) return "12 PM";
+  return `${hour - 12} PM`;
+}
+
+const PEAK_HOUR_LABELS = Array.from(
+  { length: PEAK_HOUR_COUNT },
+  (_, idx) => formatHourLabel(PEAK_HOUR_START + idx),
+);
+
+// Stat Card
 function StatCard({ title, value, subtext, iconClass, cardClass }) {
   const highlightStyles = {
     "customers-card": {
@@ -51,7 +101,7 @@ function StatCard({ title, value, subtext, iconClass, cardClass }) {
   );
 }
 
-// ── Daily Visitors Line Chart ────────────────────────────────
+// Daily Visitors Line Chart
 function DailyVisitorsChart({ data }) {
   const canvasRef = React.useRef(null);
   const chartRef = React.useRef(null);
@@ -106,7 +156,7 @@ function DailyVisitorsChart({ data }) {
     return () => chartRef.current?.destroy();
   }, [data]);
 
-  if (!data?.length)
+  if (!Array.isArray(data) || !data.length)
     return (
       <div className="text-muted small text-center py-4">No data available</div>
     );
@@ -120,7 +170,7 @@ function DailyVisitorsChart({ data }) {
   );
 }
 
-// ── Program Distribution Pie Chart ───────────────────────────
+// Program Distribution Pie Chart
 function ProgramDistributionChart({ data }) {
   const canvasRef = React.useRef(null);
   const chartRef = React.useRef(null);
@@ -173,7 +223,7 @@ function ProgramDistributionChart({ data }) {
     return () => chartRef.current?.destroy();
   }, [data]);
 
-  if (!data?.length)
+  if (!Array.isArray(data) || !data.length)
     return (
       <div className="text-muted small text-center py-4">No data available</div>
     );
@@ -187,35 +237,28 @@ function ProgramDistributionChart({ data }) {
   );
 }
 
-// ── Peak Hours Heatmap ───────────────────────────────────────
+// Peak Hours Heatmap
 function PeakHoursChart({ data }) {
   const canvasRef = React.useRef(null);
   const chartRef = React.useRef(null);
+  const normalizedData = React.useMemo(() => normalizePeakHours(data), [data]);
 
   React.useEffect(() => {
-    if (!canvasRef.current || !window.Chart || !data?.length) return;
+    if (!canvasRef.current || !window.Chart || !normalizedData.length) return;
     if (chartRef.current) chartRef.current.destroy();
 
-    const hours = Array.from({ length: 13 }, (_, i) => {
-      const hour = i + 7;
-      return hour < 12
-        ? `${hour} AM`
-        : hour === 12
-          ? "12 PM"
-          : `${hour - 12} PM`;
-    });
+    const maxVisits = Math.max(...normalizedData, 0);
 
     chartRef.current = new window.Chart(canvasRef.current, {
       type: "bar",
       data: {
-        labels: hours,
+        labels: PEAK_HOUR_LABELS,
         datasets: [
           {
             label: "Visits",
-            data: data,
-            backgroundColor: data.map((v) => {
-              const max = Math.max(...data);
-              const intensity = max ? v / max : 0;
+            data: normalizedData,
+            backgroundColor: normalizedData.map((visits) => {
+              const intensity = maxVisits ? visits / maxVisits : 0;
               if (intensity > 0.75) return "rgba(220,53,69,0.85)";
               if (intensity > 0.5) return "rgba(255,193,7,0.85)";
               if (intensity > 0.25) return "rgba(13,110,253,0.7)";
@@ -244,7 +287,7 @@ function PeakHoursChart({ data }) {
             offset: true,
             ticks: {
               autoSkip: false,
-              source: "labels", // ✅ force using ALL labels
+              source: "labels", // force using all labels
               font: { size: 9 },
               maxRotation: 45,
             },
@@ -258,9 +301,9 @@ function PeakHoursChart({ data }) {
       },
     });
     return () => chartRef.current?.destroy();
-  }, [data]);
+  }, [normalizedData]);
 
-  if (!data?.length)
+  if (!Array.isArray(data) || !data.length)
     return (
       <div className="text-muted small text-center py-4">No data available</div>
     );
@@ -274,7 +317,7 @@ function PeakHoursChart({ data }) {
   );
 }
 
-// ── Top Frequent Visitors Table ──────────────────────────────
+// Top Frequent Visitors Table
 function TopVisitorsTable({ data }) {
   if (!data?.length) {
     return (
@@ -285,7 +328,13 @@ function TopVisitorsTable({ data }) {
     );
   }
 
-  const max = data[0]?.visits || 1;
+  const normalizedData = data.map((visitor) => ({
+    ...visitor,
+    name: visitor?.name || "Unknown",
+    sr_code: visitor?.sr_code || "N/A",
+    visits: toNonNegativeNumber(visitor?.visits),
+  }));
+  const max = Math.max(...normalizedData.map((visitor) => visitor.visits), 1);
 
   return (
     <div className="table-responsive">
@@ -300,8 +349,8 @@ function TopVisitorsTable({ data }) {
           </tr>
         </thead>
         <tbody>
-          {data.map((visitor, i) => (
-            <tr key={i}>
+          {normalizedData.map((visitor, i) => (
+            <tr key={`${visitor.sr_code}-${i}`}>
               <td className="text-muted small">{i + 1}</td>
               <td>
                 <div className="d-flex align-items-center gap-2">
@@ -345,7 +394,7 @@ function TopVisitorsTable({ data }) {
   );
 }
 
-// ── Weekly Heatmap ───────────────────────────────────────────
+// Weekly Heatmap
 function WeeklyHeatmap({ data }) {
   if (!data?.length) {
     return (
@@ -353,14 +402,20 @@ function WeeklyHeatmap({ data }) {
     );
   }
 
-  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const hours = Array.from({ length: 13 }, (_, i) => {
-    const h = i + 7;
-    return h < 12 ? `${h}AM` : h === 12 ? "12PM" : `${h - 12}PM`;
+  const hours = PEAK_HOUR_LABELS.map((label) => label.replace(" ", ""));
+  const normalizedRows = data.map((row, index) => {
+    const day =
+      typeof row?.day === "string" && row.day
+        ? row.day
+        : DAYS_OF_WEEK[index] || `Day ${index + 1}`;
+    return {
+      day,
+      values: normalizeCountList(row?.values, PEAK_HOUR_COUNT),
+    };
   });
 
   // Find max value for color scaling
-  const allValues = data.flatMap((row) => row.values);
+  const allValues = normalizedRows.flatMap((row) => row.values);
   const max = Math.max(...allValues, 1);
 
   function getColor(value) {
@@ -412,8 +467,8 @@ function WeeklyHeatmap({ data }) {
           </tr>
         </thead>
         <tbody>
-          {data.map((row, i) => (
-            <tr key={i}>
+          {normalizedRows.map((row, i) => (
+            <tr key={`${row.day}-${i}`}>
               <td
                 style={{
                   padding: "4px 8px",
@@ -422,12 +477,12 @@ function WeeklyHeatmap({ data }) {
                   whiteSpace: "nowrap",
                 }}
               >
-                {days[i] ?? row.day}
+                {row.day}
               </td>
               {row.values.map((val, j) => (
                 <td key={j} style={{ padding: 2 }}>
                   <div
-                    title={`${days[i]} ${hours[j]}: ${val} visits`}
+                    title={`${row.day} ${hours[j]}: ${val} visits`}
                     style={{
                       background: getColor(val),
                       color: getTextColor(val),
@@ -478,7 +533,7 @@ function WeeklyHeatmap({ data }) {
   );
 }
 
-// ── Monthly Visitors Bar Chart ────────────────────────────────
+// Monthly Visitors Bar Chart
 function MonthlyVisitorsChart({ data }) {
   const canvasRef = React.useRef(null);
   const chartRef = React.useRef(null);
@@ -546,7 +601,7 @@ function MonthlyVisitorsChart({ data }) {
   );
 }
 
-// ── Main Dashboard Page ──────────────────────────────────────
+// Main Dashboard Page
 export default function Dashboard() {
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -633,22 +688,18 @@ export default function Dashboard() {
   const totalStudents = data?.total_students ?? 0;
   const dailyVisitors = data?.daily_visitors ?? [];
   const programDistrib = data?.program_distribution ?? [];
-  const peakHours = data?.peak_hours ?? [];
+  const peakHoursRaw = data?.peak_hours ?? [];
+  const peakHours = normalizePeakHours(peakHoursRaw);
   const topVisitors = data?.top_visitors ?? [];
   const weeklyHeatmap = data?.weekly_heatmap ?? [];
   const monthlyVisitors = data?.monthly_visitors ?? [];
 
   // Peak hour label for summary
-  const peakHourIdx = peakHours.indexOf(Math.max(...peakHours));
+  const peakHourMax = Math.max(...peakHours, 0);
+  const peakHourIdx = peakHourMax > 0 ? peakHours.indexOf(peakHourMax) : -1;
   const peakHourLabel =
     peakHourIdx >= 0
-      ? peakHourIdx === 0
-        ? "12 AM"
-        : peakHourIdx < 12
-          ? `${peakHourIdx} AM`
-          : peakHourIdx === 12
-            ? "12 PM"
-            : `${peakHourIdx - 12} PM`
+      ? formatHourLabel(PEAK_HOUR_START + peakHourIdx)
       : "N/A";
 
   return (
@@ -657,7 +708,7 @@ export default function Dashboard() {
         <h1>Dashboard</h1>
       </div>
 
-      {/* ── Stat Cards ── */}
+      {/* Stat Cards */}
       <div className="row g-3">
         <StatCard
           title="Registered Students"
@@ -689,14 +740,14 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* ── Daily Visitors + Program Distribution ── */}
+      {/* Daily Visitors + Program Distribution */}
       <div className="row g-3 mb-3">
         <div className="col-lg-8">
           <div className="card h-100">
             <div className="card-body">
               <div className="d-flex justify-content-between align-items-center mb-3">
                 <h5 className="card-title mb-0">
-                  Daily Visitors — Last 14 Days
+                  Daily Visitors - Last 14 Days
                 </h5>
                 <span className="badge bg-primary-subtle text-primary">
                   <i className="bi bi-graph-up me-1"></i>Trend
@@ -716,7 +767,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Weekly Heatmap + Monthly Comparison ── */}
+      {/* Weekly Heatmap + Monthly Comparison */}
       <div className="row g-3 mb-3">
         <div className="col-lg-8">
           <div className="card h-100">
@@ -725,7 +776,7 @@ export default function Dashboard() {
                 <h5 className="card-title mb-0">Weekly Visit Heatmap</h5>
                 <span className="text-muted small">
                   <i className="bi bi-calendar3 me-1"></i>
-                  Day × Hour pattern
+                  Day x Hour pattern
                 </span>
               </div>
               <WeeklyHeatmap data={weeklyHeatmap} />
@@ -766,7 +817,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Peak Hours + Top Visitors ── */}
+      {/* Peak Hours + Top Visitors */}
       <div className="row g-3 mb-3">
         <div className="col-lg-7">
           <div className="card h-100">
@@ -815,7 +866,7 @@ export default function Dashboard() {
                   Low
                 </span>
               </div>
-              <PeakHoursChart data={peakHours} />
+              <PeakHoursChart data={peakHoursRaw} />
             </div>
           </div>
         </div>
@@ -834,7 +885,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Note about entry-only logs ── */}
+      {/* Note about entry-only logs */}
       <div className="alert alert-info d-flex align-items-center gap-2 py-2">
         <i className="bi bi-info-circle-fill"></i>
         <span className="small">
@@ -846,3 +897,4 @@ export default function Dashboard() {
     </section>
   );
 }
+
