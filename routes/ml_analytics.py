@@ -18,6 +18,13 @@ _forecast_cache = {
     "result": None,
 }
 
+_ANALYTICS_CACHE_TTL_SECONDS = 300  # 5 minutes cache for full analytics
+_analytics_cache_lock = threading.Lock()
+_analytics_cache = {
+    "computed_at": 0.0,
+    "result": None,
+}
+
 def _coerce_confidence(value):
     """Mirror of the one in routes.py — needed here for standalone use."""
     if value is None:
@@ -116,6 +123,15 @@ def run_ml_analytics(db_path):
     Pearson Correlation, and ANOVA.
     Returns a dict ready to be passed to jsonify().
     """
+    now = time.time()
+    
+    # Check cache
+    with _analytics_cache_lock:
+        if (_analytics_cache["result"] is not None and 
+            (now - _analytics_cache["computed_at"]) < _ANALYTICS_CACHE_TTL_SECONDS):
+            return _analytics_cache["result"]
+    
+    # Cache miss, compute fresh
     import numpy as np
     import pandas as pd
     from scipy import stats as scipy_stats
@@ -665,7 +681,7 @@ def run_ml_analytics(db_path):
     # ══════════════════════════════════════════════════════════
     # RETURN FULL PAYLOAD
     # ══════════════════════════════════════════════════════════
-    return _to_builtin({
+    result = _to_builtin({
         # Pipeline metadata
         "data_quality":       data_quality,
         "descriptive_stats":  descriptive_stats,
@@ -704,4 +720,219 @@ def run_ml_analytics(db_path):
         # Segmentation & anomalies
         "segmentation": segmentation,
         "anomalies":    anomalies,
+    })
+    
+    # Cache the result
+    with _analytics_cache_lock:
+        _analytics_cache["result"] = result
+        _analytics_cache["computed_at"] = now
+    
+    return result
+
+
+def run_basic_analytics(db_path):
+    """
+    Basic analytics: data quality, descriptive stats, EDA without heavy ML models.
+    """
+    import numpy as np
+    import pandas as pd
+    from scipy import stats as scipy_stats
+
+    warnings.filterwarnings("ignore")
+
+    conn = db_connect(db_path)
+    c    = conn.cursor()
+
+    # ── Ensure imported_logs exists ────────────────────────────
+    c.execute("""CREATE TABLE IF NOT EXISTS imported_logs (
+        import_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sr_code TEXT NOT NULL, name TEXT, gender TEXT,
+        program TEXT, year_level TEXT, timestamp TEXT NOT NULL,
+        imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        import_batch TEXT)""")
+    conn.commit()
+
+    # ══════════════════════════════════════════════════════════
+    # STAGE 1 — RAW DATA COLLECTION
+    # ══════════════════════════════════════════════════════════
+    c.execute("""
+        SELECT u.sr_code, u.name, NULLIF(TRIM(u.course),'') AS program,
+               NULL AS gender, NULL AS year_level,
+               r.confidence, r.timestamp, 'live' AS source
+        FROM recognition_log r
+        JOIN users u ON r.user_id = u.user_id
+        ORDER BY r.timestamp ASC
+    """)
+    live_rows = c.fetchall()
+
+    c.execute("""
+        SELECT sr_code, name, NULLIF(TRIM(program),'') AS program,
+               NULLIF(TRIM(gender),'') AS gender,
+               NULLIF(TRIM(year_level),'') AS year_level,
+               0.85 AS confidence, timestamp, 'imported' AS source
+        FROM imported_logs ORDER BY timestamp ASC
+    """)
+    imported_rows = c.fetchall()
+
+    c.execute("SELECT COUNT(*) FROM users")
+    total_students = c.fetchone()[0]
+    conn.close()
+
+    all_raw    = live_rows + imported_rows
+    total_raw  = len(all_raw)
+    total_live = len(live_rows)
+    total_imp  = len(imported_rows)
+
+    # ══════════════════════════════════════════════════════════
+    # STAGE 2 — DATA CLEANING
+    # ══════════════════════════════════════════════════════════
+    OPEN_HOUR, CLOSE_HOUR = 7, 19
+    removed_conf = removed_hrs = removed_dup = 0
+
+    after_conf = []
+    for row in all_raw:
+        sr, name, prog, gender, yr, conf, ts, src = row
+        if src == "live":
+            cv = _coerce_confidence(conf)
+            if cv is None or cv < 0.50:
+                removed_conf += 1
+                continue
+        else:
+            cv = float(conf) if conf else 0.85
+        after_conf.append((sr, name, prog or "", gender or "",
+                           yr or "", cv, ts, src))
+
+    after_hrs = []
+    for row in after_conf:
+        sr, name, prog, gender, yr, cv, ts, src = row
+        if ts and len(ts) == 10:
+            ts = ts + " 08:00:00"
+        try:
+            hour = int((ts or "")[11:13])
+            if hour < OPEN_HOUR or hour >= CLOSE_HOUR:
+                removed_hrs += 1
+                continue
+        except (ValueError, IndexError):
+            pass
+        after_hrs.append((sr, name, prog, gender, yr, cv, ts, src))
+
+    # Remove duplicates: keep first scan per student per day
+    seen = set()
+    after_dup = []
+    for row in after_hrs:
+        sr, name, prog, gender, yr, cv, ts, src = row
+        day_key = (sr, ts[:10]) if ts else (sr, "")
+        if day_key not in seen:
+            seen.add(day_key)
+            after_dup.append(row)
+        else:
+            removed_dup += 1
+
+    total_cleaned = len(after_dup)
+
+    # ══════════════════════════════════════════════════════════
+    # STAGE 3 — DATA QUALITY METRICS
+    # ══════════════════════════════════════════════════════════
+    quality_score = 0
+    if total_raw > 0:
+        retained_pct = (total_cleaned / total_raw) * 100
+        quality_score = min(100, retained_pct)
+
+    data_quality = {
+        "total_raw": total_raw,
+        "total_live": total_live,
+        "total_imported": total_imp,
+        "total_cleaned": total_cleaned,
+        "removed_low_conf": removed_conf,
+        "removed_outside_hrs": removed_hrs,
+        "removed_duplicates": removed_dup,
+        "quality_score": round(quality_score, 1),
+    }
+
+    # ══════════════════════════════════════════════════════════
+    # STAGE 4 — DESCRIPTIVE STATISTICS
+    # ══════════════════════════════════════════════════════════
+    if not after_dup:
+        return _to_builtin({
+            "data_quality": data_quality,
+            "descriptive_stats": {},
+            "total_students": total_students,
+            "total_cleaned_logs": total_cleaned,
+        })
+
+    df = pd.DataFrame(after_dup, columns=["sr_code", "name", "program", "gender", "year_level", "confidence", "timestamp", "source"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"])
+    df["date"] = df["timestamp"].dt.date
+    df["hour"] = df["timestamp"].dt.hour
+
+    daily_counts = df.groupby("date").size().reset_index(name="count")
+    daily_counts["date"] = daily_counts["date"].astype(str)
+    sorted_days = daily_counts.sort_values("date")
+
+    mean_v = sorted_days["count"].mean()
+    median_v = sorted_days["count"].median()
+    max_v = sorted_days["count"].max()
+    min_v = sorted_days["count"].min()
+    std_v = sorted_days["count"].std()
+    total_visit_days = len(sorted_days)
+
+    descriptive_stats = {
+        "mean_daily_visits": round(float(mean_v), 1) if not np.isnan(mean_v) else 0,
+        "median_daily_visits": round(float(median_v), 1) if not np.isnan(median_v) else 0,
+        "max_daily_visits": int(max_v) if not np.isnan(max_v) else 0,
+        "min_daily_visits": int(min_v) if not np.isnan(min_v) else 0,
+        "std_dev": round(float(std_v), 1) if not np.isnan(std_v) else 0,
+        "total_visit_days": total_visit_days,
+    }
+
+    # ══════════════════════════════════════════════════════════
+    # STAGE 5 — EDA: Day-of-Week, Last 30 Days, etc.
+    # ══════════════════════════════════════════════════════════
+    dow_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    dow_averages = []
+    for i in range(7):
+        dow_data = sorted_days[sorted_days["date"].apply(lambda d: date.fromisoformat(d).weekday() == i)]
+        avg = dow_data["count"].mean()
+        dow_averages.append(round(float(avg), 1) if not np.isnan(avg) else 0)
+
+    # Last 30 days
+    today = date.today()
+    last_30_dates = [(today - timedelta(days=i)).isoformat() for i in range(30)]
+    last_30_labels = [d[5:] for d in last_30_dates[::-1]]  # MM-DD format
+    last_30_counts = []
+    for d in last_30_dates[::-1]:
+        row = sorted_days[sorted_days["date"] == d]
+        cnt = int(row["count"].iloc[0]) if len(row) else 0
+        last_30_counts.append(cnt)
+
+    # Program distribution
+    program_counts = df["program"].value_counts().head(10).to_dict()
+    program_distribution = [{"program": k, "count": int(v)} for k, v in program_counts.items()]
+
+    # Peak hours
+    hour_counts = df["hour"].value_counts().sort_index()
+    peak_hours = [{"hour": int(h), "count": int(c)} for h, c in hour_counts.items()]
+
+    # Gender data (mostly from imported)
+    gender_counts = df["gender"].value_counts().to_dict()
+    gender_data = [{"gender": k or "Unknown", "count": int(v)} for k, v in gender_counts.items()]
+
+    # Year level data
+    year_counts = df["year_level"].value_counts().to_dict()
+    year_level_data = [{"year_level": k or "Unknown", "count": int(v)} for k, v in year_counts.items()]
+
+    return _to_builtin({
+        "data_quality": data_quality,
+        "descriptive_stats": descriptive_stats,
+        "total_students": total_students,
+        "total_cleaned_logs": total_cleaned,
+        "dow_labels": dow_labels,
+        "dow_averages": dow_averages,
+        "last_30_labels": last_30_labels,
+        "last_30_counts": last_30_counts,
+        "program_distribution": program_distribution,
+        "peak_hours": peak_hours,
+        "gender_data": gender_data,
+        "year_level_data": year_level_data,
     })

@@ -1724,6 +1724,24 @@ def create_routes_blueprint(deps):
         emit_analytics_update("delete_import_batch", {"batch_id": batch_id, "deleted": deleted})
         return jsonify({"success": True, "deleted": deleted})
 
+    @bp.route("/api/analytics-basic", methods=["GET"], endpoint="api_analytics_basic")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def api_analytics_basic():
+        import sys
+        print("DEBUG: api_analytics_basic() called", file=sys.stderr)
+        try:
+            from routes.ml_analytics import run_basic_analytics
+            result = run_basic_analytics(deps["db_path"])
+            print(f"DEBUG: run_basic_analytics returned: {type(result)}", file=sys.stderr)
+            return jsonify(result)
+        except Exception as e:
+            print(f"DEBUG: api_analytics_basic error: {e}", file=sys.stderr)
+            return jsonify({
+                "message": f"Basic analytics failed: {e}",
+                "details": str(e),
+            }), 500
+
     @bp.route("/api/analytics-reports", methods=["GET"], endpoint="api_analytics_reports")
 
     @login_required
@@ -1869,5 +1887,9 @@ def create_routes_blueprint(deps):
     def api_policy():
         policy_html = deps["render_markdown_as_html"](Path("static/content/markdown/policy.md"))
         return jsonify({"policy": policy_html})
+
+    @bp.route("/api/test-route", methods=["GET"], endpoint="api_test_route")
+    def api_test_route():
+        return jsonify({"message": "Test route works!"})
 
     return bp

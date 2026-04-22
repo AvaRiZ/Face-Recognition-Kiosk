@@ -2930,8 +2930,11 @@ function AnomalySection({ anomalies, mean, stdDev }) {
 // ── Main Page ─────────────────────────────────────────────────
 export default function AnalyticsReports() {
   const { session } = useSession();
+  const [basicData, setBasicData] = React.useState(null);
   const [data, setData] = React.useState(null);
   const [error, setError] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [loadingAdvanced, setLoadingAdvanced] = React.useState(false);
   const [socketConnected, setSocketConnected] = React.useState(socket.connected);
   const [lastUpdatedAt, setLastUpdatedAt] = React.useState(null);
   const headerRef = React.useRef(null);
@@ -2946,17 +2949,32 @@ export default function AnalyticsReports() {
     if (refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
 
+    if (!silent) {
+      setLoading(true);
+      setBasicData(null);
+      setData(null);
+    }
     setError(false);
 
     try {
-      const d = await fetchJson("/api/analytics-reports");
-      setData(d);
-      setError(false);
+      // First, fetch basic analytics
+      const basic = await fetchJson("/api/analytics-basic");
+      setBasicData(basic);
+      setLoading(false);
+      setLoadingAdvanced(true);
+
+      // Then, fetch advanced analytics
+      const full = await fetchJson("/api/analytics-reports");
+      setData(full);
       setLastUpdatedAt(new Date());
-    } catch {
+      setLoadingAdvanced(false);
+    } catch (err) {
+      console.error("Analytics pipeline error:", err);
       if (!hasLoadedDataRef.current) {
         setError(true);
       }
+      setLoading(false);
+      setLoadingAdvanced(false);
     } finally {
       refreshInFlightRef.current = false;
     }
@@ -2967,9 +2985,22 @@ export default function AnalyticsReports() {
 
     const timer = window.setInterval(() => {
       runAnalyticsPipeline({ silent: true });
-    }, 60000);
+    }, 10000);
 
-    return () => window.clearInterval(timer);
+    // Handle tab visibility changes for real-time updates
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        // Tab became visible again - refresh silently (no spinner)
+        runAnalyticsPipeline({ silent: true });
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
 
   React.useEffect(() => {
@@ -3008,14 +3039,21 @@ export default function AnalyticsReports() {
     return () => obs.disconnect();
   }, []);
 
-  const dq = data?.data_quality;
-  const stats = data?.descriptive_stats;
+  const currentData = data || basicData;
+  const dq = currentData?.data_quality;
+  const stats = currentData?.descriptive_stats;
+  const dowLabels = currentData?.dow_labels;
+  const dowAverages = currentData?.dow_averages;
+  const last30Labels = currentData?.last_30_labels;
+  const last30Counts = currentData?.last_30_counts;
   const regression = data?.regression ?? {};
   const clustering = data?.clustering ?? {};
   const chiSquare = data?.chi_square ?? {};
   const correlation = data?.correlation ?? {};
   const anova = data?.anova ?? {};
-  const noAnalyticsData = Boolean(data?.error);
+  const noAnalyticsData = Boolean(currentData?.error);
+  const initialLoadFailed = !loading && !basicData && error;
+  const hasRenderableData = Boolean(basicData);
   const canManageImports =
     session?.role === "super_admin" || session?.role === "library_admin";
   const lastUpdatedLabel = lastUpdatedAt
@@ -3040,116 +3078,195 @@ export default function AnalyticsReports() {
         </nav>
       </div>
 
-      {/* Sticky header */}
-      <div
-        ref={headerRef}
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 100,
-          background: "#f6f7fb",
-          padding: "12px 0 10px",
-          transition: "box-shadow 0.2s",
-          marginBottom: 16,
-        }}
-      >
+      {/* Show spinner for basic loading */}
+      {loading && !basicData && (
         <div
           style={{
-            background: "#fff",
-            borderRadius: 12,
-            padding: "14px 20px",
-            border: "1px solid #e9ecef",
-            boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            minHeight: "500px",
+            gap: 16,
           }}
         >
           <div
             style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "flex-start",
-              gap: 12,
-              flexWrap: "wrap",
+              width: 48,
+              height: 48,
+              borderRadius: "50%",
+              border: "4px solid #e9ecef",
+              borderTop: "4px solid #0d6efd",
+              animation: "spin 1s linear infinite",
             }}
-          >
-            <div>
-              <h5 className="card-title" style={{ padding: 0, margin: 0 }}>
-                Realtime Library Activity
-              </h5>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "#6c757d",
-                  marginTop: 4,
-                  display: "flex",
-                  gap: 8,
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                }}
-              >
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "4px 10px",
-                    borderRadius: 999,
-                    background: socketConnected ? "rgba(25,135,84,0.1)" : "rgba(255,193,7,0.12)",
-                    color: socketConnected ? "#198754" : "#a06a00",
-                    fontWeight: 600,
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: "50%",
-                      background: socketConnected ? "#198754" : "#ffc107",
-                    }}
-                  ></span>
-                  {socketConnected ? "Live connection active" : "Fallback polling mode"}
-                </span>
-                <span>Last sync: {lastUpdatedLabel}</span>
-                <span>Auto-refreshes on analytics events</span>
-              </div>
-            </div>
-            <div className="d-flex align-items-center gap-2 flex-wrap">
-              <button
-                className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
-                onClick={() => runAnalyticsPipeline()}
-              >
-                <i className="bi bi-arrow-clockwise"></i>
-                Sync Now
-              </button>
-              {canManageImports ? (
-                <ImportModal
-                  onImportSuccess={() => {
-                    runAnalyticsPipeline();
-                  }}
-                />
-              ) : null}
-            </div>
+          ></div>
+          <div style={{ fontSize: 14, color: "#6c757d", fontWeight: 500 }}>
+            Loading basic analytics...
+          </div>
+          <style>{`
+            @keyframes spin {
+              to { transform: rotate(360deg); }
+            }
+          `}</style>
+        </div>
+      )}
+
+      {/* Show basic data while advanced loads */}
+      {basicData && !data && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            minHeight: "200px",
+            gap: 16,
+          }}
+        >
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: "50%",
+              border: "3px solid #e9ecef",
+              borderTop: "3px solid #28a745",
+              animation: "spin 1s linear infinite",
+            }}
+          ></div>
+          <div style={{ fontSize: 12, color: "#6c757d", fontWeight: 500 }}>
+            Loading advanced models...
           </div>
         </div>
-      </div>
+      )}
 
-      {error && (
+      {initialLoadFailed && (
         <div className="alert alert-danger">
           <i className="bi bi-exclamation-triangle me-2"></i>
-          Failed to load analytics. Please try running the pipeline again.
+          Failed to load analytics data. Check the analytics API endpoints or try syncing again.
         </div>
       )}
 
-      {noAnalyticsData && (
+      {!loading && !hasRenderableData && !initialLoadFailed && (
         <div className="alert alert-info">
           <i className="bi bi-info-circle me-2"></i>
-          {data?.error} Import historical logs or collect live recognition logs to generate analytics.
+          No analytics content is available yet. Import historical logs or wait for live recognition activity.
         </div>
       )}
 
-      {data && !noAnalyticsData && (
+      {/* Show content once basic data is available */}
+      {hasRenderableData && (
         <>
-          {/* Stage 1 */}
-          <Section
+          {/* Sticky header - always visible */}
+          <div
+            ref={headerRef}
+            style={{
+              position: "sticky",
+              top: 0,
+              zIndex: 100,
+              background: "#f6f7fb",
+              padding: "12px 0 10px",
+              transition: "box-shadow 0.2s",
+              marginBottom: 16,
+            }}
+          >
+            <div
+              style={{
+                background: "#fff",
+                borderRadius: 12,
+                padding: "14px 20px",
+                border: "1px solid #e9ecef",
+                boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div>
+                  <h5 className="card-title" style={{ padding: 0, margin: 0 }}>
+                    Realtime Library Activity
+                  </h5>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "#6c757d",
+                      marginTop: 4,
+                      display: "flex",
+                      gap: 8,
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "4px 10px",
+                        borderRadius: 999,
+                        background: socketConnected ? "rgba(25,135,84,0.1)" : "rgba(255,193,7,0.12)",
+                        color: socketConnected ? "#198754" : "#a06a00",
+                        fontWeight: 600,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          background: socketConnected ? "#198754" : "#ffc107",
+                        }}
+                      ></span>
+                      {socketConnected ? "Live connection active" : "Fallback polling mode"}
+                    </span>
+                    <span>Last sync: {lastUpdatedLabel}</span>
+                    <span>Auto-refreshes on analytics events</span>
+                  </div>
+                </div>
+                <div className="d-flex align-items-center gap-2 flex-wrap">
+                  <button
+                    className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
+                    onClick={() => runAnalyticsPipeline()}
+                    disabled={loading}
+                  >
+                    <i className="bi bi-arrow-clockwise"></i>
+                    {loading ? "Syncing..." : "Sync Now"}
+                  </button>
+                  {canManageImports ? (
+                    <ImportModal
+                      onImportSuccess={() => {
+                        runAnalyticsPipeline();
+                      }}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <div className="alert alert-danger">
+              <i className="bi bi-exclamation-triangle me-2"></i>
+              Failed to fully refresh analytics. Showing the latest available data.
+            </div>
+          )}
+
+          {noAnalyticsData && (
+            <div className="alert alert-info">
+              <i className="bi bi-info-circle me-2"></i>
+              {data?.error} Import historical logs or collect live recognition logs to generate analytics.
+            </div>
+          )}
+
+          {!noAnalyticsData && (
+            <>
+              {/* Stage 1 */}
+              <Section
             stepNum="1"
             title="Data Collection"
             color="#0d6efd"
@@ -3354,8 +3471,8 @@ export default function AnalyticsReports() {
           >
             <EDASection
               stats={stats}
-              dowLabels={data?.dow_labels}
-              dowAverages={data?.dow_averages}
+              dowLabels={dowLabels}
+              dowAverages={dowAverages}
             />
           </Section>
 
@@ -3368,8 +3485,8 @@ export default function AnalyticsReports() {
             defaultOpen={false}
           >
             <TrendChart
-              labels={data?.last_30_labels}
-              counts={data?.last_30_counts}
+              labels={last30Labels}
+              counts={last30Counts}
             />
           </Section>
 
@@ -3493,6 +3610,8 @@ export default function AnalyticsReports() {
               .
             </span>
           </div>
+            </>
+          )}
         </>
       )}
     </section>
