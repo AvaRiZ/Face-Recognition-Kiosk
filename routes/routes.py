@@ -67,21 +67,29 @@ def _normalize_timestamp_for_json(value, default=""):
 def init_imported_logs_table(db_path):
     conn = db_connect(db_path)
     c = conn.cursor()
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS imported_logs (
-            import_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sr_code TEXT NOT NULL,
-            name TEXT,
-            gender TEXT,
-            program TEXT,
-            year_level TEXT,
-            timestamp TEXT NOT NULL,
-            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            import_batch TEXT
+    if getattr(conn, "dialect", "sqlite") == "postgres":
+        if not table_columns(conn, "imported_logs"):
+            conn.close()
+            raise RuntimeError(
+                "PostgreSQL schema is missing `imported_logs`. "
+                "Run `alembic upgrade head` before starting the app."
+            )
+    else:
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS imported_logs (
+                import_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sr_code TEXT NOT NULL,
+                name TEXT,
+                gender TEXT,
+                program TEXT,
+                year_level TEXT,
+                timestamp TIMESTAMP NOT NULL,
+                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                import_batch TEXT
+            )
+            """
         )
-        """
-    )
     c.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_imported_logs_srcode
@@ -92,6 +100,12 @@ def init_imported_logs_table(db_path):
         """
         CREATE INDEX IF NOT EXISTS idx_imported_logs_timestamp
         ON imported_logs(timestamp)
+        """
+    )
+    c.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_imported_logs_import_batch
+        ON imported_logs(import_batch)
         """
     )
     conn.commit()
@@ -433,14 +447,22 @@ def create_routes_blueprint(deps):
     def _ensure_settings_table(db_path):
         conn = db_connect(db_path)
         c = conn.cursor()
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS app_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
+        if getattr(conn, "dialect", "sqlite") == "postgres":
+            if not table_columns(conn, "app_settings"):
+                conn.close()
+                raise RuntimeError(
+                    "PostgreSQL schema is missing `app_settings`. "
+                    "Run `alembic upgrade head` before starting the app."
+                )
+        else:
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+                """
             )
-            """
-        )
         conn.commit()
         conn.close()
 
@@ -2015,7 +2037,7 @@ def create_routes_blueprint(deps):
             parsed_timestamp = None
             for fmt in allowed_formats:
                 try:
-                    parsed_timestamp = datetime.strptime(raw_timestamp, fmt).strftime("%Y-%m-%d %H:%M:%S")
+                    parsed_timestamp = datetime.strptime(raw_timestamp, fmt).replace(tzinfo=timezone.utc)
                     break
                 except ValueError:
                     continue
@@ -2140,9 +2162,9 @@ def create_routes_blueprint(deps):
             {
                 "batch_id": row[0],
                 "count": row[1],
-                "earliest": (row[2] or "")[:10],
-                "latest": (row[3] or "")[:10],
-                "imported_at": (row[4] or "")[:16],
+                "earliest": _normalize_date_key(row[2]) or "",
+                "latest": _normalize_date_key(row[3]) or "",
+                "imported_at": _normalize_timestamp_for_json(row[4]),
             }
             for row in c.fetchall()
         ]

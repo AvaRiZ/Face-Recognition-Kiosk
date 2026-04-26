@@ -31,6 +31,11 @@
    - Or (Python wrapper): `python scripts/start_system.py`
    - This now starts API + recognition worker together in one host process.
 
+Initial admin provisioning:
+- Default `admin/password` bootstrap is disabled unless `ALLOW_DEFAULT_ADMIN_BOOTSTRAP=1` in dev/local setups.
+- For first-time production setup, create the initial super admin explicitly:
+  - `python scripts/provision_initial_admin.py --username "<admin-user>" --password "<strong-password>" --full-name "<name>"`
+
 Important:
 - Do not run `python scripts/start_system.ps1`; `.ps1` files must be launched by PowerShell.
 

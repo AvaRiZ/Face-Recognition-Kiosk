@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import os
 from functools import wraps
 from flask import session, redirect, url_for, jsonify, request
@@ -15,8 +15,9 @@ def hash_password(password):
     key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
     return salt.hex() + ':' + key.hex()
 
+
 def verify_password(stored_password, provided_password):
-    """Verify a stored password against a provided password"""
+    """Verify a stored password against a provided password."""
     try:
         salt_hex, key_hex = stored_password.split(':')
         salt = bytes.fromhex(salt_hex)
@@ -26,62 +27,89 @@ def verify_password(stored_password, provided_password):
     except Exception:
         return False
 
+
+def _default_admin_bootstrap_enabled():
+    explicit = (os.environ.get("ALLOW_DEFAULT_ADMIN_BOOTSTRAP") or "").strip().lower()
+    if explicit in {"1", "true", "yes", "on"}:
+        return True
+    app_env = (os.environ.get("APP_ENV") or os.environ.get("FLASK_ENV") or "").strip().lower()
+    return app_env in {"dev", "development", "local"}
+
 # -------------------------------
 # Database setup for staff accounts
 # -------------------------------
 def init_auth_db():
-    """Create staff_accounts and audit_log tables"""
+    """Create staff_accounts and audit_log tables."""
     conn = connect(DB_PATH)
     c = conn.cursor()
+    dialect = getattr(conn, "dialect", "sqlite")
 
-    # Staff accounts table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS staff_accounts (
-            staff_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-            username    TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            full_name   TEXT NOT NULL,
-            role        TEXT NOT NULL CHECK(role IN ('super_admin', 'library_admin', 'library_staff')),
-            is_active   INTEGER DEFAULT 1,
-            profile_image TEXT,
-            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_login  TIMESTAMP
+    if dialect == "postgres":
+        missing = []
+        if not table_columns(conn, "staff_accounts"):
+            missing.append("staff_accounts")
+        if not table_columns(conn, "audit_log"):
+            missing.append("audit_log")
+        if missing:
+            conn.close()
+            raise RuntimeError(
+                "PostgreSQL schema is missing authentication tables "
+                f"{missing}. Run alembic upgrade head before starting the app."
+            )
+    else:
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS staff_accounts (
+                staff_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                username    TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                full_name   TEXT NOT NULL,
+                role        TEXT NOT NULL CHECK(role IN ('super_admin', 'library_admin', 'library_staff')),
+                is_active   INTEGER DEFAULT 1,
+                profile_image TEXT,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login  TIMESTAMP
+            )
+            """
         )
-    ''')
-
-    # Backward-compatible migration for existing databases
-    existing_columns = table_columns(conn, "staff_accounts")
-    if "profile_image" not in existing_columns:
-        c.execute("ALTER TABLE staff_accounts ADD COLUMN profile_image TEXT")
-
-    # Audit log table - tracks every admin/staff action
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS audit_log (
-            audit_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-            staff_id    INTEGER,
-            username    TEXT,
-            action      TEXT NOT NULL,
-            target      TEXT,
-            ip_address  TEXT,
-            timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (staff_id) REFERENCES staff_accounts(staff_id)
+        existing_columns = table_columns(conn, "staff_accounts")
+        if "profile_image" not in existing_columns:
+            c.execute("ALTER TABLE staff_accounts ADD COLUMN profile_image TEXT")
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                audit_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_id    INTEGER,
+                username    TEXT,
+                action      TEXT NOT NULL,
+                target      TEXT,
+                ip_address  TEXT,
+                timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (staff_id) REFERENCES staff_accounts(staff_id)
+            )
+            """
         )
-    ''')
 
     conn.commit()
-
-    # Create default super admin if no accounts exist
     c.execute("SELECT COUNT(*) FROM staff_accounts")
     count = c.fetchone()[0]
-    if count == 0:
+    if count == 0 and _default_admin_bootstrap_enabled():
         default_password = hash_password("password")
-        c.execute("""
+        c.execute(
+            """
             INSERT INTO staff_accounts (username, password_hash, full_name, role)
             VALUES (?, ?, ?, ?)
-        """, ("admin", default_password, "System Administrator", "super_admin"))
+            """,
+            ("admin", default_password, "System Administrator", "super_admin"),
+        )
         conn.commit()
-        print("✓ Default super admin created: username='superadmin', password='password'")
-        print("  ⚠️  Please change the default password after first login!")
+        print("[WARN] Default super admin created: username='admin', password='password'")
+        print("[WARN] Change the default password immediately after first login.")
+    elif count == 0:
+        print(
+            "[WARN] No staff accounts found and default bootstrap is disabled. "
+            "Provision an initial super admin before first login."
+        )
 
     conn.close()
 
@@ -320,3 +348,4 @@ def update_staff_profile(staff_id, full_name, username, profile_image=None):
     except Exception:
         conn.close()
         return False, "Username already exists"
+
