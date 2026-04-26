@@ -4,6 +4,42 @@ import { confirmAction, getErrorMessage, showError, showSuccess } from "../alert
 import { socket } from "../socket.js";
 import { useSession } from "../App.jsx";
 
+// ── Error Boundary ────────────────────────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("AnalyticsReports Error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section className="section">
+          <div className="pagetitle">
+            <h1>Live Analytics</h1>
+          </div>
+          <div className="alert alert-danger" role="alert">
+            <i className="bi bi-exclamation-triangle me-2"></i>
+            <strong>Render Error:</strong> {this.state.error?.message || "An error occurred while rendering analytics."}
+            <br />
+            <small className="text-muted">Check browser console for details. Try refreshing the page.</small>
+          </div>
+        </section>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────
 function fmt(n) {
   return (n ?? 0).toLocaleString();
@@ -2927,14 +2963,422 @@ function AnomalySection({ anomalies, mean, stdDev }) {
   );
 }
 
+const ANALYTICS_COLORS = {
+  primary: "#2563eb",
+  secondary: "#0f766e",
+  accent: "#f97316",
+  rose: "#e11d48",
+  gold: "#d97706",
+  ink: "#0f172a",
+  muted: "#64748b",
+  panel: "#ffffff",
+  border: "rgba(148, 163, 184, 0.22)",
+  grid: "rgba(148, 163, 184, 0.18)",
+};
+
+function formatHourLabel(hour) {
+  const normalized = Number(hour) || 0;
+  const suffix = normalized >= 12 ? "PM" : "AM";
+  const displayHour = normalized % 12 || 12;
+  return `${displayHour} ${suffix}`;
+}
+
+function getTrendDirection(counts = []) {
+  if (!counts.length) return "stable";
+  const firstWindow = counts.slice(0, Math.min(7, counts.length));
+  const lastWindow = counts.slice(-Math.min(7, counts.length));
+  const firstAvg = firstWindow.reduce((sum, value) => sum + value, 0) / Math.max(firstWindow.length, 1);
+  const lastAvg = lastWindow.reduce((sum, value) => sum + value, 0) / Math.max(lastWindow.length, 1);
+  if (lastAvg > firstAvg + 1) return "upward";
+  if (lastAvg < firstAvg - 1) return "downward";
+  return "stable";
+}
+
+function getPeakDow(dowLabels = [], dowAverages = []) {
+  if (!dowAverages.length) return { label: "—", value: 0 };
+  const peakValue = Math.max(...dowAverages);
+  const peakIndex = dowAverages.indexOf(peakValue);
+  return {
+    label: dowLabels[peakIndex] || "—",
+    value: peakValue || 0,
+  };
+}
+
+function getPeakHour(peakHours = []) {
+  if (!peakHours.length) return { label: "—", value: 0 };
+  const peak = [...peakHours].sort((a, b) => (b.count || 0) - (a.count || 0))[0];
+  return {
+    label: formatHourLabel(peak?.hour),
+    value: peak?.count || 0,
+  };
+}
+
+function getTopProgram(programDistribution = []) {
+  if (!programDistribution.length) return { label: "No dominant program yet", value: 0 };
+  const top = programDistribution[0];
+  return {
+    label: top?.program || "Unknown",
+    value: top?.count || 0,
+  };
+}
+
+function buildInsightCards(currentData) {
+  if (!currentData?.descriptive_stats) return [];
+  
+  const stats = currentData?.descriptive_stats || {};
+  const peakDow = getPeakDow(currentData?.dow_labels, currentData?.dow_averages);
+  const peakHour = getPeakHour(currentData?.peak_hours);
+  const topProgram = getTopProgram(currentData?.program_distribution);
+  const trend = getTrendDirection(currentData?.last_30_counts);
+
+  return [
+    {
+      icon: "bi bi-calendar-week",
+      color: ANALYTICS_COLORS.primary,
+      title: "Busiest weekday",
+      body: `${peakDow.label} leads with ${peakDow.value} average visits.`,
+    },
+    {
+      icon: "bi bi-clock-history",
+      color: ANALYTICS_COLORS.secondary,
+      title: "Peak entry hour",
+      body: `${peakHour.label} shows the strongest traffic at ${peakHour.value} visits.`,
+    },
+    {
+      icon: "bi bi-mortarboard",
+      color: ANALYTICS_COLORS.accent,
+      title: "Most represented program",
+      body: `${topProgram.label} contributes ${topProgram.value} recorded visits.`,
+    },
+    {
+      icon: "bi bi-activity",
+      color: ANALYTICS_COLORS.rose,
+      title: "30-day pattern",
+      body:
+        trend === "upward"
+          ? "Recent activity is trending upward versus the start of the month."
+          : trend === "downward"
+            ? "Recent activity has cooled compared with the start of the month."
+            : `Daily usage is relatively stable around ${stats?.mean_daily_visits || 0} visits per day.`,
+    },
+  ];
+}
+
+function hexToRgba(hex, alpha) {
+  if (typeof hex !== "string" || !hex.startsWith("#")) {
+    return `rgba(37, 99, 235, ${alpha})`;
+  }
+
+  const normalized = hex.length === 4
+    ? `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`
+    : hex;
+  const red = parseInt(normalized.slice(1, 3), 16);
+  const green = parseInt(normalized.slice(3, 5), 16);
+  const blue = parseInt(normalized.slice(5, 7), 16);
+
+  if ([red, green, blue].some(Number.isNaN)) {
+    return `rgba(37, 99, 235, ${alpha})`;
+  }
+
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function buildChartJsConfig({ options, series }) {
+  const type = options?.chart?.type || "line";
+  const colors = options?.colors?.length
+    ? options.colors
+    : [ANALYTICS_COLORS.primary, ANALYTICS_COLORS.secondary, ANALYTICS_COLORS.accent];
+  const labels = options?.labels || options?.xaxis?.categories || [];
+  const normalizedSeries = Array.isArray(series) ? series : [];
+  const isPieLike = type === "donut" || type === "pie";
+  const isRadar = type === "radar";
+  const isHorizontalBar = type === "bar" && Boolean(options?.plotOptions?.bar?.horizontal);
+  const chartType = isPieLike ? "doughnut" : type;
+
+  const datasets = isPieLike
+    ? [
+        {
+          label: "Values",
+          data: normalizedSeries.map((value) => Number(value) || 0),
+          backgroundColor: labels.map((_, index) => colors[index % colors.length]),
+          borderColor: "#ffffff",
+          borderWidth: 2,
+          hoverOffset: 6,
+        },
+      ]
+    : normalizedSeries.map((entry, index) => {
+        const color = colors[index % colors.length];
+        const rawData = Array.isArray(entry?.data) ? entry.data : [];
+        const pointRadius = typeof options?.markers?.size === "number" ? options.markers.size : 0;
+        const isFilled = type === "area" || Boolean(options?.fill) || isRadar;
+        const strokeWidth = typeof options?.stroke?.width === "number" ? options.stroke.width : 3;
+
+        return {
+          label: entry?.name || `Series ${index + 1}`,
+          data: rawData,
+          borderColor: color,
+          backgroundColor:
+            chartType === "bar"
+              ? rawData.map((_, itemIndex) => colors[itemIndex % colors.length] || color)
+              : hexToRgba(color, isRadar ? 0.24 : 0.18),
+          borderWidth: strokeWidth,
+          fill: chartType === "line" && isFilled,
+          tension: chartType === "line" ? 0.38 : 0,
+          pointRadius,
+          pointHoverRadius: pointRadius > 0 ? pointRadius + 2 : 3,
+          borderRadius: typeof options?.plotOptions?.bar?.borderRadius === "number"
+            ? options.plotOptions.bar.borderRadius
+            : undefined,
+        };
+      });
+
+  const config = {
+    type: chartType,
+    data: {
+      labels,
+      datasets,
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: isHorizontalBar ? "y" : "x",
+      plugins: {
+        legend: {
+          display: options?.legend?.show !== false,
+          position: options?.legend?.position || "top",
+          labels: {
+            color: ANALYTICS_COLORS.muted,
+            font: { size: 11 },
+            padding: 14,
+            boxWidth: 12,
+          },
+        },
+        tooltip: {
+          backgroundColor: "rgba(15, 23, 42, 0.94)",
+          titleColor: "#f8fafc",
+          bodyColor: "#e2e8f0",
+          borderColor: "rgba(148, 163, 184, 0.18)",
+          borderWidth: 1,
+        },
+      },
+    },
+  };
+
+  if (isPieLike) {
+    config.options.cutout = options?.plotOptions?.pie?.donut?.size || "68%";
+  } else if (isRadar) {
+    config.options.scales = {
+      r: {
+        angleLines: { color: ANALYTICS_COLORS.grid },
+        grid: { color: ANALYTICS_COLORS.grid },
+        pointLabels: {
+          color: ANALYTICS_COLORS.muted,
+          font: { size: 11 },
+        },
+        ticks: {
+          display: false,
+          backdropColor: "transparent",
+        },
+      },
+    };
+  } else {
+    config.options.scales = {
+      x: {
+        grid: { display: false },
+        ticks: {
+          color: ANALYTICS_COLORS.muted,
+          font: { size: 11 },
+          maxRotation: isHorizontalBar ? 0 : 40,
+        },
+      },
+      y: {
+        beginAtZero: true,
+        grid: { color: ANALYTICS_COLORS.grid },
+        ticks: {
+          color: ANALYTICS_COLORS.muted,
+          font: { size: 11 },
+        },
+        title: options?.yaxis?.title?.text
+          ? {
+              display: true,
+              text: options.yaxis.title.text,
+              color: ANALYTICS_COLORS.muted,
+              font: { size: 11, weight: "600" },
+            }
+          : undefined,
+      },
+    };
+  }
+
+  return config;
+}
+
+function ApexChartPanel({ title, subtitle, height = 320, options, series }) {
+  const chartRef = React.useRef(null);
+  const canvasRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!canvasRef.current || !window.Chart || !series?.length) return;
+    if (chartRef.current) {
+      chartRef.current.destroy();
+      chartRef.current = null;
+    }
+
+    try {
+      chartRef.current = new window.Chart(
+        canvasRef.current,
+        buildChartJsConfig({ options, series }),
+      );
+    } catch (error) {
+      console.error(`Failed to render chart "${title}"`, error);
+      chartRef.current?.destroy();
+      chartRef.current = null;
+    }
+
+    return () => {
+      chartRef.current?.destroy();
+      chartRef.current = null;
+    };
+  }, [options, series, title]);
+
+  if (!series?.length) return null;
+
+  return (
+    <div
+      style={{
+        background: ANALYTICS_COLORS.panel,
+        borderRadius: 24,
+        border: `1px solid ${ANALYTICS_COLORS.border}`,
+        padding: 22,
+        boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
+      }}
+    >
+      <div style={{ marginBottom: 14 }}>
+        <div
+          style={{
+            fontSize: 17,
+            fontWeight: 800,
+            color: ANALYTICS_COLORS.ink,
+            lineHeight: 1.2,
+          }}
+        >
+          {title}
+        </div>
+        {subtitle ? (
+          <div
+            style={{
+              fontSize: 12.5,
+              color: ANALYTICS_COLORS.muted,
+              marginTop: 6,
+            }}
+          >
+            {subtitle}
+          </div>
+        ) : null}
+      </div>
+      <div style={{ height, position: "relative" }}>
+        <canvas ref={canvasRef}></canvas>
+      </div>
+    </div>
+  );
+}
+
+function InsightChip({ icon, color, title, body }) {
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: `1px solid ${ANALYTICS_COLORS.border}`,
+        borderRadius: 20,
+        padding: "16px 18px",
+        display: "flex",
+        gap: 14,
+        alignItems: "flex-start",
+        boxShadow: "0 12px 30px rgba(15, 23, 42, 0.06)",
+      }}
+    >
+      <div
+        style={{
+          width: 42,
+          height: 42,
+          borderRadius: 14,
+          background: `${color}18`,
+          color,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          fontSize: 18,
+        }}
+      >
+        <i className={icon}></i>
+      </div>
+      <div>
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 800,
+            color: ANALYTICS_COLORS.ink,
+            marginBottom: 4,
+          }}
+        >
+          {title}
+        </div>
+        <div style={{ fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.65 }}>
+          {body}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryStat({ label, value, tone, icon, helper }) {
+  return (
+    <div
+      style={{
+        background: "rgba(255,255,255,0.12)",
+        border: "1px solid rgba(255,255,255,0.16)",
+        borderRadius: 22,
+        padding: "18px 18px 16px",
+        backdropFilter: "blur(10px)",
+        minHeight: 120,
+      }}
+    >
+      <div
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: 14,
+          background: `${tone}22`,
+          color: "#fff",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          marginBottom: 18,
+          fontSize: 17,
+        }}
+      >
+        <i className={icon}></i>
+      </div>
+      <div style={{ color: "rgba(255,255,255,0.72)", fontSize: 12, letterSpacing: "0.04em", textTransform: "uppercase", fontWeight: 700 }}>
+        {label}
+      </div>
+      <div style={{ color: "#fff", fontWeight: 800, fontSize: 28, lineHeight: 1.1, marginTop: 8 }}>
+        {value}
+      </div>
+      <div style={{ color: "rgba(255,255,255,0.72)", fontSize: 12.5, marginTop: 6 }}>
+        {helper}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────
-export default function AnalyticsReports() {
+function AnalyticsReportsInner() {
   const { session } = useSession();
   const [basicData, setBasicData] = React.useState(null);
-  const [data, setData] = React.useState(null);
   const [error, setError] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
-  const [loadingAdvanced, setLoadingAdvanced] = React.useState(false);
   const [socketConnected, setSocketConnected] = React.useState(socket.connected);
   const [lastUpdatedAt, setLastUpdatedAt] = React.useState(null);
   const headerRef = React.useRef(null);
@@ -2942,8 +3386,8 @@ export default function AnalyticsReports() {
   const hasLoadedDataRef = React.useRef(false);
 
   React.useEffect(() => {
-    hasLoadedDataRef.current = Boolean(data);
-  }, [data]);
+    hasLoadedDataRef.current = Boolean(basicData);
+  }, [basicData]);
 
   async function runAnalyticsPipeline({ silent = false } = {}) {
     if (refreshInFlightRef.current) return;
@@ -2952,29 +3396,20 @@ export default function AnalyticsReports() {
     if (!silent) {
       setLoading(true);
       setBasicData(null);
-      setData(null);
     }
     setError(false);
 
     try {
-      // First, fetch basic analytics
       const basic = await fetchJson("/api/analytics-basic");
       setBasicData(basic);
-      setLoading(false);
-      setLoadingAdvanced(true);
-
-      // Then, fetch advanced analytics
-      const full = await fetchJson("/api/analytics-reports");
-      setData(full);
       setLastUpdatedAt(new Date());
-      setLoadingAdvanced(false);
+      setLoading(false);
     } catch (err) {
       console.error("Analytics pipeline error:", err);
       if (!hasLoadedDataRef.current) {
         setError(true);
       }
       setLoading(false);
-      setLoadingAdvanced(false);
     } finally {
       refreshInFlightRef.current = false;
     }
@@ -3039,21 +3474,18 @@ export default function AnalyticsReports() {
     return () => obs.disconnect();
   }, []);
 
-  const currentData = data || basicData;
+  const currentData = basicData;
   const dq = currentData?.data_quality;
   const stats = currentData?.descriptive_stats;
   const dowLabels = currentData?.dow_labels;
   const dowAverages = currentData?.dow_averages;
   const last30Labels = currentData?.last_30_labels;
   const last30Counts = currentData?.last_30_counts;
-  const regression = data?.regression ?? {};
-  const clustering = data?.clustering ?? {};
-  const chiSquare = data?.chi_square ?? {};
-  const correlation = data?.correlation ?? {};
-  const anova = data?.anova ?? {};
-  const noAnalyticsData = Boolean(currentData?.error);
+  // Check if API returned an error response (has message but no data_quality)
+  const noAnalyticsData = Boolean(currentData?.message && !currentData?.data_quality);
   const initialLoadFailed = !loading && !basicData && error;
-  const hasRenderableData = Boolean(basicData);
+  // hasRenderableData means we have valid analytics data (not just error object)
+  const hasRenderableData = Boolean(currentData?.data_quality);
   const canManageImports =
     session?.role === "super_admin" || session?.role === "library_admin";
   const lastUpdatedLabel = lastUpdatedAt
@@ -3063,6 +3495,636 @@ export default function AnalyticsReports() {
         second: "2-digit",
       })
     : "Waiting for first sync";
+  const peakHours = currentData?.peak_hours || [];
+  const programDistribution = currentData?.program_distribution || [];
+  const genderData = currentData?.gender_data || [];
+  const yearLevelData = currentData?.year_level_data || [];
+  const trendDirection = getTrendDirection(last30Counts);
+  const peakDow = getPeakDow(dowLabels, dowAverages);
+  const peakHour = getPeakHour(peakHours);
+  const topProgram = getTopProgram(programDistribution);
+  const insightCards = buildInsightCards(currentData);
+  const last30Total = (last30Counts || []).reduce((sum, value) => sum + value, 0);
+  const weekdayAverage =
+    dowAverages?.length
+      ? (dowAverages.reduce((sum, value) => sum + value, 0) / dowAverages.length).toFixed(1)
+      : "0.0";
+
+  if (hasRenderableData && !noAnalyticsData) {
+    const heroGradient =
+      trendDirection === "upward"
+        ? "linear-gradient(135deg, #0f172a 0%, #1d4ed8 45%, #0f766e 100%)"
+        : trendDirection === "downward"
+          ? "linear-gradient(135deg, #0f172a 0%, #7c2d12 45%, #be123c 100%)"
+          : "linear-gradient(135deg, #0f172a 0%, #1e293b 45%, #2563eb 100%)";
+
+    const visitsTrendSeries = [
+      {
+        name: "Daily visits",
+        data: last30Counts || [],
+      },
+    ];
+
+    const visitsTrendOptions = {
+      chart: { type: "area" },
+      colors: [ANALYTICS_COLORS.primary],
+      fill: {
+        type: "gradient",
+        gradient: {
+          shadeIntensity: 1,
+          opacityFrom: 0.36,
+          opacityTo: 0.04,
+          stops: [0, 95, 100],
+        },
+      },
+      markers: { size: 0 },
+      xaxis: {
+        categories: last30Labels || [],
+      },
+      yaxis: {
+        title: { text: "Visits" },
+      },
+    };
+
+    const dowSeries = [
+      {
+        name: "Average visits",
+        data: dowAverages || [],
+      },
+    ];
+
+    const dowOptions = {
+      chart: { type: "bar" },
+      colors: [ANALYTICS_COLORS.secondary],
+      plotOptions: {
+        bar: {
+          borderRadius: 10,
+          columnWidth: "52%",
+        },
+      },
+      xaxis: {
+        categories: dowLabels || [],
+      },
+      yaxis: {
+        title: { text: "Average" },
+      },
+    };
+
+    const peakHourSeries = [
+      {
+        name: "Visits",
+        data: peakHours.map((item) => item.count || 0),
+      },
+    ];
+
+    const peakHourOptions = {
+      chart: { type: "line" },
+      colors: [ANALYTICS_COLORS.accent],
+      fill: {
+        type: "gradient",
+        gradient: {
+          shadeIntensity: 1,
+          opacityFrom: 0.26,
+          opacityTo: 0.03,
+          stops: [0, 100],
+        },
+      },
+      markers: {
+        size: 4,
+        strokeWidth: 0,
+        hover: { sizeOffset: 2 },
+      },
+      xaxis: {
+        categories: peakHours.map((item) => formatHourLabel(item.hour)),
+        tickAmount: Math.min(peakHours.length, 8),
+      },
+      yaxis: {
+        title: { text: "Visits" },
+      },
+    };
+
+    const programSeries = [
+      {
+        name: "Visits",
+        data: programDistribution.slice(0, 6).map((item) => item.count || 0),
+      },
+    ];
+
+    const programOptions = {
+      chart: { type: "bar" },
+      colors: [ANALYTICS_COLORS.rose],
+      plotOptions: {
+        bar: {
+          horizontal: true,
+          borderRadius: 8,
+          barHeight: "60%",
+        },
+      },
+      xaxis: {
+        categories: programDistribution.slice(0, 6).map((item) => item.program || "Unknown"),
+      },
+      legend: { show: false },
+    };
+
+    const genderSeries = genderData.filter((item) => item.count > 0).map((item) => item.count || 0);
+    const genderOptions = {
+      chart: { type: "donut" },
+      colors: ["#2563eb", "#0f766e", "#f97316", "#a855f7", "#e11d48"],
+      labels: genderData.filter((item) => item.count > 0).map((item) => item.gender || "Unknown"),
+      legend: { position: "bottom" },
+      plotOptions: {
+        pie: {
+          donut: {
+            size: "68%",
+            labels: {
+              show: true,
+              total: {
+                show: true,
+                label: "Profiles",
+                formatter: () => `${genderSeries.reduce((sum, value) => sum + value, 0)}`,
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const yearSeries = [
+      {
+        name: "Students",
+        data: yearLevelData.slice(0, 6).map((item) => item.count || 0),
+      },
+    ];
+
+    const yearOptions = {
+      chart: { type: "radar" },
+      colors: [ANALYTICS_COLORS.gold],
+      xaxis: {
+        categories: yearLevelData.slice(0, 6).map((item) => item.year_level || "Unknown"),
+      },
+      markers: { size: 4 },
+      fill: {
+        type: "solid",
+        opacity: 0.24,
+      },
+    };
+
+    return (
+      <section className="section">
+        <div className="pagetitle">
+          <h1>Live Analytics</h1>
+          <nav>
+            <ol className="breadcrumb mb-0">
+              <li className="breadcrumb-item">
+                <a href="/dashboard">Home</a>
+              </li>
+              <li className="breadcrumb-item active">Live Analytics</li>
+            </ol>
+          </nav>
+        </div>
+
+        <div
+          ref={headerRef}
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 100,
+            background: "#f6f7fb",
+            padding: "12px 0 14px",
+            transition: "box-shadow 0.2s",
+            marginBottom: 18,
+          }}
+        >
+          <div
+            style={{
+              background: "rgba(255,255,255,0.82)",
+              borderRadius: 22,
+              padding: "16px 20px",
+              border: `1px solid ${ANALYTICS_COLORS.border}`,
+              boxShadow: "0 14px 35px rgba(15, 23, 42, 0.08)",
+              backdropFilter: "blur(12px)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <div
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 12,
+                      background: "linear-gradient(135deg, rgba(37,99,235,0.16), rgba(15,118,110,0.16))",
+                      color: ANALYTICS_COLORS.primary,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 16,
+                    }}
+                  >
+                    <i className="bi bi-bar-chart-line"></i>
+                  </div>
+                  <div>
+                    <h5 className="card-title" style={{ padding: 0, margin: 0, color: ANALYTICS_COLORS.ink }}>
+                      Live Analytics Studio
+                    </h5>
+                  </div>
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: ANALYTICS_COLORS.muted,
+                    marginTop: 8,
+                    display: "flex",
+                    gap: 8,
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "4px 10px",
+                      borderRadius: 999,
+                      background: socketConnected ? "rgba(25,135,84,0.1)" : "rgba(255,193,7,0.12)",
+                      color: socketConnected ? "#198754" : "#a06a00",
+                      fontWeight: 600,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: socketConnected ? "#198754" : "#ffc107",
+                      }}
+                    ></span>
+                    {socketConnected ? "Live connection active" : "Fallback polling mode"}
+                  </span>
+                  <span>Last sync: {lastUpdatedLabel}</span>
+                  <span>Descriptive analytics with interpretation-first visuals</span>
+                </div>
+              </div>
+              <div className="d-flex align-items-center gap-2 flex-wrap">
+                <button
+                  className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
+                  onClick={() => runAnalyticsPipeline()}
+                  disabled={loading}
+                >
+                  <i className="bi bi-arrow-clockwise"></i>
+                  {loading ? "Syncing..." : "Sync Now"}
+                </button>
+                {canManageImports ? (
+                  <ImportModal
+                    onImportSuccess={() => {
+                      runAnalyticsPipeline();
+                    }}
+                  />
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {error ? (
+          <div className="alert alert-danger">
+            <i className="bi bi-exclamation-triangle me-2"></i>
+            Failed to refresh analytics. Showing the latest available descriptive data.
+          </div>
+        ) : null}
+
+        <div
+          style={{
+            background: heroGradient,
+            borderRadius: 30,
+            padding: "26px 24px",
+            boxShadow: "0 30px 70px rgba(15, 23, 42, 0.18)",
+            overflow: "hidden",
+            position: "relative",
+            marginBottom: 20,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 18,
+              flexWrap: "wrap",
+              position: "relative",
+              zIndex: 2,
+            }}
+          >
+            <div style={{ flex: "1 1 320px", maxWidth: 640 }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  color: "rgba(255,255,255,0.72)",
+                  fontWeight: 700,
+                  marginBottom: 10,
+                }}
+              >
+                Descriptive intelligence
+              </div>
+              <div
+                style={{
+                  color: "#fff",
+                  fontSize: 34,
+                  fontWeight: 900,
+                  lineHeight: 1.04,
+                  maxWidth: 540,
+                }}
+              >
+                Read visitor behavior at a glance with richer visuals and direct interpretation.
+              </div>
+              <div
+                style={{
+                  color: "rgba(255,255,255,0.8)",
+                  marginTop: 14,
+                  lineHeight: 1.7,
+                  fontSize: 14,
+                  maxWidth: 560,
+                }}
+              >
+                This view is focused on descriptive analytics only: observed usage patterns,
+                attendance rhythm, visitor composition, and plain-language findings from live and
+                imported library records.
+              </div>
+            </div>
+
+            <div
+              style={{
+                flex: "1 1 340px",
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                gap: 14,
+                alignSelf: "stretch",
+              }}
+            >
+              <SummaryStat
+                label="Clean Visits"
+                value={fmt(currentData?.total_cleaned_logs || 0)}
+                tone={ANALYTICS_COLORS.primary}
+                icon="bi bi-activity"
+                helper="Unique daily visits retained after cleaning"
+              />
+              <SummaryStat
+                label="Visit Mean"
+                value={fmt(stats?.mean_daily_visits || 0)}
+                tone={ANALYTICS_COLORS.secondary}
+                icon="bi bi-graph-up"
+                helper="Average visits per recorded day"
+              />
+              <SummaryStat
+                label="Peak Weekday"
+                value={peakDow.label}
+                tone={ANALYTICS_COLORS.accent}
+                icon="bi bi-calendar2-week"
+                helper={`${peakDow.value} average visits`}
+              />
+              <SummaryStat
+                label="Quality Score"
+                value={`${dq?.quality_score || 0}%`}
+                tone={ANALYTICS_COLORS.rose}
+                icon="bi bi-shield-check"
+                helper={`${fmt(dq?.total_removed || 0)} records removed`}
+              />
+            </div>
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background:
+                "radial-gradient(circle at top right, rgba(255,255,255,0.16), transparent 34%), radial-gradient(circle at bottom left, rgba(255,255,255,0.1), transparent 28%)",
+              pointerEvents: "none",
+            }}
+          ></div>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+            gap: 14,
+            marginBottom: 20,
+          }}
+        >
+          {insightCards.map((item) => (
+            <InsightChip key={item.title} {...item} />
+          ))}
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1.8fr) minmax(300px, 1fr)",
+            gap: 18,
+            marginBottom: 18,
+          }}
+        >
+          <ApexChartPanel
+            title="30-Day Visitor Flow"
+            subtitle={`Observed visitor counts across the last 30 days · ${last30Total} total visits recorded in this window`}
+            height={340}
+            options={visitsTrendOptions}
+            series={visitsTrendSeries}
+          />
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 24,
+              border: `1px solid ${ANALYTICS_COLORS.border}`,
+              padding: 22,
+              boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
+            }}
+          >
+            <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink }}>
+              Visual Readout
+            </div>
+            <div style={{ marginTop: 12, color: ANALYTICS_COLORS.muted, lineHeight: 1.75, fontSize: 13 }}>
+              <p style={{ margin: 0 }}>
+                The month is currently showing a <strong style={{ color: ANALYTICS_COLORS.ink }}>{trendDirection}</strong>{" "}
+                pattern, with an average of <strong style={{ color: ANALYTICS_COLORS.ink }}>{stats?.mean_daily_visits || 0}</strong> visits per recorded day.
+              </p>
+              <p style={{ margin: "12px 0 0" }}>
+                The most active weekday is <strong style={{ color: ANALYTICS_COLORS.ink }}>{peakDow.label}</strong>,
+                while <strong style={{ color: ANALYTICS_COLORS.ink }}>{peakHour.label}</strong> is the strongest arrival hour in the cleaned dataset.
+              </p>
+              <p style={{ margin: "12px 0 0" }}>
+                <strong style={{ color: ANALYTICS_COLORS.ink }}>{topProgram.label}</strong> currently appears most often in the recorded visits, making it the clearest program-level contributor.
+              </p>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+                marginTop: 16,
+              }}
+            >
+              <div style={{ fontSize: 18, fontWeight: 800, color: ANALYTICS_COLORS.primary }}>
+                {fmt(stats?.max_daily_visits || 0)}
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: ANALYTICS_COLORS.secondary }}>
+                {fmt(stats?.std_dev || 0)}
+              </div>
+              <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, marginTop: -8 }}>
+                Highest observed daily total
+              </div>
+              <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, marginTop: -8 }}>
+                Daily variability
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: 18,
+            marginBottom: 18,
+          }}
+        >
+          <ApexChartPanel
+            title="Attendance by Weekday"
+            subtitle={`Weekday average is ${weekdayAverage} visits · ${peakDow.label} leads the pattern`}
+            height={300}
+            options={dowOptions}
+            series={dowSeries}
+          />
+          <ApexChartPanel
+            title="Visitor Rhythm by Hour"
+            subtitle={`Peak hour is ${peakHour.label} · ideal for staffing and assistance planning`}
+            height={300}
+            options={peakHourOptions}
+            series={peakHourSeries}
+          />
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: 18,
+            marginBottom: 18,
+          }}
+        >
+          <ApexChartPanel
+            title="Top Programs by Visits"
+            subtitle={`${topProgram.label} currently leads the descriptive program distribution`}
+            height={320}
+            options={programOptions}
+            series={programSeries}
+          />
+          {genderSeries.length > 0 ? (
+            <ApexChartPanel
+              title="Gender Composition"
+              subtitle="Distribution of recorded visitors where gender data is available"
+              height={320}
+              options={genderOptions}
+              series={genderSeries}
+            />
+          ) : (
+            <div
+              style={{
+                background: "#fff",
+                borderRadius: 24,
+                border: `1px solid ${ANALYTICS_COLORS.border}`,
+                padding: 22,
+                boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
+              }}
+            >
+              <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink }}>
+                Gender Composition
+              </div>
+              <div style={{ marginTop: 12, color: ANALYTICS_COLORS.muted, lineHeight: 1.75, fontSize: 13 }}>
+                Gender breakdown is still sparse in the current dataset. As more imported historical records include gender values, this panel will become more representative.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {yearSeries[0]?.data?.length > 0 ? (
+          <div style={{ marginBottom: 18 }}>
+            <ApexChartPanel
+              title="Year Level Spread"
+              subtitle="A radar view of where descriptive attendance is concentrated across year levels"
+              height={330}
+              options={yearOptions}
+              series={yearSeries}
+            />
+          </div>
+        ) : null}
+
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: 24,
+            border: `1px solid ${ANALYTICS_COLORS.border}`,
+            padding: 22,
+            boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
+          }}
+        >
+          <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink, marginBottom: 12 }}>
+            Data Quality and Interpretation Notes
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <div style={{ background: "#f8fafc", borderRadius: 18, padding: 16, border: `1px solid ${ANALYTICS_COLORS.border}` }}>
+              <div style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
+                Collection
+              </div>
+              <div style={{ marginTop: 8, fontSize: 14, color: ANALYTICS_COLORS.ink, fontWeight: 800 }}>
+                {fmt(dq?.total_live || 0)} live + {fmt(dq?.total_imported || 0)} imported
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.65 }}>
+                The analytics stream merges kiosk recognition logs and imported history into one descriptive reporting dataset.
+              </div>
+            </div>
+            <div style={{ background: "#f8fafc", borderRadius: 18, padding: 16, border: `1px solid ${ANALYTICS_COLORS.border}` }}>
+              <div style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
+                Cleaning
+              </div>
+              <div style={{ marginTop: 8, fontSize: 14, color: ANALYTICS_COLORS.ink, fontWeight: 800 }}>
+                {fmt(dq?.total_removed || 0)} records removed
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.65 }}>
+                Low-confidence, outside-hours, and duplicate same-day scans are filtered so each student counts once per day.
+              </div>
+            </div>
+            <div style={{ background: "#f8fafc", borderRadius: 18, padding: 16, border: `1px solid ${ANALYTICS_COLORS.border}` }}>
+              <div style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
+                Reliability
+              </div>
+              <div style={{ marginTop: 8, fontSize: 14, color: ANALYTICS_COLORS.ink, fontWeight: 800 }}>
+                {dq?.quality_score || 0}% quality score
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.65 }}>
+                The page emphasizes descriptive reading only, so decisions are grounded in observed behavior instead of projections.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="section">
@@ -3078,7 +4140,7 @@ export default function AnalyticsReports() {
         </nav>
       </div>
 
-      {/* Show spinner for basic loading */}
+      {/* Show spinner for descriptive analytics loading */}
       {loading && !basicData && (
         <div
           style={{
@@ -3101,7 +4163,7 @@ export default function AnalyticsReports() {
             }}
           ></div>
           <div style={{ fontSize: 14, color: "#6c757d", fontWeight: 500 }}>
-            Loading basic analytics...
+            Loading descriptive analytics...
           </div>
           <style>{`
             @keyframes spin {
@@ -3111,38 +4173,10 @@ export default function AnalyticsReports() {
         </div>
       )}
 
-      {/* Show basic data while advanced loads */}
-      {basicData && !data && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            minHeight: "200px",
-            gap: 16,
-          }}
-        >
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: "50%",
-              border: "3px solid #e9ecef",
-              borderTop: "3px solid #28a745",
-              animation: "spin 1s linear infinite",
-            }}
-          ></div>
-          <div style={{ fontSize: 12, color: "#6c757d", fontWeight: 500 }}>
-            Loading advanced models...
-          </div>
-        </div>
-      )}
-
       {initialLoadFailed && (
         <div className="alert alert-danger">
           <i className="bi bi-exclamation-triangle me-2"></i>
-          Failed to load analytics data. Check the analytics API endpoints or try syncing again.
+          Failed to load analytics data. Check the analytics API or try syncing again.
         </div>
       )}
 
@@ -3252,14 +4286,14 @@ export default function AnalyticsReports() {
           {error && (
             <div className="alert alert-danger">
               <i className="bi bi-exclamation-triangle me-2"></i>
-              Failed to fully refresh analytics. Showing the latest available data.
+              Failed to refresh analytics. Showing the latest available descriptive data.
             </div>
           )}
 
           {noAnalyticsData && (
             <div className="alert alert-info">
               <i className="bi bi-info-circle me-2"></i>
-              {data?.error} Import historical logs or collect live recognition logs to generate analytics.
+              {currentData?.message || currentData?.error || "No analytics data available."} Import historical logs or collect live recognition logs to generate analytics.
             </div>
           )}
 
@@ -3270,7 +4304,7 @@ export default function AnalyticsReports() {
             stepNum="1"
             title="Data Collection"
             color="#0d6efd"
-            subtitle={`${fmt(dq?.total_live || 0)} live · ${fmt(dq?.total_imported || 0)} imported · ${fmt(data?.total_students || 0)} students`}
+            subtitle={`${fmt(dq?.total_live || 0)} live · ${fmt(dq?.total_imported || 0)} imported · ${fmt(currentData?.total_students || 0)} students`}
           >
             <div
               style={{
@@ -3283,7 +4317,7 @@ export default function AnalyticsReports() {
               {[
                 {
                   label: "Registered Students",
-                  value: fmt(data?.total_students || 0),
+                  value: fmt(currentData?.total_students || 0),
                   color: "#0d6efd",
                   icon: "bi-people",
                 },
@@ -3358,7 +4392,7 @@ export default function AnalyticsReports() {
                 {fmt((dq?.total_live || 0) + (dq?.total_imported || 0))}
               </strong>{" "}
               total entries spanning{" "}
-              <strong>{data?.total_students || 0}</strong> registered students.
+              <strong>{currentData?.total_students || 0}</strong> registered students.
               This merged dataset serves as the foundation for all downstream
               analysis.
             </Interpretation>
@@ -3490,97 +4524,6 @@ export default function AnalyticsReports() {
             />
           </Section>
 
-          {/* Stage 5a — Forecast */}
-          <Section
-            stepNum="5a"
-            title="7-Day Forecast"
-            color="#ffc107"
-            subtitle={`Best model: ${data?.best_forecast_model ?? "—"} · Predicted visits next 7 days`}
-            defaultOpen={false}
-          >
-            <ForecastSection
-              forecast={data?.forecast}
-              allForecasts={data?.all_forecasts}
-              comparison={data?.forecast_comparison}
-              bestModel={data?.best_forecast_model}
-              comparisonInterp={data?.forecast_comparison_interpretation}
-            />
-          </Section>
-
-          {/* Stage 5b — Linear Regression (NEW) */}
-          <Section
-            stepNum="5b"
-            title="Linear Regression — Trend Analysis"
-            color="#dc3545"
-            subtitle={`R²=${data?.regression?.r2 ?? "—"} · Trend: ${data?.regression?.trend ?? "—"}`}
-            defaultOpen={false}
-          >
-            <LinearRegressionSection
-              regression={regression}
-              interpretation={data?.regression_interpretation}
-              counts={data?.last_30_counts}
-              labels={data?.last_30_labels}
-            />
-          </Section>
-
-          {/* Stage 5c — K-Means Clustering (NEW) */}
-          <Section
-            stepNum="5c"
-            title="K-Means Clustering — Student Behavior Groups"
-            color="#6f42c1"
-            subtitle={`k=${data?.clustering?.k ?? "—"} clusters · ${data?.clustering?.cluster_summary?.length ?? 0} groups identified`}
-            defaultOpen={false}
-          >
-            <ClusteringSection
-              clustering={clustering}
-              interpretation={data?.clustering_interpretation}
-            />
-          </Section>
-
-          {/* Stage 5d — Statistical Tests (NEW) */}
-          <Section
-            stepNum="5d"
-            title="Statistical Tests — Chi-square · Pearson · ANOVA"
-            color="#0dcaf0"
-            subtitle="Hypothesis testing across program, gender, and time variables"
-            defaultOpen={false}
-          >
-            <StatisticalTestsSection
-              chiSquare={chiSquare}
-              chiInterp={data?.chi_square_interpretation}
-              correlation={correlation}
-              corrInterp={data?.correlation_interpretation}
-              anova={anova}
-              anovaInterp={data?.anova_interpretation}
-            />
-          </Section>
-
-          {/* Stage 5e — Segmentation (renumbered from 5b) */}
-          <Section
-            stepNum="5e"
-            title="Student Segmentation"
-            color="#198754"
-            subtitle={`${data?.segmentation?.regular_count || 0} regular · ${data?.segmentation?.occasional_count || 0} occasional · ${data?.segmentation?.rare_count || 0} rare`}
-            defaultOpen={false}
-          >
-            <SegmentationSection seg={data?.segmentation} />
-          </Section>
-
-          {/* Stage 5f — Anomaly Detection (renumbered from 5c) */}
-          <Section
-            stepNum="5f"
-            title="Anomaly Detection"
-            color="#dc3545"
-            subtitle={`${data?.anomalies?.length || 0} anomalies detected via Z-score`}
-            defaultOpen={false}
-          >
-            <AnomalySection
-              anomalies={data?.anomalies}
-              mean={stats?.mean_daily_visits || 0}
-              stdDev={stats?.std_dev || 0}
-            />
-          </Section>
-
           {/* Stage 6 */}
           <div
             style={{
@@ -3596,9 +4539,9 @@ export default function AnalyticsReports() {
           >
             <i className="bi bi-check-circle-fill text-success fs-5"></i>
             <span>
-              <strong>Analytics view is live and in sync.</strong>{" "}
+              <strong>Analytics view is live and descriptive only.</strong>{" "}
               The dashboard is currently summarizing <strong>{fmt(dq?.total_raw || 0)}</strong> raw
-              records into <strong>{fmt(data?.total_cleaned_logs || 0)}</strong>{" "}
+              records into <strong>{fmt(currentData?.total_cleaned_logs || 0)}</strong>{" "}
               clean unique daily visits, with a current quality score of{" "}
               <strong
                 style={{
@@ -3617,3 +4560,15 @@ export default function AnalyticsReports() {
     </section>
   );
 }
+
+export default function AnalyticsReports() {
+  return (
+    <ErrorBoundary>
+      <AnalyticsReportsInner />
+    </ErrorBoundary>
+  );
+}
+
+
+
+
