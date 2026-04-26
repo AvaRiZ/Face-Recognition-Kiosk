@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 from db import connect as db_connect
+from db import table_columns
 
 
 def ensure_version_settings(db_path: str) -> None:
     conn = db_connect(db_path)
     c = conn.cursor()
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS app_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
+    if getattr(conn, "dialect", "sqlite") == "postgres":
+        if not table_columns(conn, "app_settings"):
+            conn.close()
+            raise RuntimeError(
+                "PostgreSQL schema is missing `app_settings`. "
+                "Run `alembic upgrade head` before starting the app."
+            )
+    else:
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
         )
-        """
-    )
     c.execute(
         """
         INSERT INTO app_settings (key, value)

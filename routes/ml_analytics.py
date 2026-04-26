@@ -242,13 +242,23 @@ def run_ml_analytics(db_path):
     c    = conn.cursor()
 
     # ── Ensure imported_logs exists ────────────────────────────
-    c.execute("""CREATE TABLE IF NOT EXISTS imported_logs (
-        import_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sr_code TEXT NOT NULL, name TEXT, gender TEXT,
-        program TEXT, year_level TEXT, timestamp TEXT NOT NULL,
-        imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        import_batch TEXT)""")
-    conn.commit()
+    if getattr(conn, "dialect", "sqlite") == "sqlite":
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS imported_logs (
+                import_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sr_code TEXT NOT NULL,
+                name TEXT,
+                gender TEXT,
+                program TEXT,
+                year_level TEXT,
+                timestamp TIMESTAMP NOT NULL,
+                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                import_batch TEXT
+            )
+            """
+        )
+        conn.commit()
 
     # ══════════════════════════════════════════════════════════
     # STAGE 1 — RAW DATA COLLECTION

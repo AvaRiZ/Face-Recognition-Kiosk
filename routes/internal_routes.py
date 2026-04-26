@@ -130,11 +130,18 @@ def create_internal_blueprint(deps):
         sr_code = str(payload.get("sr_code") or "").strip() or None
         station_id = str(payload.get("station_id") or "").strip() or "entrance-station-1"
 
-        captured_at = payload.get("captured_at")
-        if not captured_at:
-            captured_at = datetime.now(timezone.utc).isoformat()
-        else:
-            captured_at = str(captured_at)
+        captured_at_raw = payload.get("captured_at")
+        captured_at = datetime.now(timezone.utc)
+        if captured_at_raw:
+            text = str(captured_at_raw).strip()
+            if text:
+                try:
+                    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    captured_at = parsed.astimezone(timezone.utc)
+                except Exception:
+                    captured_at = datetime.now(timezone.utc)
 
         confidence = _optional_float(payload.get("confidence"))
         primary_confidence = _optional_float(payload.get("primary_confidence"))
@@ -143,7 +150,9 @@ def create_internal_blueprint(deps):
         secondary_distance = _optional_float(payload.get("secondary_distance"))
         face_quality = _optional_float(payload.get("face_quality"))
         method = str(payload.get("method") or "two-factor")
-        payload_json = json.dumps(payload, ensure_ascii=True)
+        payload_for_json = dict(payload)
+        payload_for_json["captured_at"] = captured_at.isoformat()
+        payload_json = json.dumps(payload_for_json, ensure_ascii=True)
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()

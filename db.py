@@ -36,6 +36,8 @@ def connect(db_path: Optional[str] = None):
         raw = psycopg.connect(_normalize_postgres_dsn_for_driver(target))
         return CompatConnection(raw, "postgres")
     raw = sqlite3.connect(target)
+    # Keep SQLite behavior aligned with PostgreSQL integrity checks.
+    raw.execute("PRAGMA foreign_keys = ON")
     return CompatConnection(raw, "sqlite")
 
 

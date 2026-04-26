@@ -1,6 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import json
 import pickle
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
@@ -25,6 +28,28 @@ class UserRepository:
     def init_db(self) -> None:
         conn = db_connect(self.db_path)
         c = conn.cursor()
+        dialect = getattr(conn, "dialect", "sqlite")
+
+        if dialect == "postgres":
+            required_tables = (
+                "users",
+                "recognition_log",
+                "programs",
+                "recognition_events",
+                "user_embeddings",
+            )
+            missing = [name for name in required_tables if not table_columns(conn, name)]
+            if missing:
+                conn.close()
+                raise RuntimeError(
+                    "PostgreSQL schema is missing required repository tables "
+                    f"{missing}. Run `alembic upgrade head` before starting the app."
+                )
+            _seed_programs_table(c)
+            conn.commit()
+            conn.close()
+            return
+
         c.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -50,6 +75,12 @@ class UserRepository:
                 user_id INTEGER,
                 confidence REAL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                primary_confidence REAL,
+                secondary_confidence REAL,
+                primary_distance REAL,
+                secondary_distance REAL,
+                face_quality REAL,
+                method TEXT DEFAULT 'two-factor',
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
             """
@@ -97,6 +128,19 @@ class UserRepository:
         if "last_updated" not in existing_program_columns:
             c.execute("ALTER TABLE programs ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
+        c.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_recognition_log_user_id
+            ON recognition_log(user_id)
+            """
+        )
+        c.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_recognition_log_timestamp
+            ON recognition_log(timestamp)
+            """
+        )
+
         _seed_programs_table(c)
 
         conn.commit()
@@ -113,14 +157,14 @@ class UserRepository:
             """
         )
         rows = c.fetchall()
+
+        user_ids = [int(row[0]) for row in rows]
+        embeddings_by_user_id = self._load_embeddings_for_users(c, user_ids)
         conn.close()
 
         users: list[User] = []
-        for user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim in rows:
-            embeddings = {}
-            if emb_blob:
-                embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob))
-
+        for user_id, name, sr_code, gender, program, legacy_emb_blob, image_paths_raw, embedding_dim in rows:
+            embeddings = embeddings_by_user_id.get(int(user_id)) or self._deserialize_legacy_embeddings_blob(legacy_emb_blob)
             image_paths = image_paths_raw.split(";") if image_paths_raw else []
             users.append(
                 User(
@@ -148,22 +192,23 @@ class UserRepository:
             (sr_code,),
         )
         row = c.fetchone()
-        conn.close()
         if not row:
+            conn.close()
             return None
 
-        user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim = row
-        embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob)) if emb_blob else {}
-        image_paths = image_paths_raw.split(";") if image_paths_raw else []
+        embeddings = self._load_embeddings_for_users(c, [int(row[0])]).get(int(row[0])) or self._deserialize_legacy_embeddings_blob(row[5])
+        conn.close()
+
+        image_paths = row[6].split(";") if row[6] else []
         return User(
-            id=user_id,
-            name=name or "",
-            sr_code=sr_code or "",
-            gender=gender or "",
-            program=program or "",
+            id=row[0],
+            name=row[1] or "",
+            sr_code=row[2] or "",
+            gender=row[3] or "",
+            program=row[4] or "",
             embeddings=embeddings,
             image_paths=image_paths,
-            embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
+            embedding_dim=int(row[7] or infer_embedding_dim(embeddings)),
         )
 
     def get_user_by_id(self, user_id: int) -> Optional[User]:
@@ -178,22 +223,23 @@ class UserRepository:
             (user_id,),
         )
         row = c.fetchone()
-        conn.close()
         if not row:
+            conn.close()
             return None
 
-        user_id, name, sr_code, gender, program, emb_blob, image_paths_raw, embedding_dim = row
-        embeddings = normalize_embeddings_by_model(pickle.loads(emb_blob)) if emb_blob else {}
-        image_paths = image_paths_raw.split(";") if image_paths_raw else []
+        embeddings = self._load_embeddings_for_users(c, [int(row[0])]).get(int(row[0])) or self._deserialize_legacy_embeddings_blob(row[5])
+        conn.close()
+
+        image_paths = row[6].split(";") if row[6] else []
         return User(
-            id=user_id,
-            name=name or "",
-            sr_code=sr_code or "",
-            gender=gender or "",
-            program=program or "",
+            id=row[0],
+            name=row[1] or "",
+            sr_code=row[2] or "",
+            gender=row[3] or "",
+            program=row[4] or "",
             embeddings=embeddings,
             image_paths=image_paths,
-            embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
+            embedding_dim=int(row[7] or infer_embedding_dim(embeddings)),
         )
 
     def save_user(self, user: User) -> int:
@@ -201,37 +247,69 @@ class UserRepository:
         c = conn.cursor()
 
         normalized_embeddings = normalize_embeddings_by_model(user.embeddings)
+        supports_embedding_table = self._supports_embedding_table(conn)
 
         c.execute("SELECT user_id, embeddings, image_paths FROM users WHERE sr_code = ?", (user.sr_code,))
         existing = c.fetchone()
         if existing:
-            user_id, existing_emb_blob, existing_paths_str = existing
-            existing_embeddings = normalize_embeddings_by_model(pickle.loads(existing_emb_blob)) if existing_emb_blob else {}
+            user_id = int(existing[0])
+            existing_embeddings = self._load_embeddings_for_users(c, [user_id]).get(user_id)
+            if not existing_embeddings:
+                existing_embeddings = self._deserialize_legacy_embeddings_blob(existing[1])
             merged_embeddings = merge_embeddings_by_model(existing_embeddings, normalized_embeddings)
-            merged_paths = (existing_paths_str.split(";") if existing_paths_str else []) + list(user.image_paths)
-            c.execute(
-                """
-                UPDATE users
-                SET name = ?,
-                    gender = ?,
-                    course = ?,
-                    embeddings = ?,
-                    image_paths = ?,
-                    embedding_dim = ?,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-                """,
-                (
-                    user.name,
-                    user.gender,
-                    user.program,
-                    pickle.dumps(merged_embeddings),
-                    ";".join(merged_paths),
-                    infer_embedding_dim(merged_embeddings),
-                    user_id,
-                ),
-            )
+            merged_paths = (existing[2].split(";") if existing[2] else []) + list(user.image_paths)
+
+            if supports_embedding_table:
+                c.execute(
+                    """
+                    UPDATE users
+                    SET name = ?,
+                        gender = ?,
+                        course = ?,
+                        image_paths = ?,
+                        embedding_dim = ?,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                    """,
+                    (
+                        user.name,
+                        user.gender,
+                        user.program,
+                        ";".join(merged_paths),
+                        infer_embedding_dim(merged_embeddings),
+                        user_id,
+                    ),
+                )
+            else:
+                c.execute(
+                    """
+                    UPDATE users
+                    SET name = ?,
+                        gender = ?,
+                        course = ?,
+                        embeddings = ?,
+                        image_paths = ?,
+                        embedding_dim = ?,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                    """,
+                    (
+                        user.name,
+                        user.gender,
+                        user.program,
+                        self._serialize_legacy_embeddings_blob(merged_embeddings),
+                        ";".join(merged_paths),
+                        infer_embedding_dim(merged_embeddings),
+                        user_id,
+                    ),
+                )
         else:
+            merged_embeddings = normalized_embeddings
+            if supports_embedding_table:
+                legacy_blob = b""
+            else:
+                legacy_blob = self._serialize_legacy_embeddings_blob(normalized_embeddings)
+
             if getattr(conn, "dialect", "sqlite") == "postgres":
                 c.execute(
                     """
@@ -244,12 +322,12 @@ class UserRepository:
                         user.sr_code,
                         user.gender,
                         user.program,
-                        pickle.dumps(normalized_embeddings),
+                        legacy_blob,
                         ";".join(user.image_paths),
                         infer_embedding_dim(normalized_embeddings),
                     ),
                 )
-                user_id = c.fetchone()[0]
+                user_id = int(c.fetchone()[0])
             else:
                 c.execute(
                     """
@@ -261,12 +339,15 @@ class UserRepository:
                         user.sr_code,
                         user.gender,
                         user.program,
-                        pickle.dumps(normalized_embeddings),
+                        legacy_blob,
                         ";".join(user.image_paths),
                         infer_embedding_dim(normalized_embeddings),
                     ),
                 )
-                user_id = c.lastrowid
+                user_id = int(c.lastrowid)
+
+        if supports_embedding_table:
+            self._replace_user_embeddings(c, int(user_id), merged_embeddings)
 
         _upsert_program_record(c, user.program)
 
@@ -292,25 +373,46 @@ class UserRepository:
             return None
 
         name, sr_code, gender, program, existing_emb_blob, existing_paths_str, _ = row
-        existing_embeddings = normalize_embeddings_by_model(pickle.loads(existing_emb_blob)) if existing_emb_blob else {}
+        supports_embedding_table = self._supports_embedding_table(conn)
+
+        existing_embeddings = self._load_embeddings_for_users(c, [int(user_id)]).get(int(user_id))
+        if not existing_embeddings:
+            existing_embeddings = self._deserialize_legacy_embeddings_blob(existing_emb_blob)
+
         merged_embeddings = merge_embeddings_by_model(existing_embeddings, new_embeddings)
         image_paths = existing_paths_str.split(";") if existing_paths_str else []
         if image_path:
             image_paths.append(image_path)
 
-        c.execute(
-            """
-            UPDATE users
-            SET embeddings = ?, image_paths = ?, embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-            """,
-            (
-                pickle.dumps(merged_embeddings),
-                ";".join(image_paths),
-                infer_embedding_dim(merged_embeddings),
-                user_id,
-            ),
-        )
+        if supports_embedding_table:
+            c.execute(
+                """
+                UPDATE users
+                SET image_paths = ?, embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                """,
+                (
+                    ";".join(image_paths),
+                    infer_embedding_dim(merged_embeddings),
+                    user_id,
+                ),
+            )
+            self._replace_user_embeddings(c, int(user_id), merged_embeddings)
+        else:
+            c.execute(
+                """
+                UPDATE users
+                SET embeddings = ?, image_paths = ?, embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                """,
+                (
+                    self._serialize_legacy_embeddings_blob(merged_embeddings),
+                    ";".join(image_paths),
+                    infer_embedding_dim(merged_embeddings),
+                    user_id,
+                ),
+            )
+
         conn.commit()
         conn.close()
         emit_analytics_update("user_embeddings_updated", {"user_id": int(user_id)})
@@ -329,6 +431,8 @@ class UserRepository:
     def delete_user(self, user_id: int) -> None:
         conn = db_connect(self.db_path)
         c = conn.cursor()
+        if self._supports_embedding_table(conn):
+            c.execute("DELETE FROM user_embeddings WHERE user_id = ?", (user_id,))
         c.execute("DELETE FROM recognition_log WHERE user_id = ?", (user_id,))
         c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         conn.commit()
@@ -338,8 +442,9 @@ class UserRepository:
     def reset_database(self) -> None:
         conn = db_connect(self.db_path)
         c = conn.cursor()
-        c.execute("DELETE FROM users")
-        c.execute("DELETE FROM recognition_log")
+        for table_name in ("recognition_events", "user_embeddings", "recognition_log", "users"):
+            if table_columns(conn, table_name):
+                c.execute(f"DELETE FROM {table_name}")
         conn.commit()
         conn.close()
         emit_analytics_update("database_reset")
@@ -352,28 +457,96 @@ class UserRepository:
     ) -> None:
         conn = db_connect(self.db_path)
         c = conn.cursor()
-        c.execute(
-            """
-            INSERT INTO recognition_log (
-                user_id, confidence, primary_confidence, secondary_confidence,
-                primary_distance, secondary_distance, face_quality, method
+
+        confidence = _coerce_float(result.confidence) or 0.0
+        primary_confidence = _coerce_float(result.primary_confidence)
+        secondary_confidence = _coerce_float(result.secondary_confidence)
+        primary_distance = _coerce_float(result.primary_distance)
+        secondary_distance = _coerce_float(result.secondary_distance)
+        quality_value = _coerce_float(face_quality)
+        captured_at = datetime.now(timezone.utc)
+
+        inserted_event = False
+        if table_columns(conn, "recognition_events"):
+            event_id = f"evt-{uuid.uuid4().hex}"
+            payload_json = json.dumps(
+                {
+                    "event_id": event_id,
+                    "station_id": "entrance-station-1",
+                    "user_id": int(result.user_id),
+                    "sr_code": result.user.sr_code,
+                    "decision": "allowed",
+                    "confidence": confidence,
+                    "primary_confidence": primary_confidence,
+                    "secondary_confidence": secondary_confidence,
+                    "primary_distance": primary_distance,
+                    "secondary_distance": secondary_distance,
+                    "face_quality": quality_value,
+                    "method": method,
+                    "captured_at": captured_at.isoformat(),
+                },
+                ensure_ascii=True,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                result.user_id,
-                _coerce_float(result.confidence) or 0.0,
-                _coerce_float(result.primary_confidence),
-                _coerce_float(result.secondary_confidence),
-                _coerce_float(result.primary_distance),
-                _coerce_float(result.secondary_distance),
-                _coerce_float(face_quality),
-                method,
-            ),
-        )
+            c.execute(
+                """
+                INSERT INTO recognition_events (
+                    event_id, station_id, user_id, sr_code, decision, confidence,
+                    primary_confidence, secondary_confidence, primary_distance, secondary_distance,
+                    face_quality, method, captured_at, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO NOTHING
+                """,
+                (
+                    event_id,
+                    "entrance-station-1",
+                    int(result.user_id),
+                    result.user.sr_code,
+                    "allowed",
+                    confidence,
+                    primary_confidence,
+                    secondary_confidence,
+                    primary_distance,
+                    secondary_distance,
+                    quality_value,
+                    method,
+                    captured_at,
+                    payload_json,
+                ),
+            )
+            inserted_event = (c.rowcount or 0) > 0
+
+        if table_columns(conn, "recognition_log"):
+            c.execute(
+                """
+                INSERT INTO recognition_log (
+                    user_id, confidence, primary_confidence, secondary_confidence,
+                    primary_distance, secondary_distance, face_quality, method, timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(result.user_id),
+                    confidence,
+                    primary_confidence,
+                    secondary_confidence,
+                    primary_distance,
+                    secondary_distance,
+                    quality_value,
+                    method,
+                    captured_at,
+                ),
+            )
+
         conn.commit()
         conn.close()
+
         emit_analytics_update("recognition_logged", {"user_id": int(result.user_id)})
+        if inserted_event:
+            emit_analytics_update(
+                "recognition_event_ingested",
+                {"user_id": int(result.user_id)},
+            )
 
     def get_recognition_statistics(self):
         conn = db_connect(self.db_path)
@@ -416,13 +589,144 @@ class UserRepository:
     def count_user_embeddings(self, user_id: int) -> int:
         conn = db_connect(self.db_path)
         c = conn.cursor()
+
+        if self._supports_embedding_table(conn):
+            c.execute("SELECT COUNT(*) FROM user_embeddings WHERE user_id = ?", (user_id,))
+            count = int(c.fetchone()[0] or 0)
+            conn.close()
+            return count
+
         c.execute("SELECT embeddings FROM users WHERE user_id = ?", (user_id,))
         row = c.fetchone()
         conn.close()
         if not row or not row[0]:
             return 0
-        embeddings = normalize_embeddings_by_model(pickle.loads(row[0]))
+        embeddings = self._deserialize_legacy_embeddings_blob(row[0])
         return count_embeddings(embeddings)
+
+    def _supports_embedding_table(self, conn) -> bool:
+        return bool(table_columns(conn, "user_embeddings"))
+
+    def _load_embeddings_for_users(self, cursor, user_ids: list[int]) -> dict[int, dict[str, list[np.ndarray]]]:
+        if not user_ids:
+            return {}
+
+        placeholders = ",".join("?" for _ in user_ids)
+        try:
+            cursor.execute(
+                f"""
+                SELECT user_id, model_name, embedding
+                FROM user_embeddings
+                WHERE user_id IN ({placeholders})
+                ORDER BY user_id ASC, embedding_id ASC
+                """,
+                tuple(int(user_id) for user_id in user_ids),
+            )
+        except Exception:
+            return {}
+
+        out: dict[int, dict[str, list[np.ndarray]]] = {}
+        for user_id, model_name, emb_blob in cursor.fetchall():
+            emb = self._decode_embedding_blob(emb_blob)
+            if emb is None:
+                continue
+            uid = int(user_id)
+            model_key = str(model_name or "")
+            if not model_key:
+                continue
+            out.setdefault(uid, {}).setdefault(model_key, []).append(emb)
+        return out
+
+    def _replace_user_embeddings(self, cursor, user_id: int, embeddings_by_model: dict[str, list[np.ndarray]]) -> None:
+        cursor.execute("DELETE FROM user_embeddings WHERE user_id = ?", (user_id,))
+
+        normalized = normalize_embeddings_by_model(embeddings_by_model)
+        rows = []
+        for model_name, vectors in normalized.items():
+            for vector in vectors:
+                blob = self._encode_embedding_blob(vector)
+                if blob is None:
+                    continue
+                rows.append((int(user_id), str(model_name), blob))
+
+        if rows:
+            cursor.executemany(
+                """
+                INSERT INTO user_embeddings (user_id, model_name, embedding)
+                VALUES (?, ?, ?)
+                """,
+                rows,
+            )
+
+    def _encode_embedding_blob(self, vector) -> bytes | None:
+        try:
+            arr = np.asarray(vector, dtype=np.float32)
+        except Exception:
+            return None
+        if arr.ndim != 1 or arr.size == 0:
+            return None
+        return arr.tobytes()
+
+    def _decode_embedding_blob(self, value) -> np.ndarray | None:
+        if value is None:
+            return None
+        if isinstance(value, memoryview):
+            raw = value.tobytes()
+        elif isinstance(value, bytearray):
+            raw = bytes(value)
+        elif isinstance(value, bytes):
+            raw = value
+        else:
+            return None
+        if not raw or (len(raw) % 4) != 0:
+            return None
+        try:
+            return np.frombuffer(raw, dtype=np.float32).astype(np.float32, copy=True)
+        except Exception:
+            return None
+
+    def _deserialize_legacy_embeddings_blob(self, value) -> dict[str, list[np.ndarray]]:
+        if value is None:
+            return {}
+        if isinstance(value, memoryview):
+            value = value.tobytes()
+        if isinstance(value, bytearray):
+            value = bytes(value)
+        if not isinstance(value, bytes) or not value:
+            return {}
+
+        try:
+            payload = pickle.loads(value)
+        except Exception:
+            return {}
+
+        if isinstance(payload, dict):
+            return normalize_embeddings_by_model(payload)
+
+        if isinstance(payload, np.ndarray):
+            payload = [payload]
+
+        if isinstance(payload, (list, tuple)):
+            legacy_vectors = []
+            for item in payload:
+                try:
+                    arr = np.asarray(item, dtype=np.float32)
+                except Exception:
+                    continue
+                if arr.ndim == 1 and arr.size > 0:
+                    legacy_vectors.append(arr)
+                elif arr.ndim == 2:
+                    for row in arr:
+                        if row.size > 0:
+                            legacy_vectors.append(np.asarray(row, dtype=np.float32))
+            if legacy_vectors:
+                return {"legacy": legacy_vectors}
+
+        return {}
+
+    def _serialize_legacy_embeddings_blob(self, embeddings_by_model: dict[str, list[np.ndarray]]) -> bytes:
+        normalized = normalize_embeddings_by_model(embeddings_by_model)
+        return pickle.dumps(normalized)
 
 
 def _coerce_float(value):
