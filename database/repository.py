@@ -7,7 +7,11 @@ import numpy as np
 
 from app.realtime import emit_analytics_update
 from core.models import RecognitionResult, User
-from core.program_catalog import OTHER_COLLEGE_LABEL, iter_program_catalog
+from core.program_catalog import (
+    OTHER_COLLEGE_LABEL,
+    iter_program_catalog_records,
+    program_code_for,
+)
 from db import connect as db_connect
 from db import table_columns
 from services.embedding_service import (
@@ -60,6 +64,7 @@ class UserRepository:
             CREATE TABLE IF NOT EXISTS programs (
                 program_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 program_name TEXT NOT NULL UNIQUE,
+                program_code TEXT,
                 department_name TEXT,
                 is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -88,6 +93,8 @@ class UserRepository:
             c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
 
         existing_program_columns = table_columns(conn, "programs")
+        if "program_code" not in existing_program_columns:
+            c.execute("ALTER TABLE programs ADD COLUMN program_code TEXT")
         if "department_name" not in existing_program_columns:
             c.execute("ALTER TABLE programs ADD COLUMN department_name TEXT")
         if "is_active" not in existing_program_columns:
@@ -96,6 +103,13 @@ class UserRepository:
             c.execute("ALTER TABLE programs ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         if "last_updated" not in existing_program_columns:
             c.execute("ALTER TABLE programs ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+        c.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_programs_program_code
+            ON programs(program_code)
+            """
+        )
 
         _seed_programs_table(c)
 
@@ -470,17 +484,30 @@ def _normalize_program_name(program_name: str | None) -> str:
     return " ".join((program_name or "").split())
 
 
-def _upsert_program_record(cursor, program_name: str | None, department_name: str | None = None) -> None:
+def _upsert_program_record(
+    cursor,
+    program_name: str | None,
+    department_name: str | None = None,
+    program_code: str | None = None,
+) -> None:
     normalized_program = _normalize_program_name(program_name)
     if not normalized_program:
         return
 
     normalized_department = " ".join((department_name or "").split()) or OTHER_COLLEGE_LABEL
+    normalized_code = _normalize_program_name(program_code) or program_code_for(normalized_program)
     cursor.execute(
         """
-        INSERT INTO programs (program_name, department_name, is_active)
-        VALUES (?, ?, 1)
+        INSERT INTO programs (program_name, program_code, department_name, is_active)
+        VALUES (?, ?, ?, 1)
         ON CONFLICT(program_name) DO UPDATE SET
+            program_code = CASE
+                WHEN (programs.program_code IS NULL OR TRIM(programs.program_code) = '')
+                     AND excluded.program_code IS NOT NULL
+                     AND TRIM(excluded.program_code) <> ''
+                    THEN excluded.program_code
+                ELSE programs.program_code
+            END,
             department_name = CASE
                 WHEN programs.department_name IS NULL OR TRIM(programs.department_name) = '' OR programs.department_name = ?
                     THEN excluded.department_name
@@ -489,13 +516,13 @@ def _upsert_program_record(cursor, program_name: str | None, department_name: st
             is_active = 1,
             last_updated = CURRENT_TIMESTAMP
         """,
-        (normalized_program, normalized_department, OTHER_COLLEGE_LABEL),
+        (normalized_program, normalized_code, normalized_department, OTHER_COLLEGE_LABEL),
     )
 
 
 def _seed_programs_table(cursor) -> None:
-    for department_name, program_name in iter_program_catalog():
-        _upsert_program_record(cursor, program_name, department_name)
+    for department_name, program_name, program_code in iter_program_catalog_records():
+        _upsert_program_record(cursor, program_name, department_name, program_code)
 
     cursor.execute(
         """

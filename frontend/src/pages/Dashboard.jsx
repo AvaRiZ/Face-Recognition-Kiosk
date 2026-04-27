@@ -3,6 +3,121 @@ import { fetchJson } from "../api.js";
 import { socket } from "../socket.js";
 
 // ── Stat Card ────────────────────────────────────────────────
+const DASHBOARD_FILTER_OPTIONS = [
+  { value: "today", label: "Today" },
+  { value: "last_7_days", label: "Last 7 Days" },
+  { value: "last_14_days", label: "Last 14 Days" },
+  { value: "last_30_days", label: "Last 30 Days" },
+  { value: "last_90_days", label: "Last 90 Days" },
+];
+
+function formatRangeLabel(startDate, endDate) {
+  if (!startDate || !endDate) return "";
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  const formatter = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  return `${formatter.format(start)} - ${formatter.format(end)}`;
+}
+
+function csvEscape(value) {
+  const normalized =
+    value === null || value === undefined ? "" : String(value).replace(/\r?\n/g, " ");
+  if (/[",]/.test(normalized)) {
+    return `"${normalized.replace(/"/g, '""')}"`;
+  }
+  return normalized;
+}
+
+function appendCsvSection(lines, title, columns, rows) {
+  lines.push([title]);
+  lines.push(columns);
+  rows.forEach((row) => lines.push(row));
+  lines.push([]);
+}
+
+function buildDashboardExportCsv(data) {
+  const lines = [
+    ["Dashboard Export"],
+    ["Filter", data?.filter_label ?? ""],
+    ["Date Range", formatRangeLabel(data?.filter_start_date, data?.filter_end_date)],
+    [],
+  ];
+
+  appendCsvSection(
+    lines,
+    "Summary",
+    ["Metric", "Value"],
+    [
+      ["Registered Students", data?.total_students ?? 0],
+      ["Recognition Logs", data?.total_logs ?? 0],
+      ["Unique Visitors", data?.unique_visitors ?? 0],
+      ["Average Confidence", `${data?.avg_confidence ?? 0}%`],
+    ]
+  );
+
+  appendCsvSection(
+    lines,
+    "Daily Visitors",
+    ["Date", "Visits"],
+    (data?.daily_visitors ?? []).map((item) => [item.date, item.count])
+  );
+
+  appendCsvSection(
+    lines,
+    "Program Distribution",
+    ["Program", "Unique Visitors"],
+    (data?.program_distribution ?? []).map((item) => [item.program, item.count])
+  );
+
+  appendCsvSection(
+    lines,
+    "Monthly Visitors",
+    ["Month", "Visits"],
+    (data?.monthly_visitors ?? []).map((item) => [item.month, item.count])
+  );
+
+  appendCsvSection(
+    lines,
+    "Peak Hours",
+    ["Hour", "Visits"],
+    (data?.peak_hours ?? []).map((count, hour) => [hour, count])
+  );
+
+  appendCsvSection(
+    lines,
+    "Top Visitors",
+    ["Name", "SR Code", "Visits"],
+    (data?.top_visitors ?? []).map((item) => [item.name, item.sr_code, item.visits])
+  );
+
+  const heatmapRows = [];
+  (data?.weekly_heatmap ?? []).forEach((entry) => {
+    (entry.values ?? []).forEach((count, idx) => {
+      heatmapRows.push([entry.day, `${idx + 7}:00`, count]);
+    });
+  });
+  appendCsvSection(lines, "Weekly Heatmap", ["Day", "Hour", "Visits"], heatmapRows);
+
+  return lines.map((row) => row.map(csvEscape).join(",")).join("\n");
+}
+
+function downloadDashboardExport(data) {
+  const csvContent = buildDashboardExportCsv(data);
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = downloadUrl;
+  anchor.download = `dashboard-${data?.filter_key ?? "export"}-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(downloadUrl);
+}
+
 function StatCard({ title, value, subtext, iconClass, cardClass }) {
   const highlightStyles = {
     "customers-card": {
@@ -551,55 +666,59 @@ export default function Dashboard() {
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
-  const refreshInFlightRef = React.useRef(false);
+  const [selectedFilter, setSelectedFilter] = React.useState("today");
+  const latestRequestRef = React.useRef(0);
   const hasLoadedDataRef = React.useRef(false);
 
   React.useEffect(() => {
     hasLoadedDataRef.current = Boolean(data);
   }, [data]);
 
-  async function loadDashboardData({ silent = false } = {}) {
-    if (refreshInFlightRef.current) return;
-    refreshInFlightRef.current = true;
+  async function loadDashboardData({ silent = false, filterKey = selectedFilter } = {}) {
+    const requestId = latestRequestRef.current + 1;
+    latestRequestRef.current = requestId;
 
     if (!silent) {
       setLoading(true);
     }
 
     try {
-      const resp = await fetchJson("/api/dashboard");
+      const query = new URLSearchParams({ filter: filterKey }).toString();
+      const resp = await fetchJson(`/api/dashboard?${query}`);
+      if (requestId !== latestRequestRef.current) return;
       setData(resp);
       setError(false);
     } catch {
+      if (requestId !== latestRequestRef.current) return;
       if (!hasLoadedDataRef.current) {
         setError(true);
       }
     } finally {
+      if (requestId !== latestRequestRef.current) return;
       if (!silent) {
         setLoading(false);
       }
-      refreshInFlightRef.current = false;
     }
   }
 
   React.useEffect(() => {
-    loadDashboardData();
+    loadDashboardData({ filterKey: selectedFilter });
 
     const timer = window.setInterval(() => {
-      loadDashboardData({ silent: true });
+      loadDashboardData({ silent: true, filterKey: selectedFilter });
     }, 30000);
 
     return () => window.clearInterval(timer);
-  }, []);
+  }, [selectedFilter]);
 
   React.useEffect(() => {
     function handleAnalyticsUpdated() {
-      loadDashboardData({ silent: true });
+      loadDashboardData({ silent: true, filterKey: selectedFilter });
     }
 
     socket.on("analytics_updated", handleAnalyticsUpdated);
     return () => socket.off("analytics_updated", handleAnalyticsUpdated);
-  }, []);
+  }, [selectedFilter]);
 
   if (loading) {
     return (
@@ -624,7 +743,7 @@ export default function Dashboard() {
   }
 
   const totalLogs = data?.total_logs ?? 0;
-  const todayLogs = data?.today_logs ?? 0;
+  const uniqueVisitors = data?.unique_visitors ?? 0;
   const avgConfidence = data?.avg_confidence ?? 0;
   const totalStudents = data?.total_students ?? 0;
   const dailyVisitors = data?.daily_visitors ?? [];
@@ -633,6 +752,16 @@ export default function Dashboard() {
   const topVisitors = data?.top_visitors ?? [];
   const weeklyHeatmap = data?.weekly_heatmap ?? [];
   const monthlyVisitors = data?.monthly_visitors ?? [];
+  
+  // Get filter label from selected filter, not from API response
+  const selectedFilterOption = DASHBOARD_FILTER_OPTIONS.find(
+    (opt) => opt.value === selectedFilter
+  );
+  const filterLabel = selectedFilterOption?.label ?? "Last 14 Days";
+  const filterDateRange = formatRangeLabel(
+    data?.filter_start_date,
+    data?.filter_end_date
+  );
 
   // Peak hour label for summary
   const peakHourIdx = peakHours.indexOf(Math.max(...peakHours));
@@ -647,10 +776,45 @@ export default function Dashboard() {
             : `${peakHourIdx - 12} PM`
       : "N/A";
 
+  function handleExportClick() {
+    if (!data) return;
+    downloadDashboardExport(data);
+  }
+
   return (
     <section className="section dashboard">
-      <div className="pagetitle">
-        <h1>Dashboard</h1>
+      <div className="pagetitle d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+        <div>
+          <h1 className="mb-1">Dashboard</h1>
+          <div className="text-muted small">
+            Showing {filterLabel}
+            {filterDateRange ? ` (${filterDateRange})` : ""}
+          </div>
+        </div>
+        <div className="d-flex flex-column flex-sm-row gap-2 align-items-stretch align-items-sm-center">
+          <select
+            className="form-select form-select-sm"
+            value={selectedFilter}
+            onChange={(event) => setSelectedFilter(event.target.value)}
+            aria-label="Dashboard filter"
+          >
+            {DASHBOARD_FILTER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={handleExportClick}
+            disabled={!data}
+            style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
+          >
+            <i className="bi bi-download" style={{ fontSize: '0.9rem' }}></i>
+            Export
+          </button>
+        </div>
       </div>
 
       {/* ── Stat Cards ── */}
@@ -663,23 +827,23 @@ export default function Dashboard() {
           cardClass="customers-card"
         />
         <StatCard
-          title="Total Logs"
+          title="Recognition Logs"
           value={totalLogs}
-          subtext="all time entries"
+          subtext={filterLabel.toLowerCase()}
           iconClass="bi bi-journal-text"
           cardClass="sales-card"
         />
         <StatCard
-          title="Today's Visits"
-          value={todayLogs}
-          subtext="recognized today"
+          title="Unique Visitors"
+          value={uniqueVisitors}
+          subtext={filterLabel.toLowerCase()}
           iconClass="bi bi-calendar-check"
           cardClass="revenue-card"
         />
         <StatCard
           title="Avg. Confidence"
           value={`${avgConfidence}%`}
-          subtext="recognition accuracy"
+          subtext={`within ${filterLabel.toLowerCase()}`}
           iconClass="bi bi-speedometer2"
           cardClass="customers-card"
         />
@@ -692,12 +856,14 @@ export default function Dashboard() {
             <div className="card-body">
               <div className="d-flex justify-content-between align-items-center mb-3">
                 <h5 className="card-title mb-0">
-                  Daily Visitors — Last 14 Days
+                  Daily Visitors
                 </h5>
                 <span className="badge bg-primary-subtle text-primary">
-                  <i className="bi bi-graph-up me-1"></i>Trend
+                  <i className="bi bi-graph-up me-1"></i>
+                  {filterLabel}
                 </span>
               </div>
+              <div className="text-muted small mb-2">{filterDateRange}</div>
               <DailyVisitorsChart data={dailyVisitors} />
             </div>
           </div>
@@ -705,7 +871,10 @@ export default function Dashboard() {
         <div className="col-lg-4">
           <div className="card h-100">
             <div className="card-body">
-              <h5 className="card-title">Program Distribution</h5>
+              <div className="d-flex justify-content-between align-items-center mb-3">
+                <h5 className="card-title mb-0">Program Distribution</h5>
+                <span className="text-muted small">Unique visitors</span>
+              </div>
               <ProgramDistributionChart data={programDistrib} />
             </div>
           </div>
@@ -721,7 +890,7 @@ export default function Dashboard() {
                 <h5 className="card-title mb-0">Weekly Visit Heatmap</h5>
                 <span className="text-muted small">
                   <i className="bi bi-calendar3 me-1"></i>
-                  Day × Hour pattern
+                  {filterLabel}
                 </span>
               </div>
               <WeeklyHeatmap data={weeklyHeatmap} />
@@ -734,7 +903,7 @@ export default function Dashboard() {
               <div className="d-flex justify-content-between align-items-center mb-3">
                 <h5 className="card-title mb-0">Monthly Visitors</h5>
                 <span className="badge bg-primary-subtle text-primary">
-                  Last 6 months
+                  {filterLabel}
                 </span>
               </div>
               <MonthlyVisitorsChart data={monthlyVisitors} />
@@ -821,7 +990,7 @@ export default function Dashboard() {
               <div className="d-flex justify-content-between align-items-center mb-3">
                 <h5 className="card-title mb-0">Top Frequent Visitors</h5>
                 <span className="badge bg-danger-subtle text-danger">
-                  Top {Math.min(topVisitors.length, 10)}
+                  Top {Math.min(topVisitors.length, 10)} in {filterLabel}
                 </span>
               </div>
               <TopVisitorsTable data={topVisitors} />

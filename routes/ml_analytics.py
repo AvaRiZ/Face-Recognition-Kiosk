@@ -1,11 +1,18 @@
 
 import math
+import re
 import threading
 import time
 import warnings
 import struct
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+from core.program_catalog import (
+    build_program_lookup,
+    is_program_code,
+    normalize_program_name,
+    resolve_program_name,
+)
 from db import connect as db_connect
 from routes.forecasting import run_all_forecasts
 
@@ -23,6 +30,16 @@ _analytics_cache_lock = threading.Lock()
 _analytics_cache = {
     "computed_at": 0.0,
     "result": None,
+}
+
+_YEAR_LEVEL_PATTERN = re.compile(r"^(?P<prefix>\d{2})-\d{5}$")
+_YEAR_LEVEL_LABELS = {
+    1: "1st Year",
+    2: "2nd Year",
+    3: "3rd Year",
+    4: "4th Year",
+    5: "5th Year",
+    6: "6th Year",
 }
 
 def _coerce_confidence(value):
@@ -115,6 +132,98 @@ def _get_cached_forecast(daily_df, today):
     }
 
 
+def _normalize_program_series(df, program_lookup):
+    program_resolution = {
+        "resolved_from_catalog": 0,
+        "ambiguous_codes": 0,
+        "unmatched_codes": 0,
+    }
+
+    def resolve_cell(value):
+        resolved_program, resolution_status, _ = resolve_program_name(value, program_lookup)
+        normalized_input = normalize_program_name(value)
+        normalized_output = normalize_program_name(resolved_program)
+
+        if resolution_status == "catalog" and normalized_input and normalized_input != normalized_output:
+            program_resolution["resolved_from_catalog"] += 1
+            return normalized_output or "Unknown"
+        if resolution_status == "ambiguous" and is_program_code(normalized_input):
+            program_resolution["ambiguous_codes"] += 1
+            return "Unknown"
+        if resolution_status == "unmatched" and is_program_code(normalized_input):
+            program_resolution["unmatched_codes"] += 1
+            return "Unknown"
+        return normalized_output or "Unknown"
+
+    df["program"] = df["program"].map(resolve_cell)
+    return program_resolution
+
+
+def _derive_year_level_from_sr_code(sr_code: str | None) -> str:
+    normalized = (sr_code or "").strip()
+    match = _YEAR_LEVEL_PATTERN.fullmatch(normalized)
+    if not match:
+        return ""
+
+    try:
+        start_year = int(match.group("prefix"))
+    except ValueError:
+        return ""
+
+    current_year = date.today().year % 100
+    year_level = current_year - start_year
+    return _YEAR_LEVEL_LABELS.get(year_level, "")
+
+
+def _normalize_year_level_value(sr_code: str | None, raw_year_level: str | None) -> str:
+    derived = _derive_year_level_from_sr_code(sr_code)
+    if derived:
+        return derived
+
+    normalized = " ".join((raw_year_level or "").split())
+    if not normalized:
+        return "Unknown"
+
+    lowered = normalized.lower().replace("-", " ")
+    aliases = {
+        "1": "1st Year",
+        "1st": "1st Year",
+        "1st year": "1st Year",
+        "first year": "1st Year",
+        "2": "2nd Year",
+        "2nd": "2nd Year",
+        "2nd year": "2nd Year",
+        "second year": "2nd Year",
+        "3": "3rd Year",
+        "3rd": "3rd Year",
+        "3rd year": "3rd Year",
+        "third year": "3rd Year",
+        "4": "4th Year",
+        "4th": "4th Year",
+        "4th year": "4th Year",
+        "fourth year": "4th Year",
+        "5": "5th Year",
+        "5th": "5th Year",
+        "5th year": "5th Year",
+        "fifth year": "5th Year",
+        "6": "6th Year",
+        "6th": "6th Year",
+        "6th year": "6th Year",
+        "sixth year": "6th Year",
+    }
+    return aliases.get(lowered, normalized or "Unknown")
+
+
+def _year_level_sort_key(value: str | None) -> tuple[int, str]:
+    normalized = " ".join((value or "").split())
+    for number, label in _YEAR_LEVEL_LABELS.items():
+        if normalized == label:
+            return (number, label)
+    if normalized == "Unknown":
+        return (99, normalized)
+    return (98, normalized)
+
+
 def run_ml_analytics(db_path):
     """
     Full ML analytics pipeline.
@@ -146,13 +255,6 @@ def run_ml_analytics(db_path):
     c    = conn.cursor()
 
     # ── Ensure imported_logs exists ────────────────────────────
-    c.execute("""CREATE TABLE IF NOT EXISTS imported_logs (
-        import_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sr_code TEXT NOT NULL, name TEXT, gender TEXT,
-        program TEXT, year_level TEXT, timestamp TEXT NOT NULL,
-        imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        import_batch TEXT)""")
-    conn.commit()
 
     # ══════════════════════════════════════════════════════════
     # STAGE 1 — RAW DATA COLLECTION
@@ -168,13 +270,33 @@ def run_ml_analytics(db_path):
     live_rows = c.fetchall()
 
     c.execute("""
-        SELECT sr_code, name, NULLIF(TRIM(program),'') AS program,
-               NULLIF(TRIM(gender),'') AS gender,
-               NULLIF(TRIM(year_level),'') AS year_level,
-               0.85 AS confidence, timestamp, 'imported' AS source
-        FROM imported_logs ORDER BY timestamp ASC
+        SELECT i.sr_code,
+               COALESCE(NULLIF(TRIM(i.name), ''), u.name) AS name,
+               COALESCE(NULLIF(TRIM(u.course), ''), NULLIF(TRIM(i.program), '')) AS program,
+               NULLIF(TRIM(i.gender),'') AS gender,
+               NULLIF(TRIM(i.year_level),'') AS year_level,
+               0.85 AS confidence, i.timestamp, 'imported' AS source
+        FROM imported_logs i
+        LEFT JOIN users u ON u.sr_code = i.sr_code
+        ORDER BY i.timestamp ASC
     """)
     imported_rows = c.fetchall()
+
+    c.execute("""
+        SELECT program_name, program_code
+        FROM programs
+        WHERE program_name IS NOT NULL AND TRIM(program_name) <> ''
+        UNION
+        SELECT course, NULL
+        FROM users
+        WHERE course IS NOT NULL AND TRIM(course) <> ''
+    """)
+    known_programs = [
+        (program_name, program_code)
+        for program_name, program_code in c.fetchall()
+        if normalize_program_name(program_name)
+    ]
+    program_lookup = build_program_lookup(known_programs)
 
     c.execute("SELECT COUNT(*) FROM users")
     total_students = c.fetchone()[0]
@@ -274,6 +396,11 @@ def run_ml_analytics(db_path):
             "data_quality": data_quality,
         })
 
+    program_resolution = _normalize_program_series(df, program_lookup)
+    df["year_level"] = [
+        _normalize_year_level_value(sr_code, year_level)
+        for sr_code, year_level in zip(df["sr_code"], df["year_level"])
+    ]
     daily_df    = df.groupby("date").size().reset_index(name="count")
     daily_df["date"] = pd.to_datetime(daily_df["date"])
     daily_df    = daily_df.sort_values("date")
@@ -331,7 +458,10 @@ def run_ml_analytics(db_path):
 
     yl_dist       = df.groupby("year_level")["sr_code"].nunique().reset_index()
     yl_dist.columns = ["label","count"]
-    year_level_data = yl_dist.sort_values("label").to_dict("records")
+    year_level_data = sorted(
+        yl_dist.to_dict("records"),
+        key=lambda item: _year_level_sort_key(item.get("label")),
+    )
 
     # Program distribution
     program_dist = df.groupby("program")["sr_code"].nunique().reset_index()
@@ -693,6 +823,7 @@ def run_ml_analytics(db_path):
         "last_30_labels":       last_30_labels,
         "last_30_counts":       last_30_counts,
         "program_distribution": program_distribution,
+        "program_resolution":   program_resolution,
         "peak_hours":           peak_hours,
         "gender_data":          gender_data,
         "year_level_data":      year_level_data,
@@ -744,13 +875,6 @@ def run_basic_analytics(db_path):
     c    = conn.cursor()
 
     # ── Ensure imported_logs exists ────────────────────────────
-    c.execute("""CREATE TABLE IF NOT EXISTS imported_logs (
-        import_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sr_code TEXT NOT NULL, name TEXT, gender TEXT,
-        program TEXT, year_level TEXT, timestamp TEXT NOT NULL,
-        imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        import_batch TEXT)""")
-    conn.commit()
 
     # ══════════════════════════════════════════════════════════
     # STAGE 1 — RAW DATA COLLECTION
@@ -766,13 +890,33 @@ def run_basic_analytics(db_path):
     live_rows = c.fetchall()
 
     c.execute("""
-        SELECT sr_code, name, NULLIF(TRIM(program),'') AS program,
-               NULLIF(TRIM(gender),'') AS gender,
-               NULLIF(TRIM(year_level),'') AS year_level,
-               0.85 AS confidence, timestamp, 'imported' AS source
-        FROM imported_logs ORDER BY timestamp ASC
+        SELECT i.sr_code,
+               COALESCE(NULLIF(TRIM(i.name), ''), u.name) AS name,
+               COALESCE(NULLIF(TRIM(u.course), ''), NULLIF(TRIM(i.program), '')) AS program,
+               NULLIF(TRIM(i.gender),'') AS gender,
+               NULLIF(TRIM(i.year_level),'') AS year_level,
+               0.85 AS confidence, i.timestamp, 'imported' AS source
+        FROM imported_logs i
+        LEFT JOIN users u ON u.sr_code = i.sr_code
+        ORDER BY i.timestamp ASC
     """)
     imported_rows = c.fetchall()
+
+    c.execute("""
+        SELECT program_name, program_code
+        FROM programs
+        WHERE program_name IS NOT NULL AND TRIM(program_name) <> ''
+        UNION
+        SELECT course, NULL
+        FROM users
+        WHERE course IS NOT NULL AND TRIM(course) <> ''
+    """)
+    known_programs = [
+        (program_name, program_code)
+        for program_name, program_code in c.fetchall()
+        if normalize_program_name(program_name)
+    ]
+    program_lookup = build_program_lookup(known_programs)
 
     c.execute("SELECT COUNT(*) FROM users")
     total_students = c.fetchone()[0]
@@ -861,6 +1005,11 @@ def run_basic_analytics(db_path):
         })
 
     df = pd.DataFrame(after_dup, columns=["sr_code", "name", "program", "gender", "year_level", "confidence", "timestamp", "source"])
+    program_resolution = _normalize_program_series(df, program_lookup)
+    df["year_level"] = [
+        _normalize_year_level_value(sr_code, year_level)
+        for sr_code, year_level in zip(df["sr_code"], df["year_level"])
+    ]
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.dropna(subset=["timestamp"])
     df["date"] = df["timestamp"].dt.date
@@ -920,7 +1069,10 @@ def run_basic_analytics(db_path):
 
     # Year level data
     year_counts = df["year_level"].value_counts().to_dict()
-    year_level_data = [{"year_level": k or "Unknown", "count": int(v)} for k, v in year_counts.items()]
+    year_level_data = sorted(
+        [{"year_level": k or "Unknown", "count": int(v)} for k, v in year_counts.items()],
+        key=lambda item: _year_level_sort_key(item.get("year_level")),
+    )
 
     return _to_builtin({
         "data_quality": data_quality,
@@ -932,6 +1084,7 @@ def run_basic_analytics(db_path):
         "last_30_labels": last_30_labels,
         "last_30_counts": last_30_counts,
         "program_distribution": program_distribution,
+        "program_resolution": program_resolution,
         "peak_hours": peak_hours,
         "gender_data": gender_data,
         "year_level_data": year_level_data,

@@ -19,7 +19,8 @@ export const DEFAULT_COLLEGE_PROGRAM_MAP = {
     'Bachelor of Science in Industrial Engineering',
     'Bachelor of Science in Mechanical Engineering',
     'Bachelor of Science in Petroleum Engineering',
-    'Bachelor of Science in Automotive Engineering'
+    'Bachelor of Science in Automotive Engineering',
+    'Bachelor of Science in Naval Architecture and Marine Engineering'
   ],
   'College of Architecture, Fine Arts and Design': [
     'Bachelor of Fine Arts and Design Major in Visual Communication',

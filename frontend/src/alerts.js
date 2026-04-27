@@ -2,6 +2,15 @@ function getSwal() {
   return window.Swal || null;
 }
 
+const SWAL_Z_INDEX = 3000;
+
+function applySwalZIndex(popup) {
+  const container = popup?.closest?.('.swal2-container') || document.querySelector('.swal2-container');
+  if (container) {
+    container.style.zIndex = String(SWAL_Z_INDEX);
+  }
+}
+
 export async function showAlert({
   icon = 'info',
   title,
@@ -15,6 +24,8 @@ export async function showAlert({
       icon,
       title,
       text,
+      zIndex: SWAL_Z_INDEX,
+      didOpen: applySwalZIndex,
       timer,
       timerProgressBar: Boolean(timer),
       showConfirmButton
@@ -47,6 +58,8 @@ export async function confirmAction({
       icon,
       title,
       text,
+      zIndex: SWAL_Z_INDEX,
+      didOpen: applySwalZIndex,
       showCancelButton: true,
       confirmButtonText,
       cancelButtonText: 'Cancel',

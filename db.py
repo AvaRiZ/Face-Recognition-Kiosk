@@ -25,7 +25,8 @@ def connect(db_path: Optional[str] = None):
             raise RuntimeError("PostgreSQL selected but `psycopg` is not installed.")
         raw = psycopg.connect(target)
         return CompatConnection(raw, "postgres")
-    raw = sqlite3.connect(target)
+    raw = sqlite3.connect(target, timeout=30.0)
+    _configure_sqlite_connection(raw)
     return CompatConnection(raw, "sqlite")
 
 
@@ -113,6 +114,15 @@ def _normalize_params(params):
     if isinstance(params, list):
         return tuple(params)
     return (params,)
+
+
+def _configure_sqlite_connection(conn: sqlite3.Connection) -> None:
+    # WAL mode allows long-running analytics reads and import writes
+    # to coexist more reliably than SQLite's default rollback journal.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
 
 
 def _translate_sqlite_to_postgres(query: str) -> str:

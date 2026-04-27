@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { fetchJson } from "../api.js";
 import { confirmAction, getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { socket } from "../socket.js";
@@ -99,6 +100,22 @@ function ImportModal({ onImportSuccess }) {
     return () => document.removeEventListener("keydown", h);
   }, [showModal]);
 
+  async function readImportResponse(response) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      return response.json();
+    }
+
+    const text = await response.text();
+    console.error("Import endpoint returned a non-JSON response:", text);
+
+    throw new Error(
+      response.status === 401 || response.status === 403
+        ? "Your session may have expired. Please sign in again and try the import once more."
+        : "The server returned an unexpected response while importing. Please refresh the page and try again."
+    );
+  }
+
   async function uploadFile(file) {
     if (!file.name.endsWith(".csv")) {
       setResult({ success: false, message: "Only CSV files accepted." });
@@ -111,7 +128,19 @@ function ImportModal({ onImportSuccess }) {
     fd.append("file", file);
     try {
       const r = await fetch("/api/import-logs", { method: "POST", body: fd });
-      const d = await r.json();
+      const d = await readImportResponse(r);
+
+      if (!r.ok) {
+        const message =
+          d?.message ||
+          (r.status === 401 || r.status === 403
+            ? "Your session may have expired. Please sign in again and try the import once more."
+            : "The import could not be completed right now. Please try again.");
+        setResult({ success: false, message });
+        await showError("Import Failed", message);
+        return;
+      }
+
       setResult(d);
       if (d.success) {
         const s = await fetchJson("/api/import-logs/summary");
@@ -122,8 +151,16 @@ function ImportModal({ onImportSuccess }) {
         await showError("Import Failed", d.message || "Upload failed.");
       }
     } catch (error) {
-      setResult({ success: false, message: "Upload failed." });
-      await showError("Import Failed", getErrorMessage(error, "Upload failed."));
+      const rawMessage = error?.message || "";
+      const message =
+        /Unexpected token|not valid JSON/i.test(rawMessage)
+          ? "The server returned an unexpected response while importing. Please refresh the page and try again."
+          : getErrorMessage(
+              error,
+              "The import could not be completed right now. Please try again."
+            );
+      setResult({ success: false, message });
+      await showError("Import Failed", message);
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -175,18 +212,19 @@ function ImportModal({ onImportSuccess }) {
       >
         <i className="bi bi-upload" style={{ fontSize: 12 }}></i> Import Data
       </button>
-      {showModal && (
+      {showModal && typeof document !== "undefined" && createPortal((
         <div
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 1055,
+            zIndex: 2000,
             background: "rgba(0,0,0,0.4)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            padding: 16,
+            padding: "84px 16px 24px",
             backdropFilter: "blur(3px)",
+            overflowY: "auto",
           }}
           onClick={(e) => e.target === e.currentTarget && setShowModal(false)}
         >
@@ -481,7 +519,7 @@ function ImportModal({ onImportSuccess }) {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
     </>
   );
 }
@@ -3022,6 +3060,81 @@ function getTopProgram(programDistribution = []) {
   };
 }
 
+function getYearLevelLabel(item) {
+  return item?.year_level || item?.label || "Unknown";
+}
+
+function normalizeYearLevelLabel(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "Unknown";
+
+  const lowered = normalized.toLowerCase().replace(/-/g, " ");
+  const aliases = {
+    "1": "1st Year",
+    "1st": "1st Year",
+    "1st year": "1st Year",
+    "first year": "1st Year",
+    "2": "2nd Year",
+    "2nd": "2nd Year",
+    "2nd year": "2nd Year",
+    "second year": "2nd Year",
+    "3": "3rd Year",
+    "3rd": "3rd Year",
+    "3rd year": "3rd Year",
+    "third year": "3rd Year",
+    "4": "4th Year",
+    "4th": "4th Year",
+    "4th year": "4th Year",
+    "fourth year": "4th Year",
+    "5": "5th Year",
+    "5th": "5th Year",
+    "5th year": "5th Year",
+    "fifth year": "5th Year",
+    "6": "6th Year",
+    "6th": "6th Year",
+    "6th year": "6th Year",
+    "sixth year": "6th Year",
+    unknown: "Unknown",
+  };
+
+  return aliases[lowered] || normalized;
+}
+
+function getYearLevelOrder(label) {
+  const normalized = normalizeYearLevelLabel(label);
+  const lookup = {
+    "1st Year": 1,
+    "2nd Year": 2,
+    "3rd Year": 3,
+    "4th Year": 4,
+    "5th Year": 5,
+    "6th Year": 6,
+    Unknown: 99,
+  };
+  return lookup[normalized] ?? 98;
+}
+
+function normalizeYearLevelData(items = []) {
+  const merged = new Map();
+
+  items.forEach((item) => {
+    const label = normalizeYearLevelLabel(getYearLevelLabel(item));
+    const count = Number(item?.count || 0);
+    merged.set(label, (merged.get(label) || 0) + count);
+  });
+
+  return [...merged.entries()].map(([label, count]) => ({
+    year_level: label,
+    count,
+  })).filter(item => item.count > 0).sort((a, b) => {
+    const labelA = a.year_level;
+    const labelB = b.year_level;
+    const orderDelta = getYearLevelOrder(labelA) - getYearLevelOrder(labelB);
+    if (orderDelta !== 0) return orderDelta;
+    return labelA.localeCompare(labelB);
+  });
+}
+
 function buildInsightCards(currentData) {
   if (!currentData?.descriptive_stats) return [];
   
@@ -3085,15 +3198,25 @@ function hexToRgba(hex, alpha) {
 
 function buildChartJsConfig({ options, series }) {
   const type = options?.chart?.type || "line";
+  const normalizedType = type === "area" ? "line" : type;
   const colors = options?.colors?.length
     ? options.colors
     : [ANALYTICS_COLORS.primary, ANALYTICS_COLORS.secondary, ANALYTICS_COLORS.accent];
   const labels = options?.labels || options?.xaxis?.categories || [];
   const normalizedSeries = Array.isArray(series) ? series : [];
-  const isPieLike = type === "donut" || type === "pie";
-  const isRadar = type === "radar";
-  const isHorizontalBar = type === "bar" && Boolean(options?.plotOptions?.bar?.horizontal);
-  const chartType = isPieLike ? "doughnut" : type;
+  const isPieLike = normalizedType === "donut" || normalizedType === "pie";
+  const isRadar = normalizedType === "radar";
+  const isHorizontalBar =
+    normalizedType === "bar" && Boolean(options?.plotOptions?.bar?.horizontal);
+  const chartType = isPieLike ? "doughnut" : normalizedType;
+  const isLineLike = chartType === "line" || isRadar;
+
+  function getTooltipValue(ctx) {
+    if (isPieLike) return ctx?.parsed;
+    if (isRadar) return ctx?.parsed?.r;
+    if (isHorizontalBar) return ctx?.parsed?.x;
+    return ctx?.parsed?.y;
+  }
 
   const datasets = isPieLike
     ? [
@@ -3125,7 +3248,8 @@ function buildChartJsConfig({ options, series }) {
           fill: chartType === "line" && isFilled,
           tension: chartType === "line" ? 0.38 : 0,
           pointRadius,
-          pointHoverRadius: pointRadius > 0 ? pointRadius + 2 : 3,
+          pointHoverRadius: pointRadius > 0 ? pointRadius + 2 : 5,
+          pointHitRadius: isLineLike ? 18 : pointRadius + 4,
           borderRadius: typeof options?.plotOptions?.bar?.borderRadius === "number"
             ? options.plotOptions.bar.borderRadius
             : undefined,
@@ -3142,6 +3266,12 @@ function buildChartJsConfig({ options, series }) {
       responsive: true,
       maintainAspectRatio: false,
       indexAxis: isHorizontalBar ? "y" : "x",
+      interaction: isLineLike
+        ? {
+            mode: "index",
+            intersect: false,
+          }
+        : undefined,
       plugins: {
         legend: {
           display: options?.legend?.show !== false,
@@ -3159,6 +3289,11 @@ function buildChartJsConfig({ options, series }) {
           bodyColor: "#e2e8f0",
           borderColor: "rgba(148, 163, 184, 0.18)",
           borderWidth: 1,
+          callbacks: isPieLike
+            ? undefined
+            : {
+                label: (ctx) => ` ${getTooltipValue(ctx) ?? 0} visits`,
+              },
         },
       },
     },
@@ -3498,7 +3633,7 @@ function AnalyticsReportsInner() {
   const peakHours = currentData?.peak_hours || [];
   const programDistribution = currentData?.program_distribution || [];
   const genderData = currentData?.gender_data || [];
-  const yearLevelData = currentData?.year_level_data || [];
+  const yearLevelData = normalizeYearLevelData(currentData?.year_level_data || []);
   const trendDirection = getTrendDirection(last30Counts);
   const peakDow = getPeakDow(dowLabels, dowAverages);
   const peakHour = getPeakHour(peakHours);
@@ -3660,12 +3795,22 @@ function AnalyticsReportsInner() {
       chart: { type: "radar" },
       colors: [ANALYTICS_COLORS.gold],
       xaxis: {
-        categories: yearLevelData.slice(0, 6).map((item) => item.year_level || "Unknown"),
+        categories: yearLevelData.slice(0, 6).map((item) => getYearLevelLabel(item)),
       },
       markers: { size: 4 },
       fill: {
         type: "solid",
         opacity: 0.24,
+      },
+      tooltip: {
+        y: {
+          formatter: (value, { dataPointIndex }) => {
+            const yearData = yearLevelData.slice(0, 6);
+            const item = yearData[dataPointIndex];
+            const label = item?.year_level || "Unknown";
+            return `${label}: ${value} students`;
+          },
+        },
       },
     };
 

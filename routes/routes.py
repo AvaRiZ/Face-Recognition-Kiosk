@@ -7,6 +7,7 @@ import io
 import math
 import time
 import base64
+import calendar
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -23,6 +24,12 @@ from auth import (
     toggle_staff_status,
 )
 from core.models import User
+from core.program_catalog import (
+    build_program_lookup,
+    is_program_code,
+    normalize_program_name,
+    resolve_program_name,
+)
 from db import connect as db_connect
 from routes.ml_analytics import run_ml_analytics
 from app.realtime import emit_analytics_update
@@ -427,15 +434,45 @@ def create_routes_blueprint(deps):
             "overall_row": overall_row,
         }
 
-    def _dashboard_data():
-        from datetime import date, timedelta
+    def _dashboard_filter_window(filter_key=None):
+        filter_options = {
+            "today": {"days": 1, "label": "Today"},
+            "last_7_days": {"days": 7, "label": "Last 7 Days"},
+            "last_14_days": {"days": 14, "label": "Last 14 Days"},
+            "last_30_days": {"days": 30, "label": "Last 30 Days"},
+            "last_90_days": {"days": 90, "label": "Last 90 Days"},
+        }
+        normalized_key = (filter_key or "last_14_days").strip().lower()
+        if normalized_key not in filter_options:
+            normalized_key = "last_14_days"
+
+        option = filter_options[normalized_key]
+        end_date = date.today()
+        start_date = end_date - timedelta(days=option["days"] - 1)
+        return {
+            "key": normalized_key,
+            "label": option["label"],
+            "days": option["days"],
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+    def _dashboard_data(filter_key=None):
+        filter_window = _dashboard_filter_window(filter_key)
+        start_date = filter_window["start_date"]
+        end_date = filter_window["end_date"]
+        range_params = (start_date.isoformat(), end_date.isoformat())
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
 
         # ── Existing queries (kept exactly as before) ──────────────
 
-        c.execute("SELECT COUNT(*) FROM recognition_log")
+        c.execute("""
+            SELECT COUNT(*)
+            FROM recognition_log
+            WHERE DATE(timestamp) BETWEEN ? AND ?
+        """, range_params)
         total_logs = c.fetchone()[0]
 
         c.execute("""
@@ -447,11 +484,15 @@ def create_routes_blueprint(deps):
         c.execute("""
             SELECT COUNT(DISTINCT user_id)
             FROM recognition_log
-            WHERE DATE(timestamp) = DATE('now')
-        """)
-        today_unique = c.fetchone()[0]
+            WHERE DATE(timestamp) BETWEEN ? AND ?
+        """, range_params)
+        unique_visitors = c.fetchone()[0]
 
-        c.execute("SELECT confidence FROM recognition_log")
+        c.execute("""
+            SELECT confidence
+            FROM recognition_log
+            WHERE DATE(timestamp) BETWEEN ? AND ?
+        """, range_params)
         conf_values = []
         for (confidence,) in c.fetchall():
             value = _coerce_confidence(confidence)
@@ -464,7 +505,7 @@ def create_routes_blueprint(deps):
             max_occupancy = int(max_occupancy_setting)
         except (TypeError, ValueError):
             max_occupancy = 300
-        current_occupancy = min(today_unique or 0, max_occupancy)
+        current_occupancy = min(unique_visitors or 0, max_occupancy)
         occupancy_remaining = max(max_occupancy - current_occupancy, 0)
         occupancy_ratio = (current_occupancy / max_occupancy) if max_occupancy else 0
         if occupancy_ratio >= 0.9:
@@ -486,20 +527,20 @@ def create_routes_blueprint(deps):
         c.execute("""
             SELECT DATE(timestamp) as day, COUNT(*) as count
             FROM recognition_log
-            WHERE DATE(timestamp) >= DATE('now', '-13 days')
+            WHERE DATE(timestamp) BETWEEN ? AND ?
             GROUP BY day
             ORDER BY day ASC
-        """)
+        """, range_params)
         date_map = {row[0]: row[1] for row in c.fetchall()}
-        daily_visitors = [
-            {
-                "date": (date.today() - timedelta(days=i)).isoformat()[5:],
-                "count": date_map.get(
-                    (date.today() - timedelta(days=i)).isoformat(), 0
-                )
-            }
-            for i in range(13, -1, -1)
-        ]
+        daily_visitors = []
+        for day_offset in range(filter_window["days"]):
+            current_day = start_date + timedelta(days=day_offset)
+            daily_visitors.append(
+                {
+                    "date": current_day.strftime("%m-%d"),
+                    "count": date_map.get(current_day.isoformat(), 0),
+                }
+            )
 
         # ── Course distribution ────────────────────────────────────
 
@@ -507,11 +548,13 @@ def create_routes_blueprint(deps):
             SELECT u.course, COUNT(DISTINCT r.user_id) as count
             FROM recognition_log r
             JOIN users u ON r.user_id = u.user_id
-            WHERE u.course IS NOT NULL AND u.course != ''
+            WHERE u.course IS NOT NULL
+              AND u.course != ''
+              AND DATE(r.timestamp) BETWEEN ? AND ?
             GROUP BY u.course
             ORDER BY count DESC
             LIMIT 8
-        """)
+        """, range_params)
         program_distribution = [
             {"program": row[0], "count": row[1]}
             for row in c.fetchall()
@@ -523,8 +566,9 @@ def create_routes_blueprint(deps):
             SELECT CAST(strftime('%H', timestamp) AS INTEGER) as hour,
                    COUNT(*) as count
             FROM recognition_log
+            WHERE DATE(timestamp) BETWEEN ? AND ?
             GROUP BY hour
-        """)
+        """, range_params)
         hour_map = {row[0]: row[1] for row in c.fetchall()}
         peak_hours = [hour_map.get(h, 0) for h in range(24)]
 
@@ -534,10 +578,11 @@ def create_routes_blueprint(deps):
             SELECT u.name, u.sr_code, COUNT(r.log_id) as visits
             FROM recognition_log r
             JOIN users u ON r.user_id = u.user_id
+            WHERE DATE(r.timestamp) BETWEEN ? AND ?
             GROUP BY r.user_id
             ORDER BY visits DESC
             LIMIT 10
-        """)
+        """, range_params)
         top_visitors = [
             {"name": row[0], "sr_code": row[1], "visits": row[2]}
             for row in c.fetchall()
@@ -556,9 +601,10 @@ def create_routes_blueprint(deps):
                 COUNT(*) as count
             FROM recognition_log
             WHERE CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 7 AND 19
+              AND DATE(timestamp) BETWEEN ? AND ?
             GROUP BY day_of_week, hour
             ORDER BY day_of_week, hour
-        """)
+        """, range_params)
         heatmap_raw = c.fetchall()
  
         # Build 7x13 grid (7 days x 13 hours from 7AM to 7PM)
@@ -580,22 +626,21 @@ def create_routes_blueprint(deps):
                 strftime('%Y-%m', timestamp) as month,
                 COUNT(*) as count
             FROM recognition_log
-            WHERE DATE(timestamp) >= DATE('now', 'start of month', '-5 months')
+            WHERE DATE(timestamp) BETWEEN ? AND ?
             GROUP BY month
             ORDER BY month ASC
-        """)
+        """, range_params)
         monthly_raw = {row[0]: row[1] for row in c.fetchall()}
-
-        import calendar
 
         def _shift_month(year, month, delta):
             total = (year * 12 + (month - 1)) + delta
             return total // 12, (total % 12) + 1
 
-        current_year = date.today().year
-        current_month = date.today().month
+        current_year = end_date.year
+        current_month = end_date.month
+        month_span = ((end_date.year - start_date.year) * 12) + (end_date.month - start_date.month)
         monthly_visitors = []
-        for delta in range(-5, 1):
+        for delta in range(-month_span, 1):
             year, month_num = _shift_month(current_year, current_month, delta)
             month_key = f"{year:04d}-{month_num:02d}"
             monthly_visitors.append(
@@ -616,6 +661,12 @@ def create_routes_blueprint(deps):
             "max_occupancy": max_occupancy,
             "occupancy_remaining": occupancy_remaining,
             "occupancy_status": occupancy_status,
+            "unique_visitors": unique_visitors,
+            "filter_key": filter_window["key"],
+            "filter_label": filter_window["label"],
+            "filter_days": filter_window["days"],
+            "filter_start_date": start_date.isoformat(),
+            "filter_end_date": end_date.isoformat(),
             # ── New fields for enhanced dashboard ──────────────────
             "total_students": total_students,
             "daily_visitors": daily_visitors,
@@ -1328,7 +1379,7 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def api_dashboard():
-        return jsonify(_dashboard_data())
+        return jsonify(_dashboard_data(request.args.get("filter")))
 
     @bp.route("/api/settings", methods=["GET", "POST"], endpoint="api_settings")
     @login_required
@@ -1574,6 +1625,46 @@ def create_routes_blueprint(deps):
         inserted = 0
         skipped = 0
         errors = []
+        warnings_list = []
+        program_resolution = {
+            "resolved_from_registration": 0,
+            "resolved_from_catalog": 0,
+            "ambiguous_codes": 0,
+            "unmatched_codes": 0,
+        }
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT sr_code, NULLIF(TRIM(course), '')
+            FROM users
+            WHERE sr_code IS NOT NULL AND TRIM(sr_code) <> ''
+            """
+        )
+        registered_programs = {
+            (sr_code or "").strip(): normalize_program_name(program)
+            for sr_code, program in c.fetchall()
+            if (sr_code or "").strip()
+        }
+        c.execute(
+            """
+            SELECT program_name, program_code
+            FROM programs
+            WHERE program_name IS NOT NULL AND TRIM(program_name) <> ''
+            """
+        )
+        known_programs = [
+            (program_name, program_code)
+            for program_name, program_code in c.fetchall()
+            if normalize_program_name(program_name)
+        ]
+        known_programs.extend(
+            (program, None)
+            for program in registered_programs.values()
+            if normalize_program_name(program)
+        )
+        program_lookup = build_program_lookup(known_programs)
 
         allowed_formats = [
             "%Y-%m-%d %H:%M:%S",
@@ -1612,23 +1703,52 @@ def create_routes_blueprint(deps):
 
             name = (row.get(col_map["name"]) or "").strip() if col_map["name"] else ""
             gender = (row.get(col_map["gender"]) or "").strip() if col_map["gender"] else ""
-            program = (row.get(col_map["program"]) or "").strip() if col_map["program"] else ""
+            raw_program = (row.get(col_map["program"]) or "").strip() if col_map["program"] else ""
             year_level = (row.get(col_map["year_level"]) or "").strip() if col_map["year_level"] else ""
+            registered_program = registered_programs.get(sr_code, "")
+            resolved_program, resolution_status, candidates = resolve_program_name(
+                raw_program,
+                program_lookup,
+                registered_program=registered_program,
+            )
 
-            batch_rows.append((sr_code, name, gender, program, year_level, parsed_timestamp, batch_id))
+            stored_program = normalize_program_name(resolved_program)
+            if resolution_status == "registered" and stored_program and normalize_program_name(raw_program) != stored_program:
+                program_resolution["resolved_from_registration"] += 1
+            elif resolution_status == "catalog" and stored_program and normalize_program_name(raw_program) != stored_program:
+                program_resolution["resolved_from_catalog"] += 1
+            elif resolution_status == "ambiguous" and is_program_code(raw_program):
+                program_resolution["ambiguous_codes"] += 1
+                stored_program = registered_program or ""
+                if len(warnings_list) < 10:
+                    warnings_list.append(
+                        f"Row {index}: program code '{raw_program}' is ambiguous"
+                        f" ({', '.join(candidates[:3])})."
+                        " Use the full registered program name in the CSV to avoid misclassification."
+                    )
+            elif resolution_status == "unmatched" and is_program_code(raw_program):
+                program_resolution["unmatched_codes"] += 1
+                stored_program = registered_program or ""
+                if len(warnings_list) < 10:
+                    warnings_list.append(
+                        f"Row {index}: program code '{raw_program}' could not be matched"
+                        " to a registered full program."
+                    )
+
+            batch_rows.append((sr_code, name, gender, stored_program, year_level, parsed_timestamp, batch_id))
             inserted += 1
 
         if not batch_rows:
+            conn.close()
             return jsonify(
                 {
                     "success": False,
                     "message": "No valid rows found to import.",
                     "errors": errors[:10],
+                    "warnings": warnings_list,
                 }
             ), 400
 
-        conn = db_connect(deps["db_path"])
-        c = conn.cursor()
         c.executemany(
             """
             INSERT INTO imported_logs
@@ -1657,7 +1777,16 @@ def create_routes_blueprint(deps):
                 "total_imported": total_imported,
                 "total_batches": total_batches,
                 "errors": errors[:10],
-                "message": f"Successfully imported {inserted} records.",
+                "warnings": warnings_list,
+                "program_resolution": program_resolution,
+                "message": (
+                    f"Successfully imported {inserted} records."
+                    + (
+                        f" {program_resolution['ambiguous_codes'] + program_resolution['unmatched_codes']} row(s) need program review."
+                        if program_resolution["ambiguous_codes"] or program_resolution["unmatched_codes"]
+                        else ""
+                    )
+                ),
             }
         )
 
