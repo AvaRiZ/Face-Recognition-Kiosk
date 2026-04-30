@@ -22,6 +22,7 @@ FACE_PROMPT_CONF = 0.10
 FACE_IMG_SIZE = 1280
 FACE_MAX_DET = 50
 FACE_MIN_MASK_AREA = 0.0001
+WIDERFACE_YOLOV8N_FACE_WEIGHTS = "yolov8n-face-lindevs.pt"
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,15 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--images-dir", type=Path, default=root / "Images", help="Folder containing unlabeled source images.")
-    parser.add_argument("--yolo-weights", type=Path, default=root / "Yolo-model" / "yolov8n.pt", help="YOLOv8 weights used for training the final model.")
+    parser.add_argument(
+        "--yolo-weights",
+        type=Path,
+        default=None,
+        help=(
+            "YOLOv8 weights used for training the final model. Defaults to yolov8n.pt for "
+            "person mode and yolov8n-face-lindevs.pt for face mode."
+        ),
+    )
     parser.add_argument("--bootstrap-weights", type=Path, default=None, help="Optional detector weights used only for pseudo-label generation. Use a face detector here for face training.")
     parser.add_argument("--sam-weights", type=Path, default=root / "segmentation-model" / "mobile_sam.pt", help="MobileSAM checkpoint used to refine pseudo-label regions.")
     parser.add_argument("--dataset-dir", type=Path, default=default_dataset_dir, help="Output dataset folder.")
@@ -75,13 +84,20 @@ def parse_args() -> argparse.Namespace:
 
 def resolve_paths(args: argparse.Namespace) -> TrainingPaths:
     root = Path(__file__).resolve().parent
+    yolo_weights = args.yolo_weights
+    if yolo_weights is None:
+        if args.bootstrap_mode == "face":
+            yolo_weights = root / "Yolo-model" / WIDERFACE_YOLOV8N_FACE_WEIGHTS
+        else:
+            yolo_weights = root / "Yolo-model" / "yolov8n.pt"
+
     bootstrap_weights = args.bootstrap_weights
     if bootstrap_weights is None:
-        bootstrap_weights = args.yolo_weights
+        bootstrap_weights = yolo_weights
     return TrainingPaths(
         root=root,
         images_dir=args.images_dir.resolve(),
-        yolo_weights=args.yolo_weights.resolve(),
+        yolo_weights=Path(yolo_weights).resolve(),
         bootstrap_weights=Path(bootstrap_weights).resolve(),
         sam_weights=args.sam_weights.resolve(),
         dataset_dir=args.dataset_dir.resolve(),

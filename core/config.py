@@ -34,7 +34,7 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Paths and dataset locations
     # ------------------------------------------------------------------
-    model_path: str = "models/yolov8n-face.pt"
+    model_path: str = "model-training/runs/training/yolov8n-mobile-sam/weights/best.pt"
     db_path: str = "database/faces_improved.db"
     base_save_dir: str = "faces_improved"
     detector_dataset_dir: str = "detector_dataset"
@@ -53,8 +53,8 @@ class AppConfig:
     # ------------------------------------------------------------------
     primary_model: str = "ArcFace"
     secondary_model: str = "Facenet"
-    primary_threshold: float = 0.82
-    secondary_threshold: float = 0.78
+    primary_threshold: float = 0.80
+    secondary_threshold: float = 0.76
     base_threshold: float = 0.70
     vector_index_top_k: int = 20
 
