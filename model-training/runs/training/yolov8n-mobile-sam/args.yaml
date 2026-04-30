@@ -1,8 +1,8 @@
 task: detect
 mode: train
-model: C:\Users\admin\Desktop\Thesis\Face-Recognition-Kiosk\model-training\Yolo-model\yolov8n.pt
+model: C:\Users\admin\Desktop\Thesis\Face-Recognition-Kiosk\model-training\Yolo-model\yolov8n-face-lindevs.pt
 data: C:\Users\admin\Desktop\Thesis\Face-Recognition-Kiosk\model-training\generated-dataset\data.yaml
-epochs: 100
+epochs: 50
 time: null
 patience: 100
 batch: 16
@@ -30,6 +30,7 @@ fraction: 1.0
 profile: false
 freeze: null
 multi_scale: false
+compile: false
 overlap_mask: true
 mask_ratio: 4
 dropout: 0.0
