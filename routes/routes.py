@@ -32,7 +32,7 @@ from core.program_catalog import (
     normalize_program_name,
     resolve_program_name,
 )
-from db import connect as db_connect
+from db import connect as db_connect, table_columns
 from routes.ml_analytics import run_ml_analytics
 from app.realtime import emit_analytics_update
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
@@ -737,6 +737,7 @@ def create_routes_blueprint(deps):
             SELECT u.name, u.sr_code, COUNT(r.log_id) as visits
             FROM recognition_log r
             JOIN users u ON r.user_id = u.user_id
+            WHERE DATE(r.timestamp) BETWEEN ? AND ?
             GROUP BY u.user_id, u.name, u.sr_code
             ORDER BY visits DESC
             LIMIT 10

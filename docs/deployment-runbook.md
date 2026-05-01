@@ -36,6 +36,9 @@ Initial admin provisioning:
 - For first-time production setup, create the initial super admin explicitly:
   - `python scripts/provision_initial_admin.py --username "<admin-user>" --password "<strong-password>" --full-name "<name>"`
 
+Run in terminal: $env:DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/facerec_kiosk"
+python scripts/start_system.py --Foreground
+
 Important:
 - Do not run `python scripts/start_system.ps1`; `.ps1` files must be launched by PowerShell.
 
