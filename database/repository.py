@@ -1,4 +1,27 @@
-﻿from __future__ import annotations
+﻿"""
+User and Recognition Event Repository
+
+DATABASE SCHEMA POLICY (as of Alembic 0003):
+    - recognition_events: CANONICAL source of truth for face recognition events
+      * Contains: event_id (unique), decision, confidence scores, full payload, timestamps
+      * Records persist even if user is deleted (ON DELETE SET NULL)
+      * Use for: new event ingestion, auditing, future analytics
+    
+    - recognition_log: LEGACY compatibility layer (maintained for backwards compatibility)
+      * Contains: subset of recognition_events data (user_id, confidence, method, timestamps)
+      * Records remain if user is deleted (ON DELETE SET NULL as of Alembic 0003)
+      * Use for: existing dashboards/analytics only (planned deprecation)
+    
+    - user_embeddings: Per-user ML model embeddings
+      * Uses CASCADE delete: embeddings are purged when user is deleted
+      * Timestamps standardized to TIMESTAMPTZ (as of Alembic 0003)
+    
+    - users: Core identity/profile table
+      * Archival/deletion now works correctly (no FK blocks on recognition_log)
+      * See: docs/database_schema_policy.md for complete migration details
+"""
+
+from __future__ import annotations
 
 import json
 import pickle

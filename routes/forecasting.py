@@ -8,6 +8,12 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 
+def _suppress_statsmodels_convergence_warning():
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+    return warnings.catch_warnings(), ConvergenceWarning
+
+
 def _classify_forecast_exception(model_name, exc):
     message = str(exc).strip() or exc.__class__.__name__
     if isinstance(exc, (ImportError, ModuleNotFoundError)):
@@ -93,13 +99,19 @@ def forecast_arima(ts_series, today, steps=7):
         for d in range(2):
             for q in range(3):
                 try:
-                    m = ARIMA(ts_series, order=(p, d, q)).fit()
+                    warning_ctx, convergence_warning = _suppress_statsmodels_convergence_warning()
+                    with warning_ctx:
+                        warnings.simplefilter("ignore", convergence_warning)
+                        m = ARIMA(ts_series, order=(p, d, q)).fit()
                     if m.aic < best_aic:
                         best_aic, best_order = m.aic, (p, d, q)
                 except Exception:
                     continue
  
-    model  = ARIMA(ts_series, order=best_order).fit()
+    warning_ctx, convergence_warning = _suppress_statsmodels_convergence_warning()
+    with warning_ctx:
+        warnings.simplefilter("ignore", convergence_warning)
+        model = ARIMA(ts_series, order=best_order).fit()
     fc_res = model.get_forecast(steps=steps)
     fc_mean= fc_res.predicted_mean
     fc_ci  = fc_res.conf_int(alpha=0.05)
@@ -118,7 +130,10 @@ def forecast_arima(ts_series, today, steps=7):
  
     # Back-test on last 7 days for error metrics
     if len(ts_series) >= 8:
-        bt_model = ARIMA(ts_series.iloc[:-7], order=best_order).fit()
+        warning_ctx, convergence_warning = _suppress_statsmodels_convergence_warning()
+        with warning_ctx:
+            warnings.simplefilter("ignore", convergence_warning)
+            bt_model = ARIMA(ts_series.iloc[:-7], order=best_order).fit()
         bt_fc    = bt_model.get_forecast(steps=7).predicted_mean
         bt_preds = [max(0, round(float(v))) for v in bt_fc]
     else:
@@ -166,13 +181,16 @@ def forecast_sarima(ts_series, today, steps=7):
                 for P in range(2):
                     for Q in range(2):
                         try:
-                            m = SARIMAX(
-                                ts_series,
-                                order=(p, d, q),
-                                seasonal_order=(P, 1, Q, 7),
-                                enforce_stationarity=False,
-                                enforce_invertibility=False,
-                            ).fit(disp=False)
+                            warning_ctx, convergence_warning = _suppress_statsmodels_convergence_warning()
+                            with warning_ctx:
+                                warnings.simplefilter("ignore", convergence_warning)
+                                m = SARIMAX(
+                                    ts_series,
+                                    order=(p, d, q),
+                                    seasonal_order=(P, 1, Q, 7),
+                                    enforce_stationarity=False,
+                                    enforce_invertibility=False,
+                                ).fit(disp=False)
                             if m.aic < best_aic:
                                 best_aic    = m.aic
                                 best_order  = (p, d, q)
@@ -180,10 +198,13 @@ def forecast_sarima(ts_series, today, steps=7):
                         except Exception:
                             continue
  
-    model  = SARIMAX(
-        ts_series, order=best_order, seasonal_order=best_sorder,
-        enforce_stationarity=False, enforce_invertibility=False,
-    ).fit(disp=False)
+    warning_ctx, convergence_warning = _suppress_statsmodels_convergence_warning()
+    with warning_ctx:
+        warnings.simplefilter("ignore", convergence_warning)
+        model = SARIMAX(
+            ts_series, order=best_order, seasonal_order=best_sorder,
+            enforce_stationarity=False, enforce_invertibility=False,
+        ).fit(disp=False)
  
     fc_res = model.get_forecast(steps=steps)
     fc_mean= fc_res.predicted_mean
@@ -203,10 +224,13 @@ def forecast_sarima(ts_series, today, steps=7):
  
     # Back-test
     if len(ts_series) >= 14:
-        bt_model = SARIMAX(
-            ts_series.iloc[:-7], order=best_order, seasonal_order=best_sorder,
-            enforce_stationarity=False, enforce_invertibility=False,
-        ).fit(disp=False)
+        warning_ctx, convergence_warning = _suppress_statsmodels_convergence_warning()
+        with warning_ctx:
+            warnings.simplefilter("ignore", convergence_warning)
+            bt_model = SARIMAX(
+                ts_series.iloc[:-7], order=best_order, seasonal_order=best_sorder,
+                enforce_stationarity=False, enforce_invertibility=False,
+            ).fit(disp=False)
         bt_fc    = bt_model.get_forecast(steps=7).predicted_mean
         bt_preds = [max(0, round(float(v))) for v in bt_fc]
     else:

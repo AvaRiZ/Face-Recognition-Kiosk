@@ -15,6 +15,7 @@
    - `python scripts/ensure_postgres_db.py`
 3. Apply canonical schema with Alembic:
    - `alembic upgrade head`
+   - This applies all pending migrations, including timestamp standardization and FK policy fixes (see [database_schema_policy.md](database_schema_policy.md))
 4. If you have legacy SQLite data, run one-time copy:
    - PowerShell: `python scripts/migrate_sqlite_to_postgres.py --sqlite-path database/faces_improved.db --postgres-url "$env:DATABASE_URL"`
    - Bash/Zsh: `python scripts/migrate_sqlite_to_postgres.py --sqlite-path database/faces_improved.db --postgres-url "$DATABASE_URL"`

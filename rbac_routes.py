@@ -79,23 +79,31 @@ def admin_dashboard():
     c.execute("SELECT COUNT(*) FROM users")
     total_students = c.fetchone()[0]
 
-    # Total recognition logs
-    c.execute("SELECT COUNT(*) FROM recognition_log")
+    # Total recognition events (canonical event model)
+    c.execute("SELECT COUNT(*) FROM recognition_events")
     total_logs = c.fetchone()[0]
 
-    # Today's recognitions
+    # Today's recognitions (canonical event model)
     c.execute("""
-        SELECT COUNT(*) FROM recognition_log
-        WHERE DATE(timestamp) = DATE('now')
+        SELECT COUNT(*) FROM recognition_events
+        WHERE DATE(captured_at) = DATE('now')
     """)
     today_logs = c.fetchone()[0]
 
-    # Recent activity (last 10 logs)
+    # Recent activity (last 10 events) - canonical event model
+    import warnings
+    warnings.warn(
+        "Dashboard view uses recognition_events (canonical event model). "
+        "See docs/database_schema_policy.md",
+        DeprecationWarning,
+        stacklevel=2
+    )
     c.execute("""
-        SELECT u.name, u.sr_code, r.confidence, r.timestamp
-        FROM recognition_log r
-        JOIN users u ON r.user_id = u.user_id
-        ORDER BY r.timestamp DESC LIMIT 10
+        SELECT u.name, u.sr_code, re.confidence, re.captured_at
+        FROM recognition_events re
+        LEFT JOIN users u ON re.user_id = u.user_id
+        WHERE re.captured_at IS NOT NULL
+        ORDER BY re.captured_at DESC LIMIT 10
     """)
     recent_activity = c.fetchall()
 
@@ -186,13 +194,22 @@ def manage_students():
 @login_required
 @role_required('super_admin', 'library_admin', 'library_staff')
 def view_logs():
+    """View recognition events (canonical model)."""
+    import warnings
+    warnings.warn(
+        "View logs uses recognition_events (canonical event model). "
+        "See docs/database_schema_policy.md",
+        DeprecationWarning,
+        stacklevel=2
+    )
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT u.name, u.sr_code, r.confidence, r.timestamp
-        FROM recognition_log r
-        JOIN users u ON r.user_id = u.user_id
-        ORDER BY r.timestamp DESC
+        SELECT u.name, u.sr_code, re.confidence, re.captured_at
+        FROM recognition_events re
+        LEFT JOIN users u ON re.user_id = u.user_id
+        WHERE re.captured_at IS NOT NULL
+        ORDER BY re.captured_at DESC
         LIMIT 200
     """)
     logs = c.fetchall()

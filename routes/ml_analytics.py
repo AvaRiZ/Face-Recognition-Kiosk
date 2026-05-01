@@ -246,12 +246,21 @@ def _year_level_sort_key(value: str | None) -> tuple[int, str]:
 
 def run_ml_analytics(db_path):
     """
-    Full ML analytics pipeline.
-    Reads from recognition_events (fallback: recognition_log) + imported_logs,
+    Full ML analytics pipeline (uses canonical recognition_events).
+    
+    Reads from recognition_events + imported_logs,
     runs ARIMA, Linear Regression, K-Means, Chi-square,
     Pearson Correlation, and ANOVA.
     Returns a dict ready to be passed to jsonify().
+    
+    See docs/database_schema_policy.md for event model details.
     """
+    warnings.warn(
+        "run_ml_analytics reads from recognition_events (canonical). "
+        "See docs/database_schema_policy.md",
+        DeprecationWarning,
+        stacklevel=2
+    )
     now = time.time()
     
     # Check cache
@@ -294,15 +303,16 @@ def run_ml_analytics(db_path):
         conn.commit()
 
     # ══════════════════════════════════════════════════════════
-    # STAGE 1 — RAW DATA COLLECTION
+    # STAGE 1 — RAW DATA COLLECTION (canonical: recognition_events)
     # ══════════════════════════════════════════════════════════
     c.execute("""
         SELECT u.sr_code, u.name, NULLIF(TRIM(u.course),'') AS program,
                NULL AS gender, NULL AS year_level,
-               r.confidence, r.timestamp, 'live' AS source
-        FROM recognition_log r
-        JOIN users u ON r.user_id = u.user_id
-        ORDER BY r.timestamp ASC
+               re.confidence, re.captured_at AS timestamp, 'live' AS source
+        FROM recognition_events re
+        LEFT JOIN users u ON re.user_id = u.user_id
+        WHERE re.captured_at IS NOT NULL
+        ORDER BY re.captured_at ASC
     """)
     live_rows = c.fetchall()
 
@@ -901,13 +911,19 @@ def run_ml_analytics(db_path):
 
 def run_basic_analytics(db_path):
     """
-    Basic analytics: data quality, descriptive stats, EDA without heavy ML models.
+    Basic analytics: data quality, descriptive stats, EDA (uses canonical recognition_events).
     """
     import numpy as np
     import pandas as pd
     from scipy import stats as scipy_stats
 
     warnings.filterwarnings("ignore")
+    warnings.warn(
+        "run_basic_analytics reads from recognition_events (canonical). "
+        "See docs/database_schema_policy.md",
+        DeprecationWarning,
+        stacklevel=2
+    )
 
     conn = db_connect(db_path)
     c    = conn.cursor()
@@ -915,15 +931,16 @@ def run_basic_analytics(db_path):
     # ── Ensure imported_logs exists ────────────────────────────
 
     # ══════════════════════════════════════════════════════════
-    # STAGE 1 — RAW DATA COLLECTION
+    # STAGE 1 — RAW DATA COLLECTION (canonical: recognition_events)
     # ══════════════════════════════════════════════════════════
     c.execute("""
         SELECT u.sr_code, u.name, NULLIF(TRIM(u.course),'') AS program,
                NULL AS gender, NULL AS year_level,
-               r.confidence, r.timestamp, 'live' AS source
-        FROM recognition_log r
-        JOIN users u ON r.user_id = u.user_id
-        ORDER BY r.timestamp ASC
+               re.confidence, re.captured_at AS timestamp, 'live' AS source
+        FROM recognition_events re
+        LEFT JOIN users u ON re.user_id = u.user_id
+        WHERE re.captured_at IS NOT NULL
+        ORDER BY re.captured_at ASC
     """)
     live_rows = c.fetchall()
 

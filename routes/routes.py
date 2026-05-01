@@ -10,6 +10,7 @@ import base64
 import calendar
 from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
+import warnings
 
 import cv2
 import numpy as np
@@ -515,8 +516,8 @@ def create_routes_blueprint(deps):
         c.execute(
             """
             SELECT DISTINCT SUBSTR(CAST(timestamp AS TEXT), 1, 4) AS year
-            FROM recognition_log
-            WHERE timestamp IS NOT NULL AND TRIM(CAST(timestamp AS TEXT)) != ''
+            FROM recognition_events
+            WHERE captured_at IS NOT NULL AND TRIM(CAST(captured_at AS TEXT)) != ''
             ORDER BY year DESC
             """
         )
@@ -539,11 +540,12 @@ def create_routes_blueprint(deps):
             """
             SELECT
                 COALESCE(NULLIF(TRIM(u.course), ''), 'Unassigned') AS program,
-                SUBSTR(CAST(r.timestamp AS TEXT), 6, 2) AS month_num,
+                SUBSTR(CAST(re.captured_at AS TEXT), 6, 2) AS month_num,
                 COUNT(*) AS visit_count
-            FROM recognition_log r
-            JOIN users u ON r.user_id = u.user_id
-            WHERE SUBSTR(CAST(r.timestamp AS TEXT), 1, 4) = ?
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE re.captured_at IS NOT NULL
+              AND SUBSTR(CAST(re.captured_at AS TEXT), 1, 4) = ?
             GROUP BY program, month_num
             ORDER BY program ASC, month_num ASC
             """,
@@ -612,6 +614,11 @@ def create_routes_blueprint(deps):
         }
 
     def _dashboard_data(filter_key=None):
+        warnings.warn(
+            "Dashboard analytics now use recognition_events (canonical event model). See docs/database_schema_policy.md",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         filter_window = _dashboard_filter_window(filter_key)
         start_date = filter_window["start_date"]
         end_date = filter_window["end_date"]
@@ -624,28 +631,32 @@ def create_routes_blueprint(deps):
 
         c.execute("""
             SELECT COUNT(*)
-            FROM recognition_log
-            WHERE DATE(timestamp) BETWEEN ? AND ?
+                        FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) BETWEEN ? AND ?
         """, range_params)
         total_logs = c.fetchone()[0]
 
         c.execute("""
-            SELECT COUNT(*) FROM recognition_log
-            WHERE DATE(timestamp) = DATE('now')
+                        SELECT COUNT(*) FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) = DATE('now')
         """)
         today_logs = c.fetchone()[0]
 
         c.execute("""
             SELECT COUNT(DISTINCT user_id)
-            FROM recognition_log
-            WHERE DATE(timestamp) BETWEEN ? AND ?
+                        FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) BETWEEN ? AND ?
         """, range_params)
         unique_visitors = c.fetchone()[0]
 
         c.execute("""
             SELECT confidence
-            FROM recognition_log
-            WHERE DATE(timestamp) BETWEEN ? AND ?
+                        FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) BETWEEN ? AND ?
         """, range_params)
         conf_values = []
         for (confidence,) in c.fetchall():
@@ -679,9 +690,10 @@ def create_routes_blueprint(deps):
         # ── Daily visitors — last 14 days ──────────────────────────
 
         c.execute("""
-            SELECT DATE(timestamp) as day, COUNT(*) as count
-            FROM recognition_log
-            WHERE DATE(timestamp) BETWEEN ? AND ?
+                        SELECT DATE(captured_at) as day, COUNT(*) as count
+                        FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) BETWEEN ? AND ?
             GROUP BY day
             ORDER BY day ASC
         """, range_params)
@@ -704,12 +716,13 @@ def create_routes_blueprint(deps):
         # ── Course distribution ────────────────────────────────────
 
         c.execute("""
-            SELECT u.course, COUNT(DISTINCT r.user_id) as count
-            FROM recognition_log r
-            JOIN users u ON r.user_id = u.user_id
-            WHERE u.course IS NOT NULL
+            SELECT u.course, COUNT(DISTINCT re.user_id) as count
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE re.captured_at IS NOT NULL
+              AND u.course IS NOT NULL
               AND u.course != ''
-              AND DATE(r.timestamp) BETWEEN ? AND ?
+              AND DATE(re.captured_at) BETWEEN ? AND ?
             GROUP BY u.course
             ORDER BY count DESC
             LIMIT 8
@@ -722,10 +735,11 @@ def create_routes_blueprint(deps):
         # ── Peak hours (24-slot array, index = hour) ───────────────
 
         c.execute("""
-            SELECT CAST(strftime('%H', timestamp) AS INTEGER) as hour,
+                        SELECT CAST(strftime('%H', captured_at) AS INTEGER) as hour,
                    COUNT(*) as count
-            FROM recognition_log
-            WHERE DATE(timestamp) BETWEEN ? AND ?
+                        FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) BETWEEN ? AND ?
             GROUP BY hour
         """, range_params)
         hour_map = {row[0]: row[1] for row in c.fetchall()}
@@ -734,11 +748,12 @@ def create_routes_blueprint(deps):
         # ── Top 10 frequent visitors ───────────────────────────────
 
         c.execute("""
-            SELECT u.name, u.sr_code, COUNT(r.log_id) as visits
-            FROM recognition_log r
-            JOIN users u ON r.user_id = u.user_id
-            WHERE DATE(r.timestamp) BETWEEN ? AND ?
-            GROUP BY u.user_id, u.name, u.sr_code
+                        SELECT u.name, u.sr_code, COUNT(re.id) as visits
+                        FROM recognition_events re
+                        LEFT JOIN users u ON re.user_id = u.user_id
+                        WHERE re.captured_at IS NOT NULL
+                            AND DATE(re.captured_at) BETWEEN ? AND ?
+                        GROUP BY re.user_id, u.name, u.sr_code
             ORDER BY visits DESC
             LIMIT 10
         """, range_params)
@@ -752,15 +767,16 @@ def create_routes_blueprint(deps):
         # We remap to Mon=0 ... Sun=6
         c.execute("""
             SELECT
-                CASE CAST(strftime('%w', timestamp) AS INTEGER)
+                CASE CAST(strftime('%w', captured_at) AS INTEGER)
                     WHEN 0 THEN 6
-                    ELSE CAST(strftime('%w', timestamp) AS INTEGER) - 1
+                    ELSE CAST(strftime('%w', captured_at) AS INTEGER) - 1
                 END as day_of_week,
-                CAST(strftime('%H', timestamp) AS INTEGER) as hour,
+                CAST(strftime('%H', captured_at) AS INTEGER) as hour,
                 COUNT(*) as count
-            FROM recognition_log
-            WHERE CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 7 AND 19
-              AND DATE(timestamp) BETWEEN ? AND ?
+            FROM recognition_events
+            WHERE captured_at IS NOT NULL
+              AND CAST(strftime('%H', captured_at) AS INTEGER) BETWEEN 7 AND 19
+              AND DATE(captured_at) BETWEEN ? AND ?
             GROUP BY day_of_week, hour
             ORDER BY day_of_week, hour
         """, range_params)
@@ -782,10 +798,11 @@ def create_routes_blueprint(deps):
         # ── Monthly Visitors — last 6 months ──────────────────────
         c.execute("""
             SELECT
-                strftime('%Y-%m', timestamp) as month,
+                strftime('%Y-%m', captured_at) as month,
                 COUNT(*) as count
-            FROM recognition_log
-            WHERE DATE(timestamp) BETWEEN ? AND ?
+            FROM recognition_events
+            WHERE captured_at IS NOT NULL
+              AND DATE(captured_at) BETWEEN ? AND ?
             GROUP BY month
             ORDER BY month ASC
         """, range_params)
@@ -944,13 +961,19 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin")
     def get_stats():
+        warnings.warn(
+            "get_stats now uses recognition_events (canonical event model). See docs/database_schema_policy.md",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             """
-            SELECT u.user_id, u.name, r.confidence
+            SELECT u.user_id, u.name, re.confidence
             FROM users u
-            LEFT JOIN recognition_log r ON u.user_id = r.user_id
+            LEFT JOIN recognition_events re ON u.user_id = re.user_id
+            WHERE re.captured_at IS NOT NULL
             """
         )
         stats = {}
@@ -1050,6 +1073,11 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def analytics_reports():
+        warnings.warn(
+            "analytics_reports now uses recognition_events (canonical event model). See docs/database_schema_policy.md",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         range_key = request.args.get("range", "14d").strip().lower()
         range_map = {
             "today": 1,
@@ -1062,13 +1090,14 @@ def create_routes_blueprint(deps):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
 
-        c.execute("SELECT COUNT(*) FROM recognition_log")
+        c.execute("SELECT COUNT(*) FROM recognition_events")
         total_logs = c.fetchone()[0]
 
         c.execute(
             """
-            SELECT COUNT(*) FROM recognition_log
-            WHERE DATE(timestamp) = DATE('now')
+                        SELECT COUNT(*) FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) = DATE('now')
             """
         )
         today_logs = c.fetchone()[0]
@@ -1076,13 +1105,14 @@ def create_routes_blueprint(deps):
         c.execute(
             """
             SELECT COUNT(DISTINCT user_id)
-            FROM recognition_log
-            WHERE DATE(timestamp) = DATE('now')
+                        FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) = DATE('now')
             """
         )
         today_unique = c.fetchone()[0]
 
-        c.execute("SELECT confidence FROM recognition_log")
+        c.execute("SELECT confidence FROM recognition_events WHERE captured_at IS NOT NULL")
         conf_values = []
         for (confidence,) in c.fetchall():
             value = _coerce_confidence(confidence)
@@ -1108,10 +1138,11 @@ def create_routes_blueprint(deps):
         start_date = date.today() - timedelta(days=range_days - 1)
         c.execute(
             """
-            SELECT DATE(timestamp) as day,
+                        SELECT DATE(captured_at) as day,
                    confidence
-            FROM recognition_log
-            WHERE DATE(timestamp) >= ?
+                        FROM recognition_events
+                        WHERE captured_at IS NOT NULL
+                            AND DATE(captured_at) >= ?
             """,
             (start_date.isoformat(),),
         )
@@ -1145,7 +1176,8 @@ def create_routes_blueprint(deps):
             """
             SELECT u.user_id, u.name, u.sr_code, r.confidence
             FROM users u
-            LEFT JOIN recognition_log r ON u.user_id = r.user_id
+            LEFT JOIN recognition_events r ON u.user_id = r.user_id
+            WHERE r.captured_at IS NOT NULL
             """
         )
         top_map = {}
@@ -1518,10 +1550,11 @@ def create_routes_blueprint(deps):
  
         # All logs latest first
         c.execute("""
-            SELECT u.name, u.sr_code, r.confidence, r.timestamp
-            FROM recognition_log r
-            JOIN users u ON r.user_id = u.user_id
-            ORDER BY r.timestamp DESC
+            SELECT u.name, u.sr_code, re.confidence, re.captured_at
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE re.captured_at IS NOT NULL
+            ORDER BY re.captured_at DESC
             LIMIT 500
         """)
         raw_logs = c.fetchall()
@@ -1555,15 +1588,15 @@ def create_routes_blueprint(deps):
                 selected_date = ""
 
         query = """
-            SELECT u.name, u.sr_code, u.course, r.confidence, r.timestamp
-            FROM recognition_log r
-            JOIN users u ON r.user_id = u.user_id
+            SELECT u.name, u.sr_code, u.course, re.confidence, re.captured_at
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
         """
         params = []
         if selected_date:
-            query += " WHERE DATE(r.timestamp) = ?"
+            query += " WHERE DATE(re.captured_at) = ?"
             params.append(selected_date)
-        query += " ORDER BY r.timestamp DESC"
+        query += " ORDER BY re.captured_at DESC"
 
         c.execute(query, params)
         logs = c.fetchall()
@@ -2170,7 +2203,7 @@ def create_routes_blueprint(deps):
             for row in c.fetchall()
         ]
 
-        c.execute("SELECT COUNT(*) FROM recognition_log")
+        c.execute("SELECT COUNT(*) FROM recognition_events")
         live_logs = c.fetchone()[0]
         conn.close()
 
