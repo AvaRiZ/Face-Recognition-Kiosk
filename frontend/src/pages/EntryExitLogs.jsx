@@ -1,5 +1,7 @@
 import React from 'react';
+import { getErrorMessage, showError, showSuccess } from '../alerts.js';
 import { fetchJson } from '../api.js';
+import { downloadFile } from '../downloads.js';
 
 function formatDate(ts) {
   if (!ts) return '-';
@@ -14,6 +16,7 @@ function formatTime(ts) {
 export default function EntryExitLogsPage() {
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
+  const [exporting, setExporting] = React.useState(false);
 
   const [search, setSearch] = React.useState('');
   const [pageSize, setPageSize] = React.useState('10');
@@ -63,6 +66,26 @@ export default function EntryExitLogsPage() {
   const pageLimit = parseInt(pageSize, 10) || 10;
   const pageRows = filtered.slice(0, pageLimit);
   const exportHref = dateFilter ? `/entry-logs/export?date=${dateFilter}` : '/entry-logs/export';
+
+  async function handleExportClick(event) {
+    event.preventDefault();
+    setExporting(true);
+
+    try {
+      await downloadFile(exportHref, `entry-logs-${dateFilter || 'all'}.csv`);
+      await showSuccess(
+        'Export Complete',
+        'Entry logs were exported successfully.'
+      );
+    } catch (error) {
+      await showError(
+        'Export Failed',
+        getErrorMessage(error, 'The entry log export could not be generated.')
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
 
   function handleTab(tab) {
     setActiveTab(tab);
@@ -121,14 +144,16 @@ export default function EntryExitLogsPage() {
                 value={dateFilter}
                 onChange={(ev) => setDateFilter(ev.target.value)}
               />
-              <a
-                href={exportHref}
+              <button
+                type="button"
                 id="exportLogs"
                 className="btn btn-outline-success d-flex align-items-center"
                 style={{ height: '38px', whiteSpace: 'nowrap' }}
+                onClick={handleExportClick}
+                disabled={exporting}
               >
-                <i className="bi bi-download me-1"></i>Export CSV
-              </a>
+                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export CSV'}
+              </button>
             </div>
           </div>
         </div>
