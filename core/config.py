@@ -110,10 +110,17 @@ class AppConfig:
     yolo_detection_confidence: float = 0.20
     yolo_inference_imgsz: int = 960
 
-    # Camera / stream source used by the live CCTV loop.
+    # ------------------------------------------------------------------
+    # Dual-camera / multi-worker configuration
+    # ------------------------------------------------------------------
+    # Entry camera stream source (accessible to entry-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    cctv_stream_source: str = "0"
-    
+    entry_cctv_stream_source: str = "1"
+
+    # Exit camera stream source (accessible to exit-worker).
+    # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
+    exit_cctv_stream_source: str = "0"
+
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
     cli_top_bar_enabled: bool = True
 
@@ -216,8 +223,16 @@ class AppConfig:
     def models(self) -> list[str]:
         return [self.primary_model, self.secondary_model]
 
-    def resolved_cctv_stream_source(self) -> str | int:
-        source = str(self.cctv_stream_source).strip()
+    def resolved_entry_stream_source(self) -> str | int:
+        """Resolve entry camera stream source (entry-worker)."""
+        source = str(self.entry_cctv_stream_source).strip()
+        if source.isdigit():
+            return int(source)
+        return source
+
+    def resolved_exit_stream_source(self) -> str | int:
+        """Resolve exit camera stream source (exit-worker)."""
+        source = str(self.exit_cctv_stream_source).strip()
         if source.isdigit():
             return int(source)
         return source

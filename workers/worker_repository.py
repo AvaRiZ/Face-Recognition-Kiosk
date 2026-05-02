@@ -10,9 +10,11 @@ from core.models import User
 
 
 class WorkerApiRepository:
-    def __init__(self, api_client, outbound_queue):
+    def __init__(self, api_client, outbound_queue, station_id: str = "entry-station-1", camera_id: int = 1):
         self.api_client = api_client
         self.outbound_queue = outbound_queue
+        self.station_id = str(station_id or "entry-station-1")
+        self.camera_id = int(camera_id or 1)
         self.last_profiles_version = 0
 
     def init_db(self) -> None:
@@ -60,7 +62,8 @@ class WorkerApiRepository:
     def log_recognition(self, result, face_quality: float | None = None, method: str = "two-factor") -> None:
         payload = {
             "event_id": f"evt-{uuid.uuid4().hex}",
-            "station_id": "entrance-station-1",
+            "station_id": self.station_id,
+            "camera_id": self.camera_id,
             "user_id": int(result.user_id),
             "sr_code": result.user.sr_code,
             "decision": "allowed",

@@ -27,6 +27,8 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $hostScript = Join-Path $PSScriptRoot "start_host.ps1"
 $apiScript = Join-Path $PSScriptRoot "start_api.ps1"
 $workerScript = Join-Path $PSScriptRoot "start_worker.ps1"
+$entryWorkerScript = Join-Path $PSScriptRoot "start_entry_worker.ps1"
+$exitWorkerScript = Join-Path $PSScriptRoot "start_exit_worker.ps1"
 
 function Set-EnvFromFile {
   param(
@@ -75,6 +77,12 @@ if (-not (Test-Path $apiScript)) {
 }
 if (-not (Test-Path $workerScript)) {
   throw "Missing script: $workerScript"
+}
+if (-not (Test-Path $entryWorkerScript)) {
+  throw "Missing script: $entryWorkerScript"
+}
+if (-not (Test-Path $exitWorkerScript)) {
+  throw "Missing script: $exitWorkerScript"
 }
 if ($launchHostStack -and (-not (Test-Path $hostScript))) {
   throw "Missing script: $hostScript"
@@ -167,9 +175,13 @@ if (-not $WorkerOnly) {
 }
 
 if (-not $ApiOnly) {
-  Write-Host "Starting worker window..." -ForegroundColor Green
-  $workerProc = Start-Process -FilePath $shellExe -ArgumentList ($shellArgs + $workerScript) -WorkingDirectory $repoRoot -PassThru
-  $launched += @{ Name = "Worker"; Process = $workerProc }
+  Write-Host "Starting entry worker window..." -ForegroundColor Green
+  $entryWorkerProc = Start-Process -FilePath $shellExe -ArgumentList ($shellArgs + $entryWorkerScript) -WorkingDirectory $repoRoot -PassThru
+  $launched += @{ Name = "Entry Worker"; Process = $entryWorkerProc }
+
+  Write-Host "Starting exit worker window..." -ForegroundColor Green
+  $exitWorkerProc = Start-Process -FilePath $shellExe -ArgumentList ($shellArgs + $exitWorkerScript) -WorkingDirectory $repoRoot -PassThru
+  $launched += @{ Name = "Exit Worker"; Process = $exitWorkerProc }
 }
 
 Start-Sleep -Seconds 2

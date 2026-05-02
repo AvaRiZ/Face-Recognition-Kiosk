@@ -356,9 +356,10 @@ class CLIApplication:
 
         self._draw_text_block(frame, lines, 10, frame_height - 110, (0, 220, 255), scale=0.7, thickness=2)
 
-    def process_cctv_stream(self, stream_source=None, frame_width=1280, frame_height=720):
+    def process_cctv_stream(self, stream_source=None, frame_width=1280, frame_height=720, window_title: str | None = None):
         if stream_source is None:
-            stream_source = self.config.resolved_cctv_stream_source()
+            stream_source = 0
+        display_title = window_title or "CCTV Face Recognition"
 
         camera = self.connect_to_cctv_stream(stream_source, frame_width, frame_height, target_fps=30)
         if camera is None:
@@ -800,7 +801,7 @@ class CLIApplication:
                 2,
             )
 
-            cv2.imshow("CCTV Face Recognition", frame)
+            cv2.imshow(display_title, frame)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):

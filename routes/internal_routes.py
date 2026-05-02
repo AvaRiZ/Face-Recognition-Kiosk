@@ -26,6 +26,15 @@ def _optional_float(value):
         return None
 
 
+def _optional_int(value):
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _require_worker_token():
     configured = (os.environ.get("WORKER_INTERNAL_TOKEN") or "").strip()
     if not configured:
@@ -129,6 +138,11 @@ def create_internal_blueprint(deps):
 
         sr_code = str(payload.get("sr_code") or "").strip() or None
         station_id = str(payload.get("station_id") or "").strip() or "entrance-station-1"
+        camera_id = _optional_int(payload.get("camera_id"))
+        if camera_id is None:
+            camera_id = 1
+        if camera_id not in {1, 2}:
+            return _json_error("`camera_id` must be 1 for entry or 2 for exit.", 400)
 
         captured_at_raw = payload.get("captured_at")
         captured_at = datetime.now(timezone.utc)
@@ -152,6 +166,8 @@ def create_internal_blueprint(deps):
         method = str(payload.get("method") or "two-factor")
         payload_for_json = dict(payload)
         payload_for_json["captured_at"] = captured_at.isoformat()
+        payload_for_json["camera_id"] = camera_id
+        payload_for_json["station_id"] = station_id
         payload_json = json.dumps(payload_for_json, ensure_ascii=True)
 
         conn = db_connect(deps["db_path"])
@@ -166,16 +182,17 @@ def create_internal_blueprint(deps):
         c.execute(
             """
             INSERT INTO recognition_events (
-                event_id, station_id, user_id, sr_code, decision, confidence,
+                event_id, station_id, camera_id, user_id, sr_code, decision, confidence,
                 primary_confidence, secondary_confidence, primary_distance, secondary_distance,
                 face_quality, method, captured_at, payload_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id) DO NOTHING
             """,
             (
                 event_id,
                 station_id,
+                camera_id,
                 user_id,
                 sr_code,
                 decision,
@@ -224,6 +241,7 @@ def create_internal_blueprint(deps):
                 {
                     "event_id": event_id,
                     "user_id": user_id,
+                    "camera_id": camera_id,
                 },
             )
         return jsonify({"success": True, "event_id": event_id, "duplicate": not inserted})

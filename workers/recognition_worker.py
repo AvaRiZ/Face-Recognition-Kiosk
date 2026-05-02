@@ -28,6 +28,43 @@ class WorkerRuntime:
     queue: DurableOutboundQueue
     api_client: ApiClient
     cli: CLIApplication
+    worker_role: str
+    station_id: str
+    camera_id: int
+    stream_source: str | int
+
+
+def _resolve_worker_context() -> tuple[str, str, int, str | int]:
+    from core.config import AppConfig
+    
+    config = AppConfig()
+    worker_role = (os.environ.get("WORKER_ROLE") or "entry").strip().lower()
+    if worker_role not in {"entry", "exit"}:
+        worker_role = "entry"
+
+    station_id = (os.environ.get("WORKER_STATION_ID") or "").strip()
+    if not station_id:
+        station_id = "entry-station-1" if worker_role == "entry" else "exit-station-1"
+
+    default_camera_id = 1 if worker_role == "entry" else 2
+    camera_id_raw = (os.environ.get("WORKER_CAMERA_ID") or "").strip()
+    try:
+        camera_id = int(camera_id_raw) if camera_id_raw else default_camera_id
+    except (TypeError, ValueError):
+        camera_id = default_camera_id
+
+    # Use config-based defaults for stream source, with environment override
+    if worker_role == "entry":
+        config_stream_default = str(config.resolved_entry_stream_source())
+    else:
+        config_stream_default = str(config.resolved_exit_stream_source())
+    
+    stream_source = (os.environ.get("WORKER_CCTV_STREAM_SOURCE") or "").strip()
+    if not stream_source:
+        stream_source = config_stream_default
+    if stream_source.isdigit():
+        return worker_role, station_id, camera_id, int(stream_source)
+    return worker_role, station_id, camera_id, stream_source
 
 
 def _send_outbound_entry(api_client: ApiClient, entry: dict) -> bool:
@@ -100,6 +137,7 @@ def _start_sync_loop(runtime: WorkerRuntime, poll_interval_seconds: float = 3.0)
 
 def build_runtime() -> WorkerRuntime:
     config = AppConfig()
+    worker_role, station_id, camera_id, stream_source = _resolve_worker_context()
     configure_devices(
         torch_device_index=config.torch_device_index,
         tf_use_gpu=config.tf_use_gpu,
@@ -113,7 +151,12 @@ def build_runtime() -> WorkerRuntime:
 
     api_client = ApiClient(base_url=api_base_url, token=token)
     queue = DurableOutboundQueue(queue_dir=queue_dir)
-    repository = WorkerApiRepository(api_client=api_client, outbound_queue=queue)
+    repository = WorkerApiRepository(
+        api_client=api_client,
+        outbound_queue=queue,
+        station_id=station_id,
+        camera_id=camera_id,
+    )
     state = AppStateManager(config)
 
     users = _safe_fetch_profiles(repository)
@@ -185,21 +228,25 @@ def build_runtime() -> WorkerRuntime:
         queue=queue,
         api_client=api_client,
         cli=cli,
+        worker_role=worker_role,
+        station_id=station_id,
+        camera_id=camera_id,
+        stream_source=stream_source,
     )
 
 
 def main() -> None:
     runtime = build_runtime()
-    stream_source = runtime.config.resolved_cctv_stream_source()
     api_url = (os.environ.get("WORKER_API_BASE_URL") or "http://127.0.0.1:5000").strip()
 
-    log_header("Library Entrance Recognition Worker")
+    log_header(f"Library {runtime.worker_role.title()} Recognition Worker")
     log_step(f"API target: {api_url}")
+    log_step(f"Worker route: role={runtime.worker_role} station_id={runtime.station_id} camera_id={runtime.camera_id}")
     log_step(f"Users in worker cache: {runtime.state.user_count}")
-    log_step(f"Starting detection and recognition using stream source: {stream_source}")
+    log_step(f"Starting detection and recognition using stream source: {runtime.stream_source}")
 
     _start_sync_loop(runtime)
-    runtime.cli.process_cctv_stream(stream_source)
+    runtime.cli.process_cctv_stream(runtime.stream_source, window_title=f"{runtime.worker_role.title()} Camera Recognition")
 
 
 if __name__ == "__main__":

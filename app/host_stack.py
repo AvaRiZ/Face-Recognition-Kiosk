@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from ultralytics import YOLO
 
@@ -94,6 +97,20 @@ def build_runtime() -> HostRuntime:
     return HostRuntime(config=config, state=state, repository=repository, cli=cli)
 
 
+def _resolve_worker_stream_source(env_name: str, fallback: str) -> str:
+    value = (os.environ.get(env_name) or "").strip()
+    return value or fallback
+
+
+def _start_worker_process(repo_root: Path, worker_module: str, worker_role: str, station_id: str, camera_id: int, stream_source: str) -> subprocess.Popen:
+    env = os.environ.copy()
+    env["WORKER_ROLE"] = worker_role
+    env["WORKER_STATION_ID"] = station_id
+    env["WORKER_CAMERA_ID"] = str(camera_id)
+    env["WORKER_CCTV_STREAM_SOURCE"] = stream_source
+    return subprocess.Popen([sys.executable, "-m", worker_module], cwd=str(repo_root), env=env)
+
+
 def main() -> None:
     db_target = resolve_database_target(AppConfig().db_path)
     if not is_postgres_target(db_target):
@@ -106,7 +123,10 @@ def main() -> None:
     host = os.environ.get("FLASK_RUN_HOST", "0.0.0.0")
     port = int(os.environ.get("FLASK_RUN_PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-    stream_source = runtime.config.resolved_cctv_stream_source()
+    repo_root = Path(__file__).resolve().parent.parent
+    # Use config values for stream sources, but allow environment variable overrides.
+    entry_stream_source = _resolve_worker_stream_source("ENTRY_CCTV_STREAM_SOURCE", str(runtime.config.resolved_entry_stream_source()))
+    exit_stream_source = _resolve_worker_stream_source("EXIT_CCTV_STREAM_SOURCE", str(runtime.config.resolved_exit_stream_source()))
 
     app = create_flask_app(runtime.config, runtime.state, runtime.repository, cli=runtime.cli)
 
@@ -114,7 +134,7 @@ def main() -> None:
     log_step(f"Database target: {db_target}")
     log_step(f"Users in database: {runtime.state.user_count}")
     log_step(f"Serving dashboard and API at http://{host}:{port}")
-    log_step(f"Starting detection and recognition using stream source: {stream_source}")
+    log_step(f"Starting dual workers: entry={entry_stream_source}, exit={exit_stream_source}")
 
     api_thread = threading.Thread(
         target=socketio.run,
@@ -132,7 +152,35 @@ def main() -> None:
     api_thread.start()
     time.sleep(0.5)
 
-    runtime.cli.process_cctv_stream(stream_source)
+    runtime.cli.resume_detection()
+    runtime.cli._set_stream_status("live", "Dual camera workers are running in separate processes.")
+
+    worker_processes = [
+        _start_worker_process(repo_root, "workers.entry_worker", "entry", "entry-station-1", 1, entry_stream_source),
+        _start_worker_process(repo_root, "workers.exit_worker", "exit", "exit-station-1", 2, exit_stream_source),
+    ]
+
+    try:
+        while True:
+            exit_codes = [proc.poll() for proc in worker_processes]
+            if any(code is not None for code in exit_codes):
+                for index, code in enumerate(exit_codes):
+                    if code is not None:
+                        log_step(f"Worker process {index + 1} exited with code {code}", status="WARN")
+                break
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        log_step("Shutdown requested. Stopping worker processes...", status="WARN")
+    finally:
+        for proc in worker_processes:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in worker_processes:
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                if proc.poll() is None:
+                    proc.kill()
 
 
 if __name__ == "__main__":
