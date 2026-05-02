@@ -15,6 +15,7 @@ def init_canonical_schema(db_path: str) -> None:
             "daily_occupancy_state",
             "occupancy_snapshots",
             "occupancy_alerts",
+            "user_registrations",
         )
         missing = [name for name in required_tables if not table_columns(conn, name)]
         conn.close()
@@ -157,6 +158,40 @@ def init_canonical_schema(db_path: str) -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+        """
+    )
+    existing_user_columns = table_columns(conn, "users")
+    if "user_type" not in existing_user_columns:
+        c.execute("ALTER TABLE users ADD COLUMN user_type TEXT DEFAULT 'enrolled'")
+    if "flow_type" not in existing_user_columns:
+        c.execute("ALTER TABLE users ADD COLUMN flow_type TEXT DEFAULT 'auto_entry'")
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_registrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            event_id TEXT,
+            registration_type TEXT NOT NULL,
+            flow_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            performed_by TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE SET NULL
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_user_registrations_created_at_desc
+        ON user_registrations(created_at DESC)
+        """
+    )
+    c.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_user_registrations_event_id
+        ON user_registrations(event_id)
         """
     )
     c.execute(

@@ -88,6 +88,8 @@ class UserRepository:
                 embeddings BLOB NOT NULL,
                 image_paths TEXT NOT NULL,
                 embedding_dim INTEGER NOT NULL,
+                user_type TEXT DEFAULT 'enrolled',
+                flow_type TEXT DEFAULT 'auto_entry',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 archived_at TIMESTAMP
@@ -145,6 +147,10 @@ class UserRepository:
             c.execute("ALTER TABLE users ADD COLUMN gender TEXT")
         if "archived_at" not in existing_columns:
             c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
+        if "user_type" not in existing_columns:
+            c.execute("ALTER TABLE users ADD COLUMN user_type TEXT DEFAULT 'enrolled'")
+        if "flow_type" not in existing_columns:
+            c.execute("ALTER TABLE users ADD COLUMN flow_type TEXT DEFAULT 'auto_entry'")
 
         existing_program_columns = table_columns(conn, "programs")
         if "program_code" not in existing_program_columns:

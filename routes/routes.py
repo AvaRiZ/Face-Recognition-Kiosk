@@ -8,9 +8,11 @@ import math
 import time
 import base64
 import calendar
+import json
 from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
 import warnings
+import uuid
 
 import cv2
 import numpy as np
@@ -122,6 +124,232 @@ def create_routes_blueprint(deps):
 
     def _utc_now_iso():
         return datetime.now(timezone.utc).isoformat()
+
+    def _parse_iso_utc(value):
+        if not value:
+            return datetime.now(timezone.utc)
+        text = str(value).strip()
+        if not text:
+            return datetime.now(timezone.utc)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return datetime.now(timezone.utc)
+
+    def _insert_user_registration_audit(
+        *,
+        registration_type: str,
+        flow_type: str,
+        status: str,
+        performed_by: str,
+        user_id: int | None = None,
+        event_id: str | None = None,
+        notes: str | None = None,
+    ) -> None:
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO user_registrations (
+                user_id, event_id, registration_type, flow_type, status, performed_by, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                event_id,
+                registration_type,
+                flow_type,
+                status,
+                performed_by,
+                notes,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def _create_identity_user(
+        *,
+        name: str,
+        sr_code: str | None,
+        gender: str | None,
+        program: str | None,
+        user_type: str,
+        flow_type: str,
+    ) -> int:
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        params = (
+            name,
+            sr_code,
+            gender or "",
+            program or "",
+            b"",
+            "",
+            0,
+            user_type,
+            flow_type,
+        )
+        if getattr(conn, "dialect", "sqlite") == "postgres":
+            c.execute(
+                """
+                INSERT INTO users (
+                    name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type, flow_type
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING user_id
+                """,
+                params,
+            )
+            row = c.fetchone()
+            user_id = int(row[0])
+        else:
+            c.execute(
+                """
+                INSERT INTO users (
+                    name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type, flow_type
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                params,
+            )
+            user_id = int(c.lastrowid or 0)
+        conn.commit()
+        conn.close()
+        return user_id
+
+    def _record_manual_entry_event(*, user_id: int | None, sr_code: str | None, event_id: str, captured_at: datetime):
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        payload_json = {
+            "event_id": event_id,
+            "user_id": user_id,
+            "sr_code": sr_code,
+            "decision": "allowed",
+            "source": "librarian_manual_admission",
+            "entered_at": captured_at.isoformat(),
+        }
+        c.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, method, captured_at, entered_at, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            (
+                event_id,
+                user_id,
+                sr_code,
+                "allowed",
+                "manual-approval",
+                captured_at,
+                captured_at,
+                json.dumps(payload_json, ensure_ascii=True),
+            ),
+        )
+        inserted = (c.rowcount or 0) > 0
+        conn.commit()
+        conn.close()
+        if inserted:
+            occupancy_service = OccupancyService(deps["db_path"])
+            occupancy_state = occupancy_service.record_event(1, captured_at)
+            occ_view = occupancy_service.get_current_occupancy(
+                deps["config"].max_library_capacity,
+                warning_threshold=deps["config"].occupancy_warning_threshold,
+            )
+            emit_analytics_update(
+                "registration_manual_entry",
+                {
+                    "event_id": event_id,
+                    "user_id": user_id,
+                    "daily_entries": occupancy_state["daily_entries"],
+                    "daily_exits": occupancy_state["daily_exits"],
+                    "occupancy_count": occupancy_state["occupancy_count"],
+                    "capacity_warning": bool(occ_view["capacity_warning"]),
+                },
+            )
+        return inserted
+
+    def _record_manual_exit_event(*, user_id: int | None, sr_code: str | None, event_id: str, captured_at: datetime):
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        payload_json = {
+            "event_id": event_id,
+            "user_id": user_id,
+            "sr_code": sr_code,
+            "decision": "allowed",
+            "source": "librarian_manual_exit",
+            "exited_at": captured_at.isoformat(),
+        }
+        c.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, method, captured_at, exited_at, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            (
+                event_id,
+                user_id,
+                sr_code,
+                "allowed",
+                "manual-exit",
+                captured_at,
+                captured_at,
+                json.dumps(payload_json, ensure_ascii=True),
+            ),
+        )
+        inserted = (c.rowcount or 0) > 0
+        conn.commit()
+        conn.close()
+        if inserted:
+            occupancy_service = OccupancyService(deps["db_path"])
+            occupancy_state = occupancy_service.record_event(2, captured_at)
+            occ_view = occupancy_service.get_current_occupancy(
+                deps["config"].max_library_capacity,
+                warning_threshold=deps["config"].occupancy_warning_threshold,
+            )
+            emit_analytics_update(
+                "registration_manual_exit",
+                {
+                    "event_id": event_id,
+                    "user_id": user_id,
+                    "daily_entries": occupancy_state["daily_entries"],
+                    "daily_exits": occupancy_state["daily_exits"],
+                    "occupancy_count": occupancy_state["occupancy_count"],
+                    "capacity_warning": bool(occ_view["capacity_warning"]),
+                },
+            )
+        return inserted
+
+    def _visitor_presence_state(user_id: int) -> dict:
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT
+                SUM(CASE WHEN entered_at IS NOT NULL THEN 1 ELSE 0 END) AS entries,
+                SUM(CASE WHEN exited_at IS NOT NULL THEN 1 ELSE 0 END) AS exits
+            FROM recognition_events
+            WHERE user_id = ?
+              AND DATE(COALESCE(entered_at, exited_at, captured_at)) = DATE('now')
+            """,
+            (user_id,),
+        )
+        row = c.fetchone()
+        conn.close()
+        entries = int((row[0] if row else 0) or 0)
+        exits = int((row[1] if row else 0) or 0)
+        return {
+            "entries_today": entries,
+            "exits_today": exits,
+            "inside_now": entries > exits,
+        }
 
     def _resolve_registration_status_reason(reg_state, stream_status, worker_attached, detection_paused):
         code = (getattr(reg_state, "status_reason_code", None) or "").strip() or None
@@ -1501,6 +1729,190 @@ def create_routes_blueprint(deps):
                 ),
                 "profile": profile_payload,
                 "redirect_url": redirect_url,
+            }
+        )
+
+    @bp.route("/api/register/unrecognized", methods=["POST"], endpoint="api_register_unrecognized")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
+    def api_register_unrecognized():
+        payload = request.get_json(silent=True) or {}
+        event_id = str(payload.get("event_id") or "").strip()
+        action = str(payload.get("action") or "").strip().lower()
+        if not event_id:
+            return jsonify({"success": False, "message": "`event_id` is required."}), 400
+        if action not in {"approve", "deny"}:
+            return jsonify({"success": False, "message": "`action` must be 'approve' or 'deny'."}), 400
+
+        performer = (session.get("username") or session.get("role") or "staff")
+        if action == "deny":
+            _insert_user_registration_audit(
+                registration_type="unrecognized",
+                flow_type="manual_entry",
+                status="denied",
+                performed_by=str(performer),
+                event_id=event_id,
+                notes=str(payload.get("notes") or "").strip() or None,
+            )
+            emit_analytics_update("unrecognized_denied", {"event_id": event_id})
+            return jsonify({"success": True, "event_id": event_id, "status": "denied"})
+
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return jsonify({"success": False, "message": "`name` is required for approval."}), 400
+
+        sr_code = str(payload.get("sr_code") or "").strip() or None
+        gender = str(payload.get("gender") or "").strip() or ""
+        program = str(payload.get("program") or "").strip() or ""
+        resolved_type = str(payload.get("user_type") or "unrecognized").strip().lower()
+        if resolved_type not in {"enrolled", "visitor", "unrecognized"}:
+            resolved_type = "unrecognized"
+        captured_at = _parse_iso_utc(payload.get("captured_at"))
+        approved_event_id = f"manual-{uuid.uuid4().hex}"
+
+        user_id = _create_identity_user(
+            name=name,
+            sr_code=sr_code,
+            gender=gender,
+            program=program,
+            user_type=resolved_type,
+            flow_type="manual_entry",
+        )
+        _insert_user_registration_audit(
+            user_id=user_id,
+            event_id=event_id,
+            registration_type="unrecognized",
+            flow_type="manual_entry",
+            status="approved",
+            performed_by=str(performer),
+            notes=str(payload.get("notes") or "").strip() or None,
+        )
+        _record_manual_entry_event(user_id=user_id, sr_code=sr_code, event_id=approved_event_id, captured_at=captured_at)
+        bump_profiles_version(deps["db_path"])
+        return jsonify(
+            {
+                "success": True,
+                "status": "approved",
+                "event_id": event_id,
+                "admitted_event_id": approved_event_id,
+                "user_id": int(user_id),
+                "user_type": resolved_type,
+            }
+        )
+
+    @bp.route("/api/register/visitor", methods=["POST"], endpoint="api_register_visitor")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
+    def api_register_visitor():
+        payload = request.get_json(silent=True) or {}
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return jsonify({"success": False, "message": "`name` is required."}), 400
+        sr_code = str(payload.get("sr_code") or "").strip() or None
+        gender = str(payload.get("gender") or "").strip() or ""
+        program = str(payload.get("program") or "").strip() or ""
+        captured_at = _parse_iso_utc(payload.get("captured_at"))
+        performer = (session.get("username") or session.get("role") or "staff")
+        event_id = str(payload.get("event_id") or "").strip() or f"visitor-{uuid.uuid4().hex}"
+
+        user_id = None
+        if sr_code:
+            existing = deps["repository"].get_user_by_sr_code(sr_code)
+            if existing is not None:
+                user_id = int(existing.id)
+        if user_id is None:
+            user_id = _create_identity_user(
+                name=name,
+                sr_code=sr_code,
+                gender=gender,
+                program=program,
+                user_type="visitor",
+                flow_type="manual_entry",
+            )
+        presence = _visitor_presence_state(int(user_id))
+        if presence["inside_now"]:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "Visitor is already marked inside. Record an exit before admitting again.",
+                    **presence,
+                }
+            ), 409
+        _insert_user_registration_audit(
+            user_id=user_id,
+            event_id=event_id,
+            registration_type="visitor",
+            flow_type="manual_entry",
+            status="approved",
+            performed_by=str(performer),
+            notes=str(payload.get("notes") or "").strip() or None,
+        )
+        _record_manual_entry_event(user_id=user_id, sr_code=sr_code, event_id=event_id, captured_at=captured_at)
+        bump_profiles_version(deps["db_path"])
+        return jsonify(
+            {
+                "success": True,
+                "user_id": int(user_id),
+                "event_id": event_id,
+                "user_type": "visitor",
+                "flow_type": "manual_entry",
+            }
+        )
+
+    @bp.route("/api/register/visitor/exit", methods=["POST"], endpoint="api_register_visitor_exit")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
+    def api_register_visitor_exit():
+        payload = request.get_json(silent=True) or {}
+        raw_user_id = payload.get("user_id")
+        sr_code = str(payload.get("sr_code") or "").strip() or None
+        if raw_user_id is None and not sr_code:
+            return jsonify({"success": False, "message": "`user_id` or `sr_code` is required."}), 400
+
+        user_id = None
+        if raw_user_id is not None and str(raw_user_id).strip() != "":
+            try:
+                user_id = int(raw_user_id)
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "message": "`user_id` must be an integer."}), 400
+        elif sr_code:
+            existing = deps["repository"].get_user_by_sr_code(sr_code)
+            if existing:
+                user_id = int(existing.id)
+
+        if not user_id:
+            return jsonify({"success": False, "message": "Visitor not found."}), 404
+
+        captured_at = _parse_iso_utc(payload.get("captured_at"))
+        event_id = str(payload.get("event_id") or "").strip() or f"visitor-exit-{uuid.uuid4().hex}"
+        performer = (session.get("username") or session.get("role") or "staff")
+        presence = _visitor_presence_state(int(user_id))
+        if not presence["inside_now"]:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "Visitor is not currently marked inside.",
+                    **presence,
+                }
+            ), 409
+
+        _insert_user_registration_audit(
+            user_id=user_id,
+            event_id=event_id,
+            registration_type="visitor",
+            flow_type="manual_entry",
+            status="approved",
+            performed_by=str(performer),
+            notes="Manual visitor exit confirmation.",
+        )
+        _record_manual_exit_event(user_id=user_id, sr_code=sr_code, event_id=event_id, captured_at=captured_at)
+        return jsonify(
+            {
+                "success": True,
+                "event_id": event_id,
+                "user_id": int(user_id),
+                "flow_type": "manual_entry",
+                "status": "exit_recorded",
             }
         )
     

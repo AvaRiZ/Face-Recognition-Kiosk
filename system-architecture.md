@@ -1485,15 +1485,15 @@ frontend/
 - [x] Ensure every occupancy-related websocket payload includes `capacity_warning`.
 - [x] Broadcast unrecognized-detection events with snapshot metadata for librarian workflows.
 
-### Phase 4: Registration and Identity Flows (PARTIAL)
+### Phase 4: Registration and Identity Flows (MOSTLY COMPLETE)
 
 - [x] Implement registration session lifecycle APIs (`/api/register-info`, `/api/register-session/start`, `/api/register-session/cancel`, `/api/register-reset`).
 - [x] Implement registration submit pipeline (`POST /register`) to save profile data and embeddings.
-- [ ] Extend canonical `users` schema with explicit `user_type` and `flow_type` columns.
-- [ ] Add `user_registrations` audit table and migration.
-- [ ] Add dedicated endpoints for unrecognized and visitor admission flows (`POST /api/register/unrecognized`, `POST /api/register/visitor`).
-- [ ] Connect unrecognized face events to librarian approval before entry.
-- [ ] Implement visitor registration flow tied to entry/exit occupancy accounting.
+- [x] Extend canonical `users` schema with explicit `user_type` and `flow_type` columns.
+- [x] Add `user_registrations` audit table and migration.
+- [x] Add dedicated endpoints for unrecognized and visitor admission flows (`POST /api/register/unrecognized`, `POST /api/register/visitor`).
+- [x] Connect unrecognized face events to librarian approval before entry.
+- [x] Implement visitor registration flow fully tied to both entry and exit occupancy accounting.
 
 ### Phase 5: Dashboard and Analytics Alignment (PARTIAL)
 
@@ -1515,11 +1515,10 @@ frontend/
 
 ### Execution Order From Here
 
-1. Close data-model/API gaps (`user_type`, `flow_type`, `user_registrations`, `/api/occupancy/adjust`, reconciliation job).
-2. Wire alert service + realtime payload consistency (`capacity_warning`, threshold events, unrecognized broadcasts).
-3. Implement unrecognized/visitor admission flows and librarian approval path.
-4. Align frontend dashboards/kiosk with the occupancy-first dual-camera architecture.
-5. Finish end-to-end and load validation before production rollout.
+1. Complete the remaining visitor lifecycle gap so visitor admissions are reconciled cleanly through both entry and exit occupancy accounting.
+2. Align frontend dashboards/kiosk with the occupancy-first dual-camera architecture.
+3. Add explicit UI for capacity alerts, acknowledgement, and manual override workflows.
+4. Finish end-to-end, duplicate replay, failover, and load validation before production rollout.
 
 ---
 

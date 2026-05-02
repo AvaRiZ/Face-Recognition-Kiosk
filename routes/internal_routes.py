@@ -260,6 +260,41 @@ def create_internal_blueprint(deps):
                     pass
 
         if inserted and decision == "allowed":
+            if camera_id == 2 and user_id:
+                try:
+                    audit_conn = db_connect(deps["db_path"])
+                    audit_cursor = audit_conn.cursor()
+                    audit_cursor.execute(
+                        "SELECT user_type FROM users WHERE user_id = ?",
+                        (user_id,),
+                    )
+                    user_row = audit_cursor.fetchone()
+                    if user_row and str(user_row[0] or "").strip().lower() == "visitor":
+                        audit_cursor.execute(
+                            """
+                            INSERT INTO user_registrations (
+                                user_id, event_id, registration_type, flow_type, status, performed_by, notes
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                user_id,
+                                event_id,
+                                "visitor",
+                                "manual_entry",
+                                "approved",
+                                "system",
+                                "Visitor exit recorded by exit worker.",
+                            ),
+                        )
+                        audit_conn.commit()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        audit_conn.close()
+                    except Exception:
+                        pass
             occupancy_service = OccupancyService(deps["db_path"])
             config = deps["config"]
             occupancy_state = occupancy_service.record_event(camera_id, captured_at)
@@ -302,6 +337,34 @@ def create_internal_blueprint(deps):
             metadata = payload.get("snapshot_metadata")
             if not isinstance(metadata, dict):
                 metadata = {}
+            try:
+                audit_conn = db_connect(deps["db_path"])
+                audit_cursor = audit_conn.cursor()
+                audit_cursor.execute(
+                    """
+                    INSERT INTO user_registrations (
+                        user_id, event_id, registration_type, flow_type, status, performed_by, notes
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        event_id,
+                        "unrecognized",
+                        "manual_entry",
+                        "pending",
+                        "system",
+                        "Pending librarian approval for unrecognized detection.",
+                    ),
+                )
+                audit_conn.commit()
+            except Exception:
+                pass
+            finally:
+                try:
+                    audit_conn.close()
+                except Exception:
+                    pass
             config = deps["config"]
             occ_view = OccupancyService(deps["db_path"]).get_current_occupancy(
                 config.max_library_capacity,
@@ -315,6 +378,7 @@ def create_internal_blueprint(deps):
                     "camera_id": camera_id,
                     "captured_at": captured_at.isoformat(),
                     "confidence": confidence,
+                    "requires_librarian_approval": True,
                     "capacity_warning": capacity_warning,
                     "snapshot_metadata": metadata,
                 }
