@@ -11,6 +11,8 @@ from datetime import date, datetime, timezone
 from flask import Blueprint, jsonify, request
 
 from core.config import AppConfig
+from app.realtime import emit_analytics_update, emit_capacity_threshold_alert
+from services.occupancy_alert_service import occupancy_alert_service
 from services.occupancy_service import OccupancyService
 
 
@@ -213,6 +215,37 @@ def adjust_occupancy() -> tuple:
             adjustment=adjustment,
             reason=reason,
             admin_id=admin_id,
+        )
+        occ_data = service.get_current_occupancy(
+            config.max_library_capacity,
+            warning_threshold=config.occupancy_warning_threshold,
+        )
+        alert_payload, _changed = occupancy_alert_service.evaluate(
+            occupancy_count=int(occ_data["occupancy_count"]),
+            capacity_limit=int(occ_data["capacity_limit"]),
+            occupancy_ratio=float(occ_data["occupancy_ratio"]),
+            is_full=bool(occ_data["is_full"]),
+            capacity_warning=bool(occ_data["capacity_warning"]),
+            warning_threshold=float(config.occupancy_warning_threshold),
+            moderate_threshold=max(0.0, float(config.occupancy_warning_threshold) * 0.75),
+            state_is_stale=False,
+        )
+        emit_analytics_update(
+            "occupancy_adjusted",
+            {
+                "adjustment": int(adjustment),
+                "occupancy_count": int(occ_data["occupancy_count"]),
+                "daily_entries": int(occ_data["daily_entries"]),
+                "daily_exits": int(occ_data["daily_exits"]),
+                "capacity_warning": bool(occ_data["capacity_warning"]),
+            },
+        )
+        emit_capacity_threshold_alert(
+            {
+                "reason": "manual_occupancy_adjustment",
+                "capacity_warning": bool(occ_data["capacity_warning"]),
+                **alert_payload,
+            }
         )
         return jsonify(
             {

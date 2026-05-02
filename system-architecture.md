@@ -1473,17 +1473,17 @@ frontend/
 - [x] Implement nightly reconciliation job for drift detection and operator alerting.
 - [x] Apply `occupancy_warning_threshold` config directly in occupancy warning computation.
 
-### Phase 3: Alerting and Realtime Broadcasts (PARTIAL)
+### Phase 3: Alerting and Realtime Broadcasts (COMPLETE)
 
 - [x] Implement Flask-SocketIO integration and `analytics_updated` event channel.
 - [x] Add alert persistence (`occupancy_alerts`) and migration (`20260502_0008`).
 - [x] Implement alert API endpoints (`GET /api/alerts`, `POST /api/alerts/<id>/dismiss`).
 - [x] Create capacity-reached alert records when capacity gate blocks entry.
 - [x] Keep `services/occupancy_alert_service.py` as a reusable evaluator module.
-- [ ] Integrate `occupancy_alert_service.py` into live ingest/capacity execution path.
-- [ ] Emit dedicated capacity-threshold realtime alerts to kiosk/dashboard clients.
-- [ ] Ensure every occupancy-related websocket payload includes `capacity_warning`.
-- [ ] Broadcast unrecognized-detection events with snapshot metadata for librarian workflows.
+- [x] Integrate `occupancy_alert_service.py` into live ingest/capacity execution path.
+- [x] Emit dedicated capacity-threshold realtime alerts to kiosk/dashboard clients.
+- [x] Ensure every occupancy-related websocket payload includes `capacity_warning`.
+- [x] Broadcast unrecognized-detection events with snapshot metadata for librarian workflows.
 
 ### Phase 4: Registration and Identity Flows (PARTIAL)
 

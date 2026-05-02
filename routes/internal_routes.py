@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 import numpy as np
 from flask import Blueprint, jsonify, request
 
-from app.realtime import emit_analytics_update
+from app.realtime import emit_analytics_update, emit_capacity_threshold_alert, emit_unrecognized_detection
 from core.models import User
 from db import connect as db_connect
 from services.occupancy_service import OccupancyService
 from services.alert_service import AlertService
+from services.occupancy_alert_service import occupancy_alert_service
 from services.versioning_service import bump_profiles_version, get_profiles_version, get_settings_version
 
 
@@ -266,6 +267,16 @@ def create_internal_blueprint(deps):
                 config.max_library_capacity,
                 warning_threshold=config.occupancy_warning_threshold,
             )
+            alert_payload, alert_changed = occupancy_alert_service.evaluate(
+                occupancy_count=int(occupancy_view["occupancy_count"]),
+                capacity_limit=int(occupancy_view["capacity_limit"]),
+                occupancy_ratio=float(occupancy_view["occupancy_ratio"]),
+                is_full=bool(occupancy_view["is_full"]),
+                capacity_warning=bool(occupancy_view["capacity_warning"]),
+                warning_threshold=float(config.occupancy_warning_threshold),
+                moderate_threshold=max(0.0, float(config.occupancy_warning_threshold) * 0.75),
+                state_is_stale=False,
+            )
             emit_analytics_update(
                 "recognition_event_ingested",
                 {
@@ -277,6 +288,44 @@ def create_internal_blueprint(deps):
                     "daily_exits": occupancy_state["daily_exits"],
                     "occupancy_count": occupancy_state["occupancy_count"],
                     "capacity_warning": bool(occupancy_view["capacity_warning"]),
+                },
+            )
+            if alert_changed:
+                emit_capacity_threshold_alert(
+                    {
+                        "reason": "occupancy_state_changed",
+                        "capacity_warning": bool(occupancy_view["capacity_warning"]),
+                        **alert_payload,
+                    }
+                )
+        elif inserted and decision in {"unknown", "denied"}:
+            metadata = payload.get("snapshot_metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            config = deps["config"]
+            occ_view = OccupancyService(deps["db_path"]).get_current_occupancy(
+                config.max_library_capacity,
+                warning_threshold=config.occupancy_warning_threshold,
+            )
+            capacity_warning = bool(occ_view["capacity_warning"])
+            emit_unrecognized_detection(
+                {
+                    "reason": "unrecognized_detection",
+                    "event_id": event_id,
+                    "camera_id": camera_id,
+                    "captured_at": captured_at.isoformat(),
+                    "confidence": confidence,
+                    "capacity_warning": capacity_warning,
+                    "snapshot_metadata": metadata,
+                }
+            )
+            emit_analytics_update(
+                "unrecognized_detection",
+                {
+                    "event_id": event_id,
+                    "camera_id": camera_id,
+                    "captured_at": captured_at.isoformat(),
+                    "capacity_warning": capacity_warning,
                 },
             )
 
@@ -297,6 +346,37 @@ def create_internal_blueprint(deps):
                 occupancy_count=int(occ["occupancy_count"]),
                 capacity_limit=int(occ["capacity_limit"]),
             )
+        alert_payload, alert_changed = occupancy_alert_service.evaluate(
+            occupancy_count=int(occ["occupancy_count"]),
+            capacity_limit=int(occ["capacity_limit"]),
+            occupancy_ratio=float(occ["occupancy_ratio"]),
+            is_full=bool(occ["is_full"]),
+            capacity_warning=bool(occ["capacity_warning"]),
+            warning_threshold=float(config.occupancy_warning_threshold),
+            moderate_threshold=max(0.0, float(config.occupancy_warning_threshold) * 0.75),
+            state_is_stale=False,
+        )
+        if alert_changed or not allow_entry:
+            emit_capacity_threshold_alert(
+                {
+                    "reason": "capacity_gate_check",
+                    "capacity_warning": bool(occ["capacity_warning"]),
+                    "alert": alert,
+                    **alert_payload,
+                }
+            )
+        emit_analytics_update(
+            "capacity_gate_checked",
+            {
+                "allow_entry": allow_entry,
+                "reason": "capacity_reached" if not allow_entry else "ok",
+                "occupancy_count": int(occ["occupancy_count"]),
+                "capacity_limit": int(occ["capacity_limit"]),
+                "occupancy_ratio": float(occ["occupancy_ratio"]),
+                "is_full": bool(occ["is_full"]),
+                "capacity_warning": bool(occ["capacity_warning"]),
+            },
+        )
         return jsonify(
             {
                 "success": True,
