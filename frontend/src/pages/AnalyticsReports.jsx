@@ -3251,6 +3251,10 @@ function buildChartJsConfig({ options, series }) {
     normalizedType === "bar" && Boolean(options?.plotOptions?.bar?.horizontal);
   const chartType = isPieLike ? "doughnut" : normalizedType;
   const isLineLike = chartType === "line" || isRadar;
+  const tooltipYFormatter =
+    typeof options?.tooltip?.y?.formatter === "function"
+      ? options.tooltip.y.formatter
+      : null;
 
   function getTooltipValue(ctx) {
     if (isPieLike) return ctx?.parsed;
@@ -3288,9 +3292,13 @@ function buildChartJsConfig({ options, series }) {
           borderWidth: strokeWidth,
           fill: chartType === "line" && isFilled,
           tension: chartType === "line" ? 0.38 : 0,
-          pointRadius,
-          pointHoverRadius: pointRadius > 0 ? pointRadius + 2 : 5,
-          pointHitRadius: isLineLike ? 18 : pointRadius + 4,
+          pointRadius: isRadar ? Math.max(pointRadius, 5) : pointRadius,
+          pointHoverRadius: isRadar
+            ? Math.max(pointRadius + 5, 10)
+            : pointRadius > 0
+              ? pointRadius + 2
+              : 5,
+          pointHitRadius: isRadar ? 28 : isLineLike ? 18 : pointRadius + 4,
           borderRadius: typeof options?.plotOptions?.bar?.borderRadius === "number"
             ? options.plotOptions.bar.borderRadius
             : undefined,
@@ -3307,12 +3315,17 @@ function buildChartJsConfig({ options, series }) {
       responsive: true,
       maintainAspectRatio: false,
       indexAxis: isHorizontalBar ? "y" : "x",
-      interaction: isLineLike
+      interaction: isRadar
         ? {
-            mode: "index",
+            mode: "nearest",
             intersect: false,
           }
-        : undefined,
+        : isLineLike
+          ? {
+              mode: "index",
+              intersect: false,
+            }
+          : undefined,
       plugins: {
         legend: {
           display: options?.legend?.show !== false,
@@ -3333,7 +3346,19 @@ function buildChartJsConfig({ options, series }) {
           callbacks: isPieLike
             ? undefined
             : {
-                label: (ctx) => ` ${getTooltipValue(ctx) ?? 0} visits`,
+                title: (items) => {
+                  const item = items?.[0];
+                  return item?.label || "";
+                },
+                label: (ctx) => {
+                  if (tooltipYFormatter) {
+                    return ` ${tooltipYFormatter(getTooltipValue(ctx) ?? 0, {
+                      dataPointIndex: ctx.dataIndex,
+                      seriesIndex: ctx.datasetIndex,
+                    })}`;
+                  }
+                  return ` ${getTooltipValue(ctx) ?? 0} visits`;
+                },
               },
         },
       },
@@ -3343,6 +3368,14 @@ function buildChartJsConfig({ options, series }) {
   if (isPieLike) {
     config.options.cutout = options?.plotOptions?.pie?.donut?.size || "68%";
   } else if (isRadar) {
+    config.options.layout = {
+      padding: {
+        top: 14,
+        right: 18,
+        bottom: 14,
+        left: 18,
+      },
+    };
     config.options.scales = {
       r: {
         angleLines: { color: ANALYTICS_COLORS.grid },

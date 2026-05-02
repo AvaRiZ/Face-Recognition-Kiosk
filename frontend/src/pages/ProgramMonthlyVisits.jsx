@@ -1,6 +1,8 @@
 import React from 'react';
+import { getErrorMessage, showError, showSuccess } from '../alerts.js';
 import { fetchJson } from '../api.js';
 import { ALL_PROGRAM_NAMES } from '../data/programCatalog.js';
+import { downloadFile } from '../downloads.js';
 
 function currentYear() {
   return new Date().getFullYear();
@@ -9,6 +11,7 @@ function currentYear() {
 export default function ProgramMonthlyVisitsPage() {
   const [data, setData] = React.useState({ months: [], rows: [], overall_row: null, years: [], year: currentYear() });
   const [loading, setLoading] = React.useState(true);
+  const [exporting, setExporting] = React.useState(false);
   const [search, setSearch] = React.useState('');
   const [pageSize, setPageSize] = React.useState('10');
   const [currentPage, setCurrentPage] = React.useState(1);
@@ -83,6 +86,26 @@ export default function ProgramMonthlyVisitsPage() {
   const startIndex = (safePage - 1) * pageLimit;
   const pageRows = filtered.slice(startIndex, startIndex + pageLimit);
   const exportHref = `/program-monthly-visits/export?year=${encodeURIComponent(data.year || selectedYear)}`;
+
+  async function handleExportClick(event) {
+    event.preventDefault();
+    setExporting(true);
+
+    try {
+      await downloadFile(exportHref, `program-monthly-visits-${data.year || selectedYear}.csv`);
+      await showSuccess(
+        'Export Complete',
+        `Program monthly visits for ${data.year || selectedYear} were exported successfully.`
+      );
+    } catch (error) {
+      await showError(
+        'Export Failed',
+        getErrorMessage(error, 'The monthly visits export could not be generated.')
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
 
   React.useEffect(() => {
     setCurrentPage(1);
@@ -159,13 +182,15 @@ export default function ProgramMonthlyVisitsPage() {
                   </option>
                 ))}
               </select>
-              <a
-                href={exportHref}
+              <button
+                type="button"
                 className="btn btn-outline-success d-flex align-items-center"
                 style={{ height: '38px', whiteSpace: 'nowrap' }}
+                onClick={handleExportClick}
+                disabled={exporting}
               >
-                <i className="bi bi-download me-1"></i>Export CSV
-              </a>
+                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export CSV'}
+              </button>
             </div>
           </div>
         </div>

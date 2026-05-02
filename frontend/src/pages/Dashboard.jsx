@@ -1,4 +1,5 @@
 import React from "react";
+import { getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { fetchJson } from "../api.js";
 import { getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { socket } from "../socket.js";
@@ -62,6 +63,26 @@ const DASHBOARD_FILTER_OPTIONS = [
   { value: "last_90_days", label: "Last 90 Days" },
 ];
 
+const WEEKDAY_SHORT_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function getDashboardViewMode(filterKey) {
+  if (filterKey === "today") return "today";
+  if (filterKey === "last_7_days" || filterKey === "last_14_days") return "short";
+  return "long";
+}
+
+function getDashboardViewLabel(filterKey) {
+  const mode = getDashboardViewMode(filterKey);
+  if (mode === "today") return "Today Snapshot";
+  if (mode === "short") return "Short-Range Trend";
+  return "Long-Range Trend";
+}
+
+function formatDashboardHourLabel(index, startHour = 7) {
+  const hour = startHour + index;
+  return hour < 12 ? `${hour} AM` : hour === 12 ? "12 PM" : `${hour - 12} PM`;
+}
+
 function formatRangeLabel(startDate, endDate) {
   if (!startDate || !endDate) return "";
   const start = new Date(`${startDate}T00:00:00`);
@@ -81,99 +102,187 @@ function formatSnapshotTime(timestamp) {
   return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function csvEscape(value) {
-  const normalized =
-    value === null || value === undefined ? "" : String(value).replace(/\r?\n/g, " ");
-  if (/[",]/.test(normalized)) {
-    return `"${normalized.replace(/"/g, '""')}"`;
+function sanitizeWorksheetName(name) {
+  return String(name || "Sheet")
+    .replace(/[\\/*?:[\]]/g, " ")
+    .slice(0, 31);
+}
+
+function autosizeColumns(rows = [], minWidth = 12) {
+  const columnCount = rows.reduce(
+    (max, row) => Math.max(max, Array.isArray(row) ? row.length : 0),
+    0
+  );
+
+  return Array.from({ length: columnCount }, (_, index) => {
+    const width = rows.reduce((max, row) => {
+      const value = row?.[index];
+      const length = value === null || value === undefined ? 0 : String(value).length;
+      return Math.max(max, length);
+    }, minWidth);
+
+    return { wch: Math.min(Math.max(width + 2, minWidth), 40) };
+  });
+}
+
+function buildWorksheet(XLSX, rows, options = {}) {
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  worksheet["!cols"] = options.columns || autosizeColumns(rows, options.minWidth);
+  if (options.merges?.length) {
+    worksheet["!merges"] = options.merges;
   }
-  return normalized;
+  if (options.freezeTopRow) {
+    worksheet["!freeze"] = { xSplit: 0, ySplit: 1 };
+  }
+  return worksheet;
 }
 
-function appendCsvSection(lines, title, columns, rows) {
-  lines.push([title]);
-  lines.push(columns);
-  rows.forEach((row) => lines.push(row));
-  lines.push([]);
+function buildWeekdayPatternRows(weeklyHeatmap) {
+  return WEEKDAY_SHORT_LABELS.map((day, index) => {
+    const row = weeklyHeatmap?.[index];
+    const total = (row?.values ?? []).reduce((sum, value) => sum + (Number(value) || 0), 0);
+    return [day, total];
+  });
 }
 
-function buildDashboardExportCsv(data) {
-  const lines = [
+function buildHeatmapSheetRows(weeklyHeatmap = []) {
+  const hourHeaders = Array.from({ length: 13 }, (_, index) =>
+    formatDashboardHourLabel(index)
+  );
+
+  return [
+    ["Day", ...hourHeaders],
+    ...WEEKDAY_SHORT_LABELS.map((day, index) => [
+      day,
+      ...Array.from({ length: 13 }, (_, hourIndex) => weeklyHeatmap?.[index]?.values?.[hourIndex] ?? 0),
+    ]),
+  ];
+}
+
+function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
+  const viewMode = getDashboardViewMode(filterKey);
+  const workbook = XLSX.utils.book_new();
+  const filterLabel =
+    data?.filter_label ??
+    DASHBOARD_FILTER_OPTIONS.find((item) => item.value === filterKey)?.label ??
+    "";
+  const dateRangeLabel = formatRangeLabel(
+    data?.filter_start_date,
+    data?.filter_end_date
+  );
+
+  const summaryRows = [
     ["Dashboard Export"],
-    ["Filter", data?.filter_label ?? ""],
-    ["Date Range", formatRangeLabel(data?.filter_start_date, data?.filter_end_date)],
     [],
+    ["Filter", filterLabel],
+    ["Dashboard View", getDashboardViewLabel(filterKey)],
+    ["Date Range", dateRangeLabel],
+    [],
+    ["Summary"],
+    ["Metric", "Value"],
+    ["Registered Students", data?.total_students ?? 0],
+    ["Recognition Logs", data?.total_logs ?? 0],
+    ["Unique Visitors", data?.unique_visitors ?? 0],
+    ["Average Confidence", `${data?.avg_confidence ?? 0}%`],
   ];
 
-  appendCsvSection(
-    lines,
-    "Summary",
-    ["Metric", "Value"],
-    [
-      ["Registered Students", data?.total_students ?? 0],
-      ["Recognition Logs", data?.total_logs ?? 0],
-      ["Unique Visitors", data?.unique_visitors ?? 0],
-      ["Average Confidence", `${data?.avg_confidence ?? 0}%`],
-    ]
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, summaryRows, {
+      minWidth: 18,
+      merges: [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }],
+    }),
+    "Summary"
   );
 
-  appendCsvSection(
-    lines,
-    "Daily Visitors",
+  const dailyVisitorRows = [
     ["Date", "Visits"],
-    (data?.daily_visitors ?? []).map((item) => [item.date, item.count])
+    ...(data?.daily_visitors ?? []).map((item) => [item.date, item.count]),
+  ];
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, dailyVisitorRows, { minWidth: 14, freezeTopRow: true }),
+    sanitizeWorksheetName("Daily Visitors")
   );
 
-  appendCsvSection(
-    lines,
-    "Program Distribution",
+  const programRows = [
     ["Program", "Unique Visitors"],
-    (data?.program_distribution ?? []).map((item) => [item.program, item.count])
+    ...(data?.program_distribution ?? []).map((item) => [item.program || "Unknown", item.count]),
+  ];
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, programRows, { minWidth: 16, freezeTopRow: true }),
+    sanitizeWorksheetName("Program Distribution")
   );
 
-  appendCsvSection(
-    lines,
-    "Monthly Visitors",
-    ["Month", "Visits"],
-    (data?.monthly_visitors ?? []).map((item) => [item.month, item.count])
-  );
-
-  appendCsvSection(
-    lines,
-    "Peak Hours",
+  const hourRows = [
     ["Hour", "Visits"],
-    (data?.peak_hours ?? []).map((count, hour) => [hour, count])
+    ...(data?.peak_hours ?? []).map((count, hourIndex) => [
+      formatDashboardHourLabel(hourIndex),
+      count,
+    ]),
+  ];
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, hourRows, { minWidth: 14, freezeTopRow: true }),
+    sanitizeWorksheetName(viewMode === "today" ? "Hourly Visitors" : "Peak Hours")
   );
 
-  appendCsvSection(
-    lines,
-    "Top Visitors",
+  const topVisitorRows = [
     ["Name", "SR Code", "Visits"],
-    (data?.top_visitors ?? []).map((item) => [item.name, item.sr_code, item.visits])
+    ...(data?.top_visitors ?? []).map((item) => [item.name, item.sr_code, item.visits]),
+  ];
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, topVisitorRows, { minWidth: 14, freezeTopRow: true }),
+    sanitizeWorksheetName("Top Visitors")
   );
 
-  const heatmapRows = [];
-  (data?.weekly_heatmap ?? []).forEach((entry) => {
-    (entry.values ?? []).forEach((count, idx) => {
-      heatmapRows.push([entry.day, `${idx + 7}:00`, count]);
-    });
-  });
-  appendCsvSection(lines, "Weekly Heatmap", ["Day", "Hour", "Visits"], heatmapRows);
+  if (viewMode !== "today") {
+    XLSX.utils.book_append_sheet(
+      workbook,
+      buildWorksheet(XLSX, buildHeatmapSheetRows(data?.weekly_heatmap ?? []), {
+        minWidth: 10,
+        freezeTopRow: true,
+      }),
+      sanitizeWorksheetName("Weekly Heatmap")
+    );
+  }
 
-  return lines.map((row) => row.map(csvEscape).join(",")).join("\n");
+  if (viewMode === "short") {
+    const weekdayRows = [
+      ["Weekday", "Visits"],
+      ...buildWeekdayPatternRows(data?.weekly_heatmap ?? []),
+    ];
+    XLSX.utils.book_append_sheet(
+      workbook,
+      buildWorksheet(XLSX, weekdayRows, { minWidth: 14, freezeTopRow: true }),
+      sanitizeWorksheetName("Weekday Pattern")
+    );
+  }
+
+  if (viewMode === "long") {
+    const monthlyRows = [
+      ["Month", "Visits"],
+      ...(data?.monthly_visitors ?? []).map((item) => [item.month, item.count]),
+    ];
+    XLSX.utils.book_append_sheet(
+      workbook,
+      buildWorksheet(XLSX, monthlyRows, { minWidth: 14, freezeTopRow: true }),
+      sanitizeWorksheetName("Monthly Visitors")
+    );
+  }
+
+  return workbook;
 }
 
-function downloadDashboardExport(data) {
-  const csvContent = buildDashboardExportCsv(data);
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-  const downloadUrl = window.URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = downloadUrl;
-  anchor.download = `dashboard-${data?.filter_key ?? "export"}-${new Date().toISOString().slice(0, 10)}.csv`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.URL.revokeObjectURL(downloadUrl);
+async function downloadDashboardExport(data, filterKey) {
+  const XLSX = await import("xlsx");
+  const workbook = buildDashboardWorkbook(XLSX, data, filterKey);
+  XLSX.writeFile(
+    workbook,
+    `dashboard-${filterKey ?? data?.filter_key ?? "export"}-${new Date().toISOString().slice(0, 10)}.xlsx`
+  );
 }
 
 function StatCard({ title, value, subtext, iconClass, cardClass }) {
@@ -724,11 +833,79 @@ function MonthlyVisitorsChart({ data }) {
   );
 }
 
-// Main Dashboard Page
+function WeekdayPatternChart({ data }) {
+  const canvasRef = React.useRef(null);
+  const chartRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!canvasRef.current || !window.Chart || !data?.length) return;
+    if (chartRef.current) chartRef.current.destroy();
+
+    chartRef.current = new window.Chart(canvasRef.current, {
+      type: "bar",
+      data: {
+        labels: data.map((item) => item.label),
+        datasets: [
+          {
+            label: "Visits",
+            data: data.map((item) => item.count),
+            backgroundColor: data.map((_, index) =>
+              index === data.length - 1
+                ? "rgba(25,135,84,0.9)"
+                : "rgba(25,135,84,0.45)"
+            ),
+            borderRadius: 6,
+            borderWidth: 0,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => ` ${ctx.parsed.y} visits`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            ticks: { font: { size: 11 } },
+          },
+          y: {
+            beginAtZero: true,
+            ticks: { stepSize: 1, font: { size: 11 } },
+            grid: { color: "rgba(0,0,0,0.05)" },
+          },
+        },
+      },
+    });
+    return () => chartRef.current?.destroy();
+  }, [data]);
+
+  if (!data?.length)
+    return (
+      <div className="text-muted small text-center py-4">No data available</div>
+    );
+  return (
+    <div
+      className="chart-container"
+      style={{ height: "220px", position: "relative" }}
+    >
+      <canvas ref={canvasRef}></canvas>
+    </div>
+  );
+}
+
+// ── Main Dashboard Page ──────────────────────────────────────
 export default function Dashboard() {
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
+  const [exporting, setExporting] = React.useState(false);
   const [selectedFilter, setSelectedFilter] = React.useState("today");
   const [occupancyData, setOccupancyData] = React.useState(null);
   const [occupancyHistory, setOccupancyHistory] = React.useState([]);
@@ -862,6 +1039,12 @@ export default function Dashboard() {
   const topVisitors = data?.top_visitors ?? [];
   const weeklyHeatmap = data?.weekly_heatmap ?? [];
   const monthlyVisitors = data?.monthly_visitors ?? [];
+  const viewMode = getDashboardViewMode(selectedFilter);
+  const isTodayView = viewMode === "today";
+  const isShortRangeView = viewMode === "short";
+  const weekdayPattern = buildWeekdayPatternRows(weeklyHeatmap).map(
+    ([label, count]) => ({ label, count })
+  );
   
   // Get filter label from selected filter, not from API response
   const selectedFilterOption = DASHBOARD_FILTER_OPTIONS.find(
@@ -877,13 +1060,25 @@ export default function Dashboard() {
   const peakHourMax = Math.max(...peakHours, 0);
   const peakHourIdx = peakHourMax > 0 ? peakHours.indexOf(peakHourMax) : -1;
   const peakHourLabel =
-    peakHourIdx >= 0
-      ? formatHourLabel(PEAK_HOUR_START + peakHourIdx)
-      : "N/A";
+    peakHourIdx >= 0 ? formatDashboardHourLabel(peakHourIdx) : "N/A";
 
-  function handleExportClick() {
+  async function handleExportClick() {
     if (!data) return;
-    downloadDashboardExport(data);
+    setExporting(true);
+    try {
+      await downloadDashboardExport(data, selectedFilter);
+      await showSuccess(
+        "Export Complete",
+        `Dashboard data for ${filterLabel} was exported to Excel successfully.`
+      );
+    } catch (exportError) {
+      await showError(
+        "Export Failed",
+        getErrorMessage(exportError, "The Excel file could not be generated.")
+      );
+    } finally {
+      setExporting(false);
+    }
   }
 
   async function handleDismissAlert(alertId) {
@@ -983,11 +1178,11 @@ export default function Dashboard() {
             type="button"
             className="btn btn-primary btn-sm"
             onClick={handleExportClick}
-            disabled={!data}
+            disabled={!data || exporting}
             style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
           >
             <i className="bi bi-download" style={{ fontSize: '0.9rem' }}></i>
-            Export
+            {exporting ? "Exporting..." : "Export"}
           </button>
         </div>
       </div>
@@ -1187,15 +1382,23 @@ export default function Dashboard() {
             <div className="card-body">
               <div className="d-flex justify-content-between align-items-center mb-3">
                 <h5 className="card-title mb-0">
-                  Daily Visitors — Last 14 Days
+                  {isTodayView ? "Hourly Visitors Today" : "Daily Visitors"}
                 </h5>
                 <span className="badge bg-primary-subtle text-primary">
                   <i className="bi bi-graph-up me-1"></i>
                   {filterLabel}
                 </span>
               </div>
-              <div className="text-muted small mb-2">{filterDateRange}</div>
-              <DailyVisitorsChart data={dailyVisitors} />
+              <div className="text-muted small mb-2">
+                {isTodayView
+                  ? "A one-day filter is shown by hour so the activity pattern is easier to read."
+                  : filterDateRange}
+              </div>
+              {isTodayView ? (
+                <PeakHoursChart data={peakHours} />
+              ) : (
+                <DailyVisitorsChart data={dailyVisitors} />
+              )}
             </div>
           </div>
         </div>
@@ -1217,53 +1420,108 @@ export default function Dashboard() {
         <div className="col-lg-8">
           <div className="card h-100">
             <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <h5 className="card-title mb-0">Weekly Visit Heatmap</h5>
-                <span className="text-muted small">
-                  <i className="bi bi-calendar3 me-1"></i>
-                  Day × Hour pattern
-                </span>
-              </div>
-              <WeeklyHeatmap data={weeklyHeatmap} />
+              {isTodayView ? (
+                <>
+                  <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h5 className="card-title mb-0">Top Frequent Visitors</h5>
+                    <span className="badge bg-danger-subtle text-danger">
+                      Top {Math.min(topVisitors.length, 10)} in {filterLabel}
+                    </span>
+                  </div>
+                  <TopVisitorsTable data={topVisitors} />
+                </>
+              ) : (
+                <>
+                  <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h5 className="card-title mb-0">Weekly Visit Heatmap</h5>
+                    <span className="text-muted small">
+                      <i className="bi bi-calendar3 me-1"></i>
+                      {filterLabel}
+                    </span>
+                  </div>
+                  <WeeklyHeatmap data={weeklyHeatmap} />
+                </>
+              )}
             </div>
           </div>
         </div>
         <div className="col-lg-4">
           <div className="card h-100">
             <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <h5 className="card-title mb-0">Monthly Visitors</h5>
-                <span className="badge bg-primary-subtle text-primary">
-                  {filterLabel}
-                </span>
-              </div>
-              <MonthlyVisitorsChart data={monthlyVisitors} />
-              {monthlyVisitors.length >= 2 &&
-                (() => {
-                  const last =
-                    monthlyVisitors[monthlyVisitors.length - 1]?.count ?? 0;
-                  const prev =
-                    monthlyVisitors[monthlyVisitors.length - 2]?.count ?? 0;
-                  const diff =
-                    prev > 0 ? Math.round(((last - prev) / prev) * 100) : 0;
-                  const up = diff >= 0;
-                  return (
-                    <p className="text-muted small mt-2 mb-0">
-                      <i
-                        className={`bi bi-arrow-${up ? "up" : "down"}-circle-fill text-${up ? "success" : "danger"} me-1`}
-                      ></i>
-                      {Math.abs(diff)}% {up ? "more" : "fewer"} visits vs last
-                      month
-                    </p>
-                  );
-                })()}
+              {isTodayView ? (
+                <>
+                  <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h5 className="card-title mb-0">Range-Based Views</h5>
+                    <span className="badge bg-secondary-subtle text-secondary">
+                      Context
+                    </span>
+                  </div>
+                  <div className="text-muted small mb-3">
+                    Today stays focused on same-day movement. Switch to longer
+                    filters to reveal comparative views like weekly heatmaps and
+                    monthly trend context.
+                  </div>
+                  <div className="border rounded-3 p-3 bg-light">
+                    <div className="fw-semibold small mb-2">
+                      Best fit per filter
+                    </div>
+                    <div className="text-muted small">Today: hourly activity</div>
+                    <div className="text-muted small">7-14 days: weekday pattern</div>
+                    <div className="text-muted small">30-90 days: monthly context</div>
+                  </div>
+                </>
+              ) : isShortRangeView ? (
+                <>
+                  <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h5 className="card-title mb-0">Weekday Pattern</h5>
+                    <span className="badge bg-success-subtle text-success">
+                      Within selected filter
+                    </span>
+                  </div>
+                  <WeekdayPatternChart data={weekdayPattern} />
+                  <p className="text-muted small mt-2 mb-0">
+                    Short-range filters highlight recurring weekday attendance
+                    instead of forcing a monthly comparison.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h5 className="card-title mb-0">Monthly Visitors</h5>
+                    <span className="badge bg-primary-subtle text-primary">
+                      Context chart
+                    </span>
+                  </div>
+                  <MonthlyVisitorsChart data={monthlyVisitors} />
+                  {monthlyVisitors.length >= 2 &&
+                    (() => {
+                      const last =
+                        monthlyVisitors[monthlyVisitors.length - 1]?.count ?? 0;
+                      const prev =
+                        monthlyVisitors[monthlyVisitors.length - 2]?.count ?? 0;
+                      const diff =
+                        prev > 0 ? Math.round(((last - prev) / prev) * 100) : 0;
+                      const up = diff >= 0;
+                      return (
+                        <p className="text-muted small mt-2 mb-0">
+                          <i
+                            className={`bi bi-arrow-${up ? "up" : "down"}-circle-fill text-${up ? "success" : "danger"} me-1`}
+                          ></i>
+                          {Math.abs(diff)}% {up ? "more" : "fewer"} visits vs last
+                          month
+                        </p>
+                      );
+                    })()}
+                </>
+              )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Peak Hours + Top Visitors */}
-      <div className="row g-3 mb-3">
+      {/* ── Peak Hours + Top Visitors ── */}
+      {!isTodayView ? (
+        <div className="row g-3 mb-3">
         <div className="col-lg-7">
           <div className="card h-100">
             <div className="card-body">
@@ -1328,7 +1586,8 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-      </div>
+        </div>
+      ) : null}
 
       {/* Dual-camera occupancy note */}
       <div className="alert alert-info d-flex align-items-center gap-2 py-2">
