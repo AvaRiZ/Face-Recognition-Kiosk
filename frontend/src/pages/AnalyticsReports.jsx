@@ -46,6 +46,47 @@ function fmt(n) {
   return (n ?? 0).toLocaleString();
 }
 
+const APP_HEADER_HEIGHT = 56;
+const ANALYTICS_CACHE_KEY = "analytics-basic-cache-v1";
+const ANALYTICS_CACHE_TTL_MS = 30 * 1000;
+const ANALYTICS_FALLBACK_POLL_MS = 30 * 1000;
+const ANALYTICS_MIN_REFRESH_INTERVAL_MS = 5 * 1000;
+
+function readAnalyticsCache() {
+  if (typeof window === "undefined" || !window.sessionStorage) return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(ANALYTICS_CACHE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.data === undefined || typeof parsed.timestamp !== "number") return null;
+
+    return {
+      data: parsed.data,
+      timestamp: parsed.timestamp,
+      serialized: JSON.stringify(parsed.data),
+      isFresh: Date.now() - parsed.timestamp < ANALYTICS_CACHE_TTL_MS,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeAnalyticsCache(data, timestamp = Date.now()) {
+  if (typeof window === "undefined" || !window.sessionStorage) return;
+
+  try {
+    window.sessionStorage.setItem(
+      ANALYTICS_CACHE_KEY,
+      JSON.stringify({ data, timestamp }),
+    );
+  } catch {
+    // Ignore cache write failures and continue with live data only.
+  }
+}
+
 // ── Interpretation Box ────────────────────────────────────────
 function Interpretation({
   icon = "bi-lightbulb",
@@ -3511,33 +3552,58 @@ function SummaryStat({ label, value, tone, icon, helper }) {
 // ── Main Page ─────────────────────────────────────────────────
 function AnalyticsReportsInner() {
   const { session } = useSession();
-  const [basicData, setBasicData] = React.useState(null);
+  const initialCacheRef = React.useRef(undefined);
+  if (initialCacheRef.current === undefined) {
+    initialCacheRef.current = readAnalyticsCache();
+  }
+  const initialCache = initialCacheRef.current;
+  const [basicData, setBasicData] = React.useState(initialCache?.data ?? null);
   const [error, setError] = React.useState(false);
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(!initialCache?.data);
+  const [refreshing, setRefreshing] = React.useState(false);
   const [socketConnected, setSocketConnected] = React.useState(socket.connected);
-  const [lastUpdatedAt, setLastUpdatedAt] = React.useState(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = React.useState(
+    initialCache?.timestamp ? new Date(initialCache.timestamp) : null,
+  );
   const headerRef = React.useRef(null);
   const refreshInFlightRef = React.useRef(false);
   const hasLoadedDataRef = React.useRef(false);
+  const lastRefreshAtRef = React.useRef(initialCache?.timestamp ?? 0);
+  const lastPayloadRef = React.useRef(initialCache?.serialized ?? "");
 
   React.useEffect(() => {
     hasLoadedDataRef.current = Boolean(basicData);
   }, [basicData]);
 
-  async function runAnalyticsPipeline({ silent = false } = {}) {
+  async function runAnalyticsPipeline({ silent = false, force = false } = {}) {
+    const now = Date.now();
     if (refreshInFlightRef.current) return;
-    refreshInFlightRef.current = true;
+    if (!force && now - lastRefreshAtRef.current < ANALYTICS_MIN_REFRESH_INTERVAL_MS) {
+      return;
+    }
 
-    if (!silent) {
+    refreshInFlightRef.current = true;
+    lastRefreshAtRef.current = now;
+
+    if (!silent && !hasLoadedDataRef.current) {
       setLoading(true);
-      setBasicData(null);
+    } else if (!silent) {
+      setRefreshing(true);
     }
     setError(false);
 
     try {
       const basic = await fetchJson("/api/analytics-basic");
-      setBasicData(basic);
-      setLastUpdatedAt(new Date());
+      const refreshedAt = Date.now();
+      const serialized = JSON.stringify(basic);
+
+      if (serialized !== lastPayloadRef.current) {
+        lastPayloadRef.current = serialized;
+        setBasicData(basic);
+      }
+
+      writeAnalyticsCache(basic, refreshedAt);
+      setLastUpdatedAt(new Date(refreshedAt));
       setLoading(false);
     } catch (err) {
       console.error("Analytics pipeline error:", err);
@@ -3546,16 +3612,18 @@ function AnalyticsReportsInner() {
       }
       setLoading(false);
     } finally {
+      setRefreshing(false);
       refreshInFlightRef.current = false;
     }
   }
 
   React.useEffect(() => {
-    runAnalyticsPipeline();
-
-    const timer = window.setInterval(() => {
-      runAnalyticsPipeline({ silent: true });
-    }, 10000);
+    if (!initialCache?.isFresh) {
+      runAnalyticsPipeline({
+        silent: Boolean(initialCache?.data),
+        force: true,
+      });
+    }
 
     // Handle tab visibility changes for real-time updates
     const handleVisibilityChange = () => {
@@ -3568,10 +3636,21 @@ function AnalyticsReportsInner() {
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      window.clearInterval(timer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
+
+  React.useEffect(() => {
+    if (socketConnected) return undefined;
+
+    const timer = window.setInterval(() => {
+      runAnalyticsPipeline({ silent: true });
+    }, ANALYTICS_FALLBACK_POLL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [socketConnected]);
 
   React.useEffect(() => {
     function handleAnalyticsUpdated() {
@@ -3832,7 +3911,7 @@ function AnalyticsReportsInner() {
           ref={headerRef}
           style={{
             position: "sticky",
-            top: 0,
+            top: APP_HEADER_HEIGHT,
             zIndex: 100,
             background: "#f6f7fb",
             padding: "12px 0 14px",
@@ -3922,16 +4001,16 @@ function AnalyticsReportsInner() {
               <div className="d-flex align-items-center gap-2 flex-wrap">
                 <button
                   className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
-                  onClick={() => runAnalyticsPipeline()}
-                  disabled={loading}
+                  onClick={() => runAnalyticsPipeline({ force: true })}
+                  disabled={loading || refreshing}
                 >
                   <i className="bi bi-arrow-clockwise"></i>
-                  {loading ? "Syncing..." : "Sync Now"}
+                  {loading || refreshing ? "Syncing..." : "Sync Now"}
                 </button>
                 {canManageImports ? (
                   <ImportModal
                     onImportSuccess={() => {
-                      runAnalyticsPipeline();
+                      runAnalyticsPipeline({ force: true });
                     }}
                   />
                 ) : null}
@@ -4340,7 +4419,7 @@ function AnalyticsReportsInner() {
             ref={headerRef}
             style={{
               position: "sticky",
-              top: 0,
+              top: APP_HEADER_HEIGHT,
               zIndex: 100,
               background: "#f6f7fb",
               padding: "12px 0 10px",
@@ -4410,16 +4489,16 @@ function AnalyticsReportsInner() {
                 <div className="d-flex align-items-center gap-2 flex-wrap">
                   <button
                     className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
-                    onClick={() => runAnalyticsPipeline()}
-                    disabled={loading}
+                    onClick={() => runAnalyticsPipeline({ force: true })}
+                    disabled={loading || refreshing}
                   >
                     <i className="bi bi-arrow-clockwise"></i>
-                    {loading ? "Syncing..." : "Sync Now"}
+                    {loading || refreshing ? "Syncing..." : "Sync Now"}
                   </button>
                   {canManageImports ? (
                     <ImportModal
                       onImportSuccess={() => {
-                        runAnalyticsPipeline();
+                        runAnalyticsPipeline({ force: true });
                       }}
                     />
                   ) : null}
