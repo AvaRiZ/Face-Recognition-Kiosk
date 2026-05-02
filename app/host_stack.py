@@ -136,6 +136,14 @@ def main() -> None:
     log_step(f"Serving dashboard and API at http://{host}:{port}")
     log_step(f"Starting dual workers: entry={entry_stream_source}, exit={exit_stream_source}")
 
+    # Start occupancy snapshot scheduler
+    from services.occupancy_scheduler import OccupancySnapshotScheduler
+    occupancy_scheduler = OccupancySnapshotScheduler(
+        db_path=runtime.config.db_path,
+        interval_seconds=runtime.config.occupancy_snapshot_interval_seconds,
+        auto_start=True,
+    )
+
     api_thread = threading.Thread(
         target=socketio.run,
         kwargs={
@@ -172,6 +180,7 @@ def main() -> None:
     except KeyboardInterrupt:
         log_step("Shutdown requested. Stopping worker processes...", status="WARN")
     finally:
+        occupancy_scheduler.stop()
         for proc in worker_processes:
             if proc.poll() is None:
                 proc.terminate()

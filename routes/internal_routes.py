@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 from app.realtime import emit_analytics_update
 from core.models import User
 from db import connect as db_connect
+from services.occupancy_service import OccupancyService
 from services.versioning_service import bump_profiles_version, get_profiles_version, get_settings_version
 
 
@@ -137,7 +138,6 @@ def create_internal_blueprint(deps):
                 user_id = None
 
         sr_code = str(payload.get("sr_code") or "").strip() or None
-        station_id = str(payload.get("station_id") or "").strip() or "entrance-station-1"
         camera_id = _optional_int(payload.get("camera_id"))
         if camera_id is None:
             camera_id = 1
@@ -166,52 +166,69 @@ def create_internal_blueprint(deps):
         method = str(payload.get("method") or "two-factor")
         payload_for_json = dict(payload)
         payload_for_json["captured_at"] = captured_at.isoformat()
-        payload_for_json["camera_id"] = camera_id
-        payload_for_json["station_id"] = station_id
+        if camera_id == 1:
+            entered_at = captured_at
+            exited_at = None
+            payload_for_json["entered_at"] = captured_at.isoformat()
+            payload_for_json.pop("exited_at", None)
+        else:
+            entered_at = None
+            exited_at = captured_at
+            payload_for_json["exited_at"] = captured_at.isoformat()
+            payload_for_json.pop("entered_at", None)
+        payload_for_json.pop("camera_id", None)
+        payload_for_json.pop("station_id", None)
         payload_json = json.dumps(payload_for_json, ensure_ascii=True)
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
+        inserted = False
 
-        if user_id is None and sr_code:
-            c.execute("SELECT user_id FROM users WHERE sr_code = ?", (sr_code,))
-            row = c.fetchone()
-            if row:
-                user_id = int(row[0])
+        try:
+            if user_id is None and sr_code:
+                c.execute("SELECT user_id FROM users WHERE sr_code = ?", (sr_code,))
+                row = c.fetchone()
+                if row:
+                    user_id = int(row[0])
 
-        c.execute(
-            """
-            INSERT INTO recognition_events (
-                event_id, station_id, camera_id, user_id, sr_code, decision, confidence,
-                primary_confidence, secondary_confidence, primary_distance, secondary_distance,
-                face_quality, method, captured_at, payload_json
+            c.execute(
+                """
+                INSERT INTO recognition_events (
+                    event_id, user_id, sr_code, decision, confidence,
+                    primary_confidence, secondary_confidence, primary_distance, secondary_distance,
+                    face_quality, method, captured_at, entered_at, exited_at, payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO NOTHING
+                """,
+                (
+                    event_id,
+                    user_id,
+                    sr_code,
+                    decision,
+                    confidence,
+                    primary_confidence,
+                    secondary_confidence,
+                    primary_distance,
+                    secondary_distance,
+                    face_quality,
+                    method,
+                    captured_at,
+                    entered_at,
+                    exited_at,
+                    payload_json,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(event_id) DO NOTHING
-            """,
-            (
-                event_id,
-                station_id,
-                camera_id,
-                user_id,
-                sr_code,
-                decision,
-                confidence,
-                primary_confidence,
-                secondary_confidence,
-                primary_distance,
-                secondary_distance,
-                face_quality,
-                method,
-                captured_at,
-                payload_json,
-            ),
-        )
-        inserted = (c.rowcount or 0) > 0
+            inserted = (c.rowcount or 0) > 0
 
-        conn.commit()
+            conn.commit()
+        finally:
+            conn.close()
+
         if inserted and user_id:
             try:
+                conn = db_connect(deps["db_path"])
+                c = conn.cursor()
                 c.execute(
                     """
                     INSERT INTO recognition_log (
@@ -222,7 +239,7 @@ def create_internal_blueprint(deps):
                     """,
                     (
                         user_id,
-                        confidence or 0.0,
+                        confidence,
                         primary_confidence,
                         secondary_confidence,
                         primary_distance,
@@ -233,17 +250,29 @@ def create_internal_blueprint(deps):
                 )
                 conn.commit()
             except Exception:
-                conn.rollback()
-        conn.close()
+                pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
         if inserted:
+            occupancy_service = OccupancyService(deps["db_path"])
+            occupancy_state = occupancy_service.record_event(camera_id, captured_at)
             emit_analytics_update(
                 "recognition_event_ingested",
                 {
                     "event_id": event_id,
                     "user_id": user_id,
-                    "camera_id": camera_id,
+                    "entered_at": entered_at.isoformat() if entered_at else None,
+                    "exited_at": exited_at.isoformat() if exited_at else None,
+                    "daily_entries": occupancy_state["daily_entries"],
+                    "daily_exits": occupancy_state["daily_exits"],
+                    "occupancy_count": occupancy_state["occupancy_count"],
                 },
             )
+
         return jsonify({"success": True, "event_id": event_id, "duplicate": not inserted})
 
     @bp.route("/embedding-updates", methods=["POST"], endpoint="embedding_updates")
@@ -267,5 +296,18 @@ def create_internal_blueprint(deps):
             return _json_error("User not found for embedding update.", 404)
         bump_profiles_version(deps["db_path"])
         return jsonify({"success": True, "user_id": int(user_id)})
+
+    @bp.route("/occupancy-snapshot", methods=["POST"], endpoint="occupancy_snapshot")
+    def occupancy_snapshot():
+        """Create an occupancy snapshot (point-in-time occupancy state)."""
+        from core.config import AppConfig
+
+        try:
+            config = AppConfig()
+            service = OccupancyService(config.db_path)
+            service.create_snapshot(config.max_library_capacity)
+            return jsonify({"success": True, "message": "Occupancy snapshot created."})
+        except Exception as exc:
+            return _json_error(f"Failed to create snapshot: {str(exc)}", 500)
 
     return bp

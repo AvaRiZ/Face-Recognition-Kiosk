@@ -115,7 +115,7 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Entry camera stream source (accessible to entry-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    entry_cctv_stream_source: str = "1"
+    entry_cctv_stream_source: str = "2"
 
     # Exit camera stream source (accessible to exit-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
@@ -123,6 +123,20 @@ class AppConfig:
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
     cli_top_bar_enabled: bool = True
+
+    # ------------------------------------------------------------------
+    # Occupancy and capacity management
+    # ------------------------------------------------------------------
+    # Maximum library capacity (max number of people allowed inside).
+    max_library_capacity: int = 300
+
+    # Occupancy snapshot interval in seconds (how often to log occupancy state).
+    # Smaller intervals provide more granular historical data but use more storage.
+    occupancy_snapshot_interval_seconds: int = 300  # 5 minutes
+
+    # Occupancy warning threshold (as ratio: 0.0-1.0).
+    # When occupancy_ratio >= this value, capacity_warning flag is set.
+    occupancy_warning_threshold: float = 0.90
 
     # ------------------------------------------------------------------
     # Quality scoring: face size

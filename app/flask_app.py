@@ -11,6 +11,7 @@ from database.repository import UserRepository
 from app.realtime import socketio
 from routes.auth_routes import create_auth_blueprint
 from routes.internal_routes import create_internal_blueprint
+from routes.occupancy_routes import bp as occupancy_bp
 from routes.profile_routes import create_profile_blueprint
 from routes.routes import create_routes_blueprint
 from services.embedding_service import EmbeddingService
@@ -66,6 +67,7 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
     app.register_blueprint(create_auth_blueprint())
     app.register_blueprint(create_profile_blueprint(save_profile_image))
     app.register_blueprint(create_internal_blueprint(deps))
+    app.register_blueprint(occupancy_bp, url_prefix="/api/occupancy")
     socketio.init_app(app)
 
     @app.route("/")

@@ -33,7 +33,6 @@ backups/*
 .env.*
 
 # Database
-database/*
 detector_dataset/*
 faces_improved/*
 real_val_dataset/*

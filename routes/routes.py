@@ -36,6 +36,7 @@ from core.program_catalog import (
 from db import connect as db_connect, table_columns
 from routes.ml_analytics import run_ml_analytics
 from app.realtime import emit_analytics_update
+from services.occupancy_service import OccupancyService
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
 from services.versioning_service import bump_profiles_version, bump_settings_version, ensure_version_settings
 from utils.image_utils import crop_face_region
@@ -670,7 +671,8 @@ def create_routes_blueprint(deps):
             max_occupancy = int(max_occupancy_setting)
         except (TypeError, ValueError):
             max_occupancy = 300
-        current_occupancy = min(unique_visitors or 0, max_occupancy)
+        occupancy_service = OccupancyService(deps["db_path"])
+        current_occupancy = occupancy_service.get_current_occupancy(max_occupancy)["occupancy_count"]
         occupancy_remaining = max(max_occupancy - current_occupancy, 0)
         occupancy_ratio = (current_occupancy / max_occupancy) if max_occupancy else 0
         if occupancy_ratio >= 0.9:
