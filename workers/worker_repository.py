@@ -60,24 +60,57 @@ class WorkerApiRepository:
         return None
 
     def log_recognition(self, result, face_quality: float | None = None, method: str = "two-factor") -> None:
+        self.log_decision(
+            user_id=int(result.user_id),
+            sr_code=result.user.sr_code,
+            decision="allowed",
+            confidence=float(result.confidence),
+            primary_confidence=float(result.primary_confidence),
+            secondary_confidence=float(result.secondary_confidence),
+            primary_distance=float(result.primary_distance),
+            secondary_distance=float(result.secondary_distance),
+            face_quality=face_quality,
+            method=method,
+        )
+
+    def log_decision(
+        self,
+        *,
+        user_id: int,
+        sr_code: str | None,
+        decision: str,
+        confidence: float | None = None,
+        primary_confidence: float | None = None,
+        secondary_confidence: float | None = None,
+        primary_distance: float | None = None,
+        secondary_distance: float | None = None,
+        face_quality: float | None = None,
+        method: str = "two-factor",
+        rejection_reason: str | None = None,
+    ) -> None:
         payload = {
             "event_id": f"evt-{uuid.uuid4().hex}",
             "station_id": self.station_id,
             "camera_id": self.camera_id,
-            "user_id": int(result.user_id),
-            "sr_code": result.user.sr_code,
-            "decision": "allowed",
-            "confidence": float(result.confidence),
-            "primary_confidence": float(result.primary_confidence),
-            "secondary_confidence": float(result.secondary_confidence),
-            "primary_distance": float(result.primary_distance),
-            "secondary_distance": float(result.secondary_distance),
+            "user_id": int(user_id),
+            "sr_code": sr_code,
+            "decision": str(decision),
+            "confidence": float(confidence) if confidence is not None else None,
+            "primary_confidence": float(primary_confidence) if primary_confidence is not None else None,
+            "secondary_confidence": float(secondary_confidence) if secondary_confidence is not None else None,
+            "primary_distance": float(primary_distance) if primary_distance is not None else None,
+            "secondary_distance": float(secondary_distance) if secondary_distance is not None else None,
             "face_quality": float(face_quality) if face_quality is not None else None,
             "method": method,
             "captured_at": datetime.now(timezone.utc).isoformat(),
             "worker_timestamp_ms": int(time.time() * 1000),
         }
+        if rejection_reason:
+            payload["rejection_reason"] = str(rejection_reason)
         self.outbound_queue.enqueue("recognition_event", payload)
+
+    def check_entry_capacity_gate(self) -> dict:
+        return self.api_client.get_json("/api/internal/capacity-gate")
 
     def update_embeddings(self, user_id: int, new_embeddings: dict[str, list[np.ndarray]], image_path: str | None = None):
         payload_embeddings: dict[str, list[list[float]]] = {}

@@ -116,6 +116,7 @@ def init_imported_logs_table(db_path):
 
 def create_routes_blueprint(deps):
     bp = Blueprint("routes", __name__)
+    config = deps["config"]
     init_imported_logs_table(deps["db_path"])
     ensure_version_settings(deps["db_path"])
 
@@ -675,7 +676,7 @@ def create_routes_blueprint(deps):
         current_occupancy = occupancy_service.get_current_occupancy(max_occupancy)["occupancy_count"]
         occupancy_remaining = max(max_occupancy - current_occupancy, 0)
         occupancy_ratio = (current_occupancy / max_occupancy) if max_occupancy else 0
-        if occupancy_ratio >= 0.9:
+        if occupancy_ratio >= config.occupancy_warning_threshold:
             occupancy_status = "Approaching capacity"
         elif occupancy_ratio >= 0.7:
             occupancy_status = "Moderately busy"
@@ -1130,7 +1131,7 @@ def create_routes_blueprint(deps):
         current_occupancy = min(today_unique or 0, max_occupancy)
         occupancy_remaining = max(max_occupancy - current_occupancy, 0)
         occupancy_ratio = (current_occupancy / max_occupancy) if max_occupancy else 0
-        if occupancy_ratio >= 0.9:
+        if occupancy_ratio >= config.occupancy_warning_threshold:
             occupancy_status = "Approaching capacity"
         elif occupancy_ratio >= 0.7:
             occupancy_status = "Moderately busy"

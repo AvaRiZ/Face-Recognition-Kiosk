@@ -11,6 +11,7 @@ from app.realtime import emit_analytics_update
 from core.models import User
 from db import connect as db_connect
 from services.occupancy_service import OccupancyService
+from services.alert_service import AlertService
 from services.versioning_service import bump_profiles_version, get_profiles_version, get_settings_version
 
 
@@ -257,9 +258,14 @@ def create_internal_blueprint(deps):
                 except Exception:
                     pass
 
-        if inserted:
+        if inserted and decision == "allowed":
             occupancy_service = OccupancyService(deps["db_path"])
+            config = deps["config"]
             occupancy_state = occupancy_service.record_event(camera_id, captured_at)
+            occupancy_view = occupancy_service.get_current_occupancy(
+                config.max_library_capacity,
+                warning_threshold=config.occupancy_warning_threshold,
+            )
             emit_analytics_update(
                 "recognition_event_ingested",
                 {
@@ -270,10 +276,39 @@ def create_internal_blueprint(deps):
                     "daily_entries": occupancy_state["daily_entries"],
                     "daily_exits": occupancy_state["daily_exits"],
                     "occupancy_count": occupancy_state["occupancy_count"],
+                    "capacity_warning": bool(occupancy_view["capacity_warning"]),
                 },
             )
 
         return jsonify({"success": True, "event_id": event_id, "duplicate": not inserted})
+
+    @bp.route("/capacity-gate", methods=["GET"], endpoint="capacity_gate")
+    def capacity_gate():
+        config = deps["config"]
+        occupancy_service = OccupancyService(deps["db_path"])
+        occ = occupancy_service.get_current_occupancy(
+            config.max_library_capacity,
+            warning_threshold=config.occupancy_warning_threshold,
+        )
+        allow_entry = not bool(occ["is_full"])
+        alert = None
+        if not allow_entry:
+            alert = AlertService(deps["db_path"]).create_capacity_reached_alert(
+                occupancy_count=int(occ["occupancy_count"]),
+                capacity_limit=int(occ["capacity_limit"]),
+            )
+        return jsonify(
+            {
+                "success": True,
+                "allow_entry": allow_entry,
+                "reason": "capacity_reached" if not allow_entry else "ok",
+                "occupancy_count": int(occ["occupancy_count"]),
+                "capacity_limit": int(occ["capacity_limit"]),
+                "occupancy_ratio": float(occ["occupancy_ratio"]),
+                "is_full": bool(occ["is_full"]),
+                "alert": alert,
+            }
+        )
 
     @bp.route("/embedding-updates", methods=["POST"], endpoint="embedding_updates")
     def embedding_updates():
@@ -305,7 +340,10 @@ def create_internal_blueprint(deps):
         try:
             config = AppConfig()
             service = OccupancyService(config.db_path)
-            service.create_snapshot(config.max_library_capacity)
+            service.create_snapshot(
+                config.max_library_capacity,
+                warning_threshold=config.occupancy_warning_threshold,
+            )
             return jsonify({"success": True, "message": "Occupancy snapshot created."})
         except Exception as exc:
             return _json_error(f"Failed to create snapshot: {str(exc)}", 500)

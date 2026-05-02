@@ -10,6 +10,7 @@ from core.state import AppStateManager
 from database.repository import UserRepository
 from app.realtime import socketio
 from routes.auth_routes import create_auth_blueprint
+from routes.alert_routes import bp as alerts_bp
 from routes.internal_routes import create_internal_blueprint
 from routes.occupancy_routes import bp as occupancy_bp
 from routes.profile_routes import create_profile_blueprint
@@ -68,6 +69,7 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
     app.register_blueprint(create_profile_blueprint(save_profile_image))
     app.register_blueprint(create_internal_blueprint(deps))
     app.register_blueprint(occupancy_bp, url_prefix="/api/occupancy")
+    app.register_blueprint(alerts_bp, url_prefix="/api/alerts")
     socketio.init_app(app)
 
     @app.route("/")

@@ -316,6 +316,32 @@ class FaceRecognitionService:
                     "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
                 }
 
+            if int(getattr(self.repository, "camera_id", 1)) == 1:
+                gate = self.repository.check_entry_capacity_gate()
+                if not bool(gate.get("allow_entry", True)):
+                    self.repository.log_decision(
+                        user_id=int(best_match.user_id),
+                        sr_code=best_match.user.sr_code,
+                        decision="denied",
+                        confidence=float(best_match.confidence),
+                        primary_confidence=float(best_match.primary_confidence),
+                        secondary_confidence=float(best_match.secondary_confidence),
+                        primary_distance=float(best_match.primary_distance),
+                        secondary_distance=float(best_match.secondary_distance),
+                        face_quality=quality_score,
+                        method="two-factor",
+                        rejection_reason="capacity_reached",
+                    )
+                    return {
+                        "status": "capacity_rejected",
+                        "reason_code": "capacity_reached",
+                        "quality_score": quality_score,
+                        "quality_status": quality_status,
+                        "quality_debug": quality_debug,
+                        "match_confidence": best_match.confidence,
+                        "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
+                    }
+
             timestamp = int(time.time() * 1000)
             user_folder = os.path.join(self.config.base_save_dir, best_match.user.sr_code)
             os.makedirs(user_folder, exist_ok=True)

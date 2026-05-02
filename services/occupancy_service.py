@@ -9,7 +9,7 @@ Responsibilities:
 """
 from __future__ import annotations
 
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 
 from db import connect as db_connect
 
@@ -159,7 +159,7 @@ class OccupancyService:
             "date_str": date_str,
         }
 
-    def get_current_occupancy(self, capacity_limit: int) -> dict:
+    def get_current_occupancy(self, capacity_limit: int, warning_threshold: float = 0.90) -> dict:
         """
         Get current occupancy with capacity status.
 
@@ -177,7 +177,8 @@ class OccupancyService:
             occupancy_count / capacity_limit if capacity_limit > 0 else 0.0
         )
         is_full = occupancy_count >= capacity_limit
-        capacity_warning = occupancy_ratio >= 0.90
+        threshold = min(1.0, max(0.0, float(warning_threshold)))
+        capacity_warning = occupancy_ratio >= threshold
 
         return {
             "occupancy_count": occupancy_count,
@@ -190,14 +191,14 @@ class OccupancyService:
             "updated_at": occ.get("updated_at"),
         }
 
-    def create_snapshot(self, capacity_limit: int) -> None:
+    def create_snapshot(self, capacity_limit: int, warning_threshold: float = 0.90) -> None:
         """
         Create a point-in-time snapshot of current occupancy and save to database.
 
         This should be called periodically (e.g., every 5 minutes) and whenever
         capacity status changes.
         """
-        occ_data = self.get_current_occupancy(capacity_limit)
+        occ_data = self.get_current_occupancy(capacity_limit, warning_threshold=warning_threshold)
 
         conn = db_connect(self.db_path)
         c = conn.cursor()
@@ -355,4 +356,151 @@ class OccupancyService:
             "peak_occupancy": peak_occupancy,
             "capacity_warnings_count": capacity_warnings_count,
             "tracked_state": self.get_daily_state(target_date),
+        }
+
+    def adjust_occupancy(self, adjustment: int, reason: str, admin_id: int | None = None) -> dict:
+        """Apply a manual drift correction to today's tracked occupancy state."""
+        if int(adjustment) == 0:
+            raise ValueError("`adjustment` must be non-zero.")
+
+        now = datetime.now(timezone.utc)
+        state_date = now.date().isoformat()
+        delta = int(adjustment)
+        entry_delta = max(delta, 0)
+        exit_delta = max(-delta, 0)
+
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(state_date) DO UPDATE SET
+                daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
+                daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
+                updated_at = excluded.updated_at
+            """,
+            (state_date, entry_delta, exit_delta, now),
+        )
+        c.execute(
+            """
+            SELECT daily_entries, daily_exits
+            FROM daily_occupancy_state
+            WHERE state_date = ?
+            """,
+            (state_date,),
+        )
+        row = c.fetchone()
+        daily_entries = int(row[0] or 0) if row else 0
+        daily_exits = int(row[1] or 0) if row else 0
+
+        # Clamp impossible negative occupancy by normalizing exits to entries.
+        if daily_exits > daily_entries:
+            daily_exits = daily_entries
+            c.execute(
+                """
+                UPDATE daily_occupancy_state
+                SET daily_exits = ?, updated_at = ?
+                WHERE state_date = ?
+                """,
+                (daily_exits, now, state_date),
+            )
+
+        occupancy_count = max(0, daily_entries - daily_exits)
+        message = (
+            f"Manual occupancy adjustment applied (delta={delta})"
+            f"{' by admin_id=' + str(admin_id) if admin_id is not None else ''}: {reason}"
+        )
+        c.execute(
+            """
+            INSERT INTO occupancy_alerts (
+                alert_type, level, message, occupancy_count, capacity_limit, occupancy_ratio,
+                is_active, state_date, dismissed_at, dismissed_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "manual_adjustment",
+                "info",
+                message,
+                occupancy_count,
+                0,
+                0.0,
+                0,
+                state_date,
+                now,
+                str(admin_id) if admin_id is not None else "system",
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "state_date": state_date,
+            "new_occupancy": occupancy_count,
+            "daily_entries": daily_entries,
+            "daily_exits": daily_exits,
+            "audit_logged": True,
+        }
+
+    def reconcile_day(self, target_date: date | None = None, drift_threshold: int = 5) -> dict:
+        """Compare tracked daily state vs canonical recognition events and alert on drift."""
+        if target_date is None:
+            target_date = datetime.now(timezone.utc).date() - timedelta(days=1)
+
+        date_str = target_date.isoformat()
+        tracked = self.get_daily_state(target_date) or {
+            "daily_entries": 0,
+            "daily_exits": 0,
+            "occupancy_count": 0,
+        }
+        actual = self.calculate_occupancy(target_date)
+        entry_drift = int(actual["daily_entries"]) - int(tracked["daily_entries"])
+        exit_drift = int(actual["daily_exits"]) - int(tracked["daily_exits"])
+        net_drift = int(actual["occupancy_count"]) - int(tracked["occupancy_count"])
+        exceeds = abs(net_drift) > int(drift_threshold)
+
+        if exceeds:
+            now = datetime.now(timezone.utc)
+            message = (
+                f"Nightly occupancy drift detected on {date_str}: "
+                f"net_drift={net_drift} (actual={actual['occupancy_count']}, tracked={tracked['occupancy_count']}). "
+                "Manual correction is recommended."
+            )
+            conn = db_connect(self.db_path)
+            c = conn.cursor()
+            c.execute(
+                """
+                INSERT INTO occupancy_alerts (
+                    alert_type, level, message, occupancy_count, capacity_limit, occupancy_ratio,
+                    is_active, state_date, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "occupancy_drift",
+                    "warning",
+                    message,
+                    int(tracked["occupancy_count"]),
+                    0,
+                    0.0,
+                    1,
+                    date_str,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        return {
+            "date": date_str,
+            "tracked_entries": int(tracked["daily_entries"]),
+            "tracked_exits": int(tracked["daily_exits"]),
+            "actual_entries": int(actual["daily_entries"]),
+            "actual_exits": int(actual["daily_exits"]),
+            "entry_drift": entry_drift,
+            "exit_drift": exit_drift,
+            "net_drift": net_drift,
+            "threshold": int(drift_threshold),
+            "alerted": exceeds,
         }

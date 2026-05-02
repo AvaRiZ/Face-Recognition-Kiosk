@@ -8,8 +8,7 @@ Responsibilities:
 from __future__ import annotations
 
 import threading
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from utils.logging import log_step
 
@@ -77,23 +76,49 @@ class OccupancySnapshotScheduler:
         service = OccupancyService(config.db_path)
 
         next_run = datetime.now(timezone.utc)
+        last_seen_date = next_run.date()
 
         while not self._stop_event.is_set():
             now = datetime.now(timezone.utc)
+            if now.date() != last_seen_date:
+                try:
+                    # Reconcile yesterday once, shortly after UTC date rollover.
+                    reconciliation_date = now.date() - timedelta(days=1)
+                    result = service.reconcile_day(reconciliation_date, drift_threshold=5)
+                    if result.get("alerted"):
+                        log_step(
+                            f"Nightly occupancy reconciliation detected drift on {result['date']} "
+                            f"(net_drift={result['net_drift']}, threshold={result['threshold']}).",
+                            status="WARN",
+                        )
+                    else:
+                        log_step(
+                            f"Nightly occupancy reconciliation passed for {result['date']} "
+                            f"(net_drift={result['net_drift']}).",
+                            status="OK",
+                        )
+                except Exception as exc:
+                    log_step(
+                        f"Nightly occupancy reconciliation failed: {exc}",
+                        status="WARN",
+                    )
+                finally:
+                    last_seen_date = now.date()
 
             if now >= next_run:
                 try:
-                    service.create_snapshot(config.max_library_capacity)
-                    next_run = now.replace(microsecond=0) + __import__("datetime").timedelta(
-                        seconds=self.interval_seconds
+                    service.create_snapshot(
+                        config.max_library_capacity,
+                        warning_threshold=config.occupancy_warning_threshold,
                     )
+                    next_run = now.replace(microsecond=0) + timedelta(seconds=self.interval_seconds)
                 except Exception as exc:
                     log_step(
                         f"Occupancy snapshot generation failed: {exc}",
                         status="WARN",
                     )
                     # Schedule next attempt soon
-                    next_run = now.replace(microsecond=0) + __import__("datetime").timedelta(seconds=10)
+                    next_run = now.replace(microsecond=0) + timedelta(seconds=10)
 
             # Check for stop signal every 1 second
             self._stop_event.wait(timeout=1.0)

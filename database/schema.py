@@ -14,6 +14,7 @@ def init_canonical_schema(db_path: str) -> None:
             "app_settings",
             "daily_occupancy_state",
             "occupancy_snapshots",
+            "occupancy_alerts",
         )
         missing = [name for name in required_tables if not table_columns(conn, name)]
         conn.close()
@@ -137,6 +138,37 @@ def init_canonical_schema(db_path: str) -> None:
             daily_exits INTEGER NOT NULL DEFAULT 0,
             updated_at TIMESTAMP NOT NULL
         )
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS occupancy_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_type TEXT NOT NULL,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL,
+            occupancy_count INTEGER NOT NULL,
+            capacity_limit INTEGER NOT NULL,
+            occupancy_ratio REAL NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            state_date TEXT NOT NULL,
+            dismissed_at TIMESTAMP,
+            dismissed_by TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_occupancy_alerts_created_at_desc
+        ON occupancy_alerts(created_at DESC)
+        """
+    )
+    c.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_occupancy_alerts_active_date
+        ON occupancy_alerts(alert_type, state_date, dismissed_at)
         """
     )
     conn.commit()

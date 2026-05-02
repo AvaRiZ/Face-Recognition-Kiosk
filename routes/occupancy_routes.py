@@ -44,7 +44,10 @@ def get_current() -> tuple:
         config = AppConfig()
         service = OccupancyService(config.db_path)
 
-        occ_data = service.get_current_occupancy(config.max_library_capacity)
+        occ_data = service.get_current_occupancy(
+            config.max_library_capacity,
+            warning_threshold=config.occupancy_warning_threshold,
+        )
 
         return jsonify({
             "success": True,
@@ -179,3 +182,48 @@ def get_summary() -> tuple:
 
     except Exception as exc:
         return _json_error(f"Failed to fetch summary: {str(exc)}", 500)
+
+
+@bp.route("/adjust", methods=["POST"], endpoint="adjust_occupancy")
+def adjust_occupancy() -> tuple:
+    """Manually adjust today's occupancy state for drift correction."""
+    try:
+        config = AppConfig()
+        service = OccupancyService(config.db_path)
+        payload = request.get_json(silent=True) or {}
+
+        try:
+            adjustment = int(payload.get("adjustment"))
+        except (TypeError, ValueError):
+            return _json_error("`adjustment` is required and must be an integer.", 400)
+
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            return _json_error("`reason` is required.", 400)
+
+        admin_raw = payload.get("admin_id")
+        admin_id = None
+        if admin_raw is not None and str(admin_raw).strip() != "":
+            try:
+                admin_id = int(admin_raw)
+            except (TypeError, ValueError):
+                return _json_error("`admin_id` must be an integer when provided.", 400)
+
+        result = service.adjust_occupancy(
+            adjustment=adjustment,
+            reason=reason,
+            admin_id=admin_id,
+        )
+        return jsonify(
+            {
+                "success": True,
+                "new_occupancy": result["new_occupancy"],
+                "daily_entries": result["daily_entries"],
+                "daily_exits": result["daily_exits"],
+                "audit_logged": result["audit_logged"],
+            }
+        ), 200
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        return _json_error(f"Failed to adjust occupancy: {str(exc)}", 500)
