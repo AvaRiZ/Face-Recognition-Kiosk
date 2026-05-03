@@ -27,11 +27,28 @@ import json
 import pickle
 import uuid
 from datetime import datetime, timezone
+import threading
 from typing import Optional
 
 import numpy as np
 
 from app.realtime import emit_analytics_update
+
+_analytics_emit_timer: threading.Timer | None = None
+_analytics_emit_lock = threading.Lock()
+
+def _debounced_emit_analytics(reason: str, payload: dict | None = None, delay: float = 3.0) -> None:
+    """Emit analytics_updated at most once every `delay` seconds."""
+    global _analytics_emit_timer
+    with _analytics_emit_lock:
+        if _analytics_emit_timer is not None:
+            _analytics_emit_timer.cancel()
+        _analytics_emit_timer = threading.Timer(
+            delay, emit_analytics_update, args=[reason], kwargs={"payload": payload}
+        )
+        _analytics_emit_timer.daemon = True
+        _analytics_emit_timer.start()
+        
 from core.models import RecognitionResult, User
 from core.program_catalog import (
     OTHER_COLLEGE_LABEL,
@@ -451,7 +468,6 @@ class UserRepository:
 
         conn.commit()
         conn.close()
-        emit_analytics_update("user_embeddings_updated", {"user_id": int(user_id)})
 
         return User(
             id=user_id,
@@ -579,14 +595,8 @@ class UserRepository:
 
         conn.commit()
         conn.close()
-
-        emit_analytics_update("recognition_logged", {"user_id": int(result.user_id)})
-        if inserted_event:
-            emit_analytics_update(
-                "recognition_event_ingested",
-                {"user_id": int(result.user_id)},
-            )
-
+        _debounced_emit_analytics("recognition_logged", {"user_id": int(result.user_id)}, delay=3.0)
+        
     def get_recognition_statistics(self):
         conn = db_connect(self.db_path)
         c = conn.cursor()

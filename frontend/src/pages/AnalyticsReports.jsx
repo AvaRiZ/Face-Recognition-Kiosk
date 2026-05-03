@@ -50,6 +50,7 @@ const APP_HEADER_HEIGHT = 56;
 const ANALYTICS_CACHE_KEY = "analytics-basic-cache-v1";
 const ANALYTICS_CACHE_TTL_MS = 30 * 1000;
 const ANALYTICS_FALLBACK_POLL_MS = 30 * 1000;
+const ANALYTICS_CONNECTED_POLL_MS = 30 * 1000;
 const ANALYTICS_MIN_REFRESH_INTERVAL_MS = 5 * 1000;
 
 function readAnalyticsCache() {
@@ -3674,11 +3675,12 @@ function AnalyticsReportsInner() {
   }, []);
 
   React.useEffect(() => {
-    if (socketConnected) return undefined;
 
+    const intervalMs = socketConnected ? ANALYTICS_FALLBACK_POLL_MS : ANALYTICS_OFFLINE_POLL_MS;
     const timer = window.setInterval(() => {
+
       runAnalyticsPipeline({ silent: true });
-    }, ANALYTICS_FALLBACK_POLL_MS);
+    }, intervalMs);
 
     return () => {
       window.clearInterval(timer);
@@ -3687,7 +3689,7 @@ function AnalyticsReportsInner() {
 
   React.useEffect(() => {
     function handleAnalyticsUpdated() {
-      runAnalyticsPipeline({ silent: true });
+      runAnalyticsPipeline({ silent: true, force: true });
     }
 
     function handleConnect() {
