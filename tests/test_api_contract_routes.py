@@ -29,6 +29,8 @@ class ApiContractRouteTests(unittest.TestCase):
         self.assertIn('/api/entry-logs', source)
         self.assertIn('/api/entry-exit-logs', source)
         self.assertIn('/api/events', source)
+        self.assertIn('/api/analytics/daily-report', source)
+        self.assertIn('/api/analytics/occupancy-trends', source)
         self.assertIn('/api/audit-log', source)
         self.assertIn('/api/profiles', source)
 
@@ -36,6 +38,11 @@ class ApiContractRouteTests(unittest.TestCase):
         source = Path("frontend/src/pages/Settings.jsx").read_text(encoding="utf-8")
         self.assertIn("Higher values = stricter", source)
         self.assertIn("Lower values = more lenient", source)
+
+    def test_dashboard_mentions_dual_camera_model(self) -> None:
+        source = Path("frontend/src/pages/Dashboard.jsx").read_text(encoding="utf-8").lower()
+        self.assertIn("dual-camera mode", source)
+        self.assertNotIn("entry logs only", source)
 
 
 if __name__ == "__main__":

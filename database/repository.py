@@ -501,6 +501,8 @@ class UserRepository:
         secondary_distance = _coerce_float(result.secondary_distance)
         quality_value = _coerce_float(face_quality)
         captured_at = datetime.now(timezone.utc)
+        camera_id = int(getattr(self, "camera_id", 1) or 1)
+        event_type = "exit" if camera_id == 2 else "entry"
 
         inserted_event = False
         if table_columns(conn, "recognition_events"):
@@ -508,7 +510,8 @@ class UserRepository:
             payload_json = json.dumps(
                 {
                     "event_id": event_id,
-                    "station_id": "entrance-station-1",
+                    "camera_id": camera_id,
+                    "event_type": event_type,
                     "user_id": int(result.user_id),
                     "sr_code": result.user.sr_code,
                     "decision": "allowed",
@@ -526,7 +529,7 @@ class UserRepository:
             c.execute(
                 """
                 INSERT INTO recognition_events (
-                    event_id, station_id, user_id, sr_code, decision, confidence,
+                    event_id, user_id, sr_code, decision, event_type, confidence,
                     primary_confidence, secondary_confidence, primary_distance, secondary_distance,
                     face_quality, method, captured_at, payload_json
                 )
@@ -535,10 +538,10 @@ class UserRepository:
                 """,
                 (
                     event_id,
-                    "entrance-station-1",
                     int(result.user_id),
                     result.user.sr_code,
                     "allowed",
+                    event_type,
                     confidence,
                     primary_confidence,
                     secondary_confidence,

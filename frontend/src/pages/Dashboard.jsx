@@ -1,5 +1,6 @@
 import React from "react";
 import { fetchJson } from "../api.js";
+import { getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { socket } from "../socket.js";
 
 const PEAK_HOUR_START = 7;
@@ -71,6 +72,13 @@ function formatRangeLabel(startDate, endDate) {
     year: "numeric",
   });
   return `${formatter.format(start)} - ${formatter.format(end)}`;
+}
+
+function formatSnapshotTime(timestamp) {
+  if (!timestamp) return "-";
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return String(timestamp);
+  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function csvEscape(value) {
@@ -722,6 +730,14 @@ export default function Dashboard() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
   const [selectedFilter, setSelectedFilter] = React.useState("today");
+  const [occupancyData, setOccupancyData] = React.useState(null);
+  const [occupancyHistory, setOccupancyHistory] = React.useState([]);
+  const [activeAlerts, setActiveAlerts] = React.useState([]);
+  const [occupancyPanelError, setOccupancyPanelError] = React.useState("");
+  const [overrideAdjustment, setOverrideAdjustment] = React.useState("");
+  const [overrideReason, setOverrideReason] = React.useState("");
+  const [overrideSubmitting, setOverrideSubmitting] = React.useState(false);
+  const [dismissInFlightId, setDismissInFlightId] = React.useState(null);
   const latestRequestRef = React.useRef(0);
   const hasLoadedDataRef = React.useRef(false);
 
@@ -756,11 +772,38 @@ export default function Dashboard() {
     }
   }
 
+  async function loadOccupancyPanel({ silent = false } = {}) {
+    try {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const [currentResp, historyResp, alertsResp] = await Promise.all([
+        fetchJson("/api/occupancy/current"),
+        fetchJson(`/api/occupancy/history?date=${todayIso}&limit=24`),
+        fetchJson("/api/alerts?active=true&limit=20"),
+      ]);
+      setOccupancyData(currentResp || null);
+      setOccupancyHistory(
+        Array.isArray(historyResp?.snapshots)
+          ? [...historyResp.snapshots].reverse()
+          : [],
+      );
+      setActiveAlerts(Array.isArray(alertsResp?.alerts) ? alertsResp.alerts : []);
+      setOccupancyPanelError("");
+    } catch (err) {
+      if (!silent) {
+        setOccupancyPanelError(
+          getErrorMessage(err, "Failed to load occupancy and alert data."),
+        );
+      }
+    }
+  }
+
   React.useEffect(() => {
     loadDashboardData({ filterKey: selectedFilter });
+    loadOccupancyPanel();
 
     const timer = window.setInterval(() => {
       loadDashboardData({ silent: true, filterKey: selectedFilter });
+      loadOccupancyPanel({ silent: true });
     }, 30000);
 
     return () => window.clearInterval(timer);
@@ -769,15 +812,22 @@ export default function Dashboard() {
   React.useEffect(() => {
     function handleAnalyticsUpdated() {
       loadDashboardData({ silent: true, filterKey: selectedFilter });
+      loadOccupancyPanel({ silent: true });
+    }
+
+    function handleCapacityAlert() {
+      loadOccupancyPanel({ silent: true });
     }
 
     socket.connect();
     socket.on("analytics_updated", handleAnalyticsUpdated);
+    socket.on("capacity_threshold_alert", handleCapacityAlert);
     return () => {
       socket.off("analytics_updated", handleAnalyticsUpdated);
+      socket.off("capacity_threshold_alert", handleCapacityAlert);
       socket.disconnect();
     };
-  }, []);
+  }, [selectedFilter]);
 
   if (loading) {
     return (
@@ -835,6 +885,76 @@ export default function Dashboard() {
     if (!data) return;
     downloadDashboardExport(data);
   }
+
+  async function handleDismissAlert(alertId) {
+    if (!alertId || dismissInFlightId !== null) return;
+    setDismissInFlightId(alertId);
+    try {
+      await fetchJson(`/api/alerts/${alertId}/dismiss`, { method: "POST" });
+      await showSuccess("Alert Acknowledged", "Capacity alert has been dismissed.");
+      await loadOccupancyPanel({ silent: true });
+    } catch (err) {
+      await showError("Dismiss Failed", getErrorMessage(err, "Unable to dismiss alert."));
+    } finally {
+      setDismissInFlightId(null);
+    }
+  }
+
+  async function handleManualOverrideSubmit(event) {
+    event.preventDefault();
+    const adjustment = Number.parseInt(String(overrideAdjustment).trim(), 10);
+    const reason = String(overrideReason || "").trim();
+
+    if (!Number.isInteger(adjustment) || adjustment === 0) {
+      await showError("Invalid Adjustment", "Enter a non-zero integer adjustment value.");
+      return;
+    }
+    if (!reason) {
+      await showError("Missing Reason", "Provide a reason for the manual occupancy override.");
+      return;
+    }
+
+    setOverrideSubmitting(true);
+    try {
+      await fetchJson("/api/occupancy/adjust", {
+        method: "POST",
+        body: JSON.stringify({ adjustment, reason }),
+      });
+      setOverrideAdjustment("");
+      setOverrideReason("");
+      await showSuccess("Override Applied", "Occupancy state was adjusted successfully.");
+      await Promise.all([
+        loadOccupancyPanel({ silent: true }),
+        loadDashboardData({ silent: true, filterKey: selectedFilter }),
+      ]);
+    } catch (err) {
+      await showError("Override Failed", getErrorMessage(err, "Unable to apply manual adjustment."));
+    } finally {
+      setOverrideSubmitting(false);
+    }
+  }
+
+  const capacityLimit = Number(occupancyData?.capacity_limit ?? data?.max_occupancy ?? 0);
+  const occupancyCount = Number(occupancyData?.occupancy_count ?? data?.current_occupancy ?? 0);
+  const dailyEntries = Number(occupancyData?.daily_entries ?? 0);
+  const dailyExits = Number(occupancyData?.daily_exits ?? 0);
+  const isFull = Boolean(occupancyData?.is_full);
+  const capacityWarning = Boolean(occupancyData?.capacity_warning);
+  const occupancyRatioRaw =
+    Number(occupancyData?.occupancy_ratio) ||
+    (capacityLimit > 0 ? occupancyCount / capacityLimit : 0);
+  const occupancyRatio = Number.isFinite(occupancyRatioRaw) ? occupancyRatioRaw : 0;
+  const occupancyPercent = Math.max(0, Math.min(100, Math.round(occupancyRatio * 100)));
+  const occupancyStatusLabel = isFull
+    ? "Full Capacity"
+    : capacityWarning
+      ? "Warning Threshold"
+      : "Normal Capacity";
+  const occupancyStatusClass = isFull
+    ? "bg-danger"
+    : capacityWarning
+      ? "bg-warning text-dark"
+      : "bg-success";
 
   return (
     <section className="section dashboard">
@@ -902,6 +1022,162 @@ export default function Dashboard() {
           iconClass="bi bi-speedometer2"
           cardClass="customers-card"
         />
+      </div>
+
+      {occupancyPanelError ? (
+        <div className="alert alert-danger mt-3 mb-3">
+          <i className="bi bi-exclamation-triangle me-2"></i>
+          {occupancyPanelError}
+        </div>
+      ) : null}
+
+      <div className="row g-3 mb-3">
+        <div className="col-xl-8">
+          <div className="card h-100">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <h5 className="card-title mb-0">Live Occupancy Monitor</h5>
+                <span className={`badge ${occupancyStatusClass}`}>{occupancyStatusLabel}</span>
+              </div>
+              <div className="d-flex flex-wrap align-items-end gap-3 mb-2">
+                <div>
+                  <div className="display-6 fw-bold mb-0">
+                    {occupancyCount}
+                    <span className="text-muted fs-5">/{capacityLimit || 0}</span>
+                  </div>
+                  <div className="text-muted small">Current occupancy vs configured capacity</div>
+                </div>
+                <div className="ms-auto text-end">
+                  <div className="fw-semibold">{occupancyPercent}% utilized</div>
+                  <div className="text-muted small">
+                    Entries today: <strong>{dailyEntries}</strong> · Exits today: <strong>{dailyExits}</strong>
+                  </div>
+                </div>
+              </div>
+              <div className="progress mb-3" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={occupancyPercent}>
+                <div
+                  className={`progress-bar ${isFull ? "bg-danger" : capacityWarning ? "bg-warning" : "bg-success"}`}
+                  style={{ width: `${occupancyPercent}%` }}
+                />
+              </div>
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <h6 className="mb-0">Recent Occupancy Snapshots</h6>
+                <span className="text-muted small">Today</span>
+              </div>
+              {occupancyHistory.length ? (
+                <div className="table-responsive">
+                  <table className="table table-sm align-middle mb-0">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Occupancy</th>
+                        <th>Entries</th>
+                        <th>Exits</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {occupancyHistory.slice(-8).map((snapshot) => (
+                        <tr key={`${snapshot.snapshot_timestamp}-${snapshot.occupancy_count}`}>
+                          <td>{formatSnapshotTime(snapshot.snapshot_timestamp)}</td>
+                          <td>{snapshot.occupancy_count}/{snapshot.capacity_limit}</td>
+                          <td>{snapshot.daily_entries}</td>
+                          <td>{snapshot.daily_exits}</td>
+                          <td>
+                            {snapshot.capacity_warning ? (
+                              <span className="badge bg-warning text-dark">Warning</span>
+                            ) : (
+                              <span className="badge bg-success">Normal</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-muted small">No snapshots available yet for today.</div>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="col-xl-4 d-flex flex-column gap-3">
+          <div className="card">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <h5 className="card-title mb-0">Capacity Alerts</h5>
+                <span className="badge bg-secondary">{activeAlerts.length}</span>
+              </div>
+              {activeAlerts.length ? (
+                <div className="d-flex flex-column gap-2">
+                  {activeAlerts.slice(0, 5).map((alert) => (
+                    <div key={alert.id} className="border rounded p-2">
+                      <div className="d-flex justify-content-between align-items-start gap-2">
+                        <div>
+                          <div className="fw-semibold small">{alert.message || "Capacity alert"}</div>
+                          <div className="text-muted small">
+                            {alert.occupancy_count}/{alert.capacity_limit} · {Math.round((alert.occupancy_ratio || 0) * 100)}%
+                          </div>
+                          <div className="text-muted small">
+                            {formatSnapshotTime(alert.created_at)} · {String(alert.level || "").toUpperCase()}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-secondary"
+                          onClick={() => handleDismissAlert(alert.id)}
+                          disabled={dismissInFlightId === alert.id}
+                        >
+                          {dismissInFlightId === alert.id ? "..." : "Acknowledge"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-muted small">No active capacity alerts.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-body">
+              <h5 className="card-title mb-2">Manual Occupancy Override</h5>
+              <p className="text-muted small mb-3">
+                Apply a signed adjustment to reconcile occupancy drift.
+              </p>
+              <form onSubmit={handleManualOverrideSubmit}>
+                <div className="mb-2">
+                  <label className="form-label small mb-1" htmlFor="occupancy-adjustment">Adjustment</label>
+                  <input
+                    id="occupancy-adjustment"
+                    type="number"
+                    className="form-control form-control-sm"
+                    placeholder="e.g. +2 or -1"
+                    value={overrideAdjustment}
+                    onChange={(event) => setOverrideAdjustment(event.target.value)}
+                    disabled={overrideSubmitting}
+                  />
+                </div>
+                <div className="mb-2">
+                  <label className="form-label small mb-1" htmlFor="occupancy-reason">Reason</label>
+                  <textarea
+                    id="occupancy-reason"
+                    className="form-control form-control-sm"
+                    rows={2}
+                    placeholder="Reason for this correction"
+                    value={overrideReason}
+                    onChange={(event) => setOverrideReason(event.target.value)}
+                    disabled={overrideSubmitting}
+                  />
+                </div>
+                <button type="submit" className="btn btn-sm btn-primary" disabled={overrideSubmitting}>
+                  {overrideSubmitting ? "Applying..." : "Apply Override"}
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Daily Visitors + Program Distribution */}
@@ -1054,13 +1330,12 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Note about entry-only logs */}
+      {/* Dual-camera occupancy note */}
       <div className="alert alert-info d-flex align-items-center gap-2 py-2">
         <i className="bi bi-info-circle-fill"></i>
         <span className="small">
-          <strong>Note:</strong> This system currently records{" "}
-          <strong>entry logs only</strong>. Exit tracking is not used in the
-          current setup.
+          <strong>Dual-camera mode:</strong> Camera 1 records entries and Camera 2 records exits.
+          Occupancy, alerts, and manual overrides update both flows in real time.
         </span>
       </div>
     </section>

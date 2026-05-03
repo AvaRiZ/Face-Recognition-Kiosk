@@ -12,6 +12,13 @@ function formatTime(ts) {
   return ts.length > 10 ? ts.slice(11, 19) : '-';
 }
 
+function formatEventType(rawType) {
+  const normalized = String(rawType || 'unknown').toLowerCase();
+  if (normalized === 'entry') return 'Entry';
+  if (normalized === 'exit') return 'Exit';
+  return 'Unknown';
+}
+
 export default function EntryExitLogsPage() {
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
@@ -20,6 +27,7 @@ export default function EntryExitLogsPage() {
   const [search, setSearch] = React.useState('');
   const [pageSize, setPageSize] = React.useState('10');
   const [confFilter, setConfFilter] = React.useState('');
+  const [directionFilter, setDirectionFilter] = React.useState('');
   const [dateFilter, setDateFilter] = React.useState('');
   const [activeTab, setActiveTab] = React.useState('all');
   const refreshInFlightRef = React.useRef(false);
@@ -92,6 +100,8 @@ export default function EntryExitLogsPage() {
         (confFilter === 'high' && item.conf_pct >= 80) ||
         (confFilter === 'med' && item.conf_pct >= 60 && item.conf_pct < 80) ||
         (confFilter === 'low' && item.conf_pct < 60);
+      const eventType = String(item.event_type || 'unknown').toLowerCase();
+      const matchDirection = !directionFilter || eventType === directionFilter;
       const matchDate = !selectedDate || item.date === selectedDate;
       const matchTab =
         activeTab === 'today'
@@ -100,9 +110,9 @@ export default function EntryExitLogsPage() {
             ? item.date >= weekAgo
             : true;
 
-      return matchSearch && matchConf && matchDate && matchTab;
+      return matchSearch && matchConf && matchDirection && matchDate && matchTab;
     });
-  }, [rows, search, confFilter, dateFilter, activeTab, today, weekAgo]);
+  }, [rows, search, confFilter, directionFilter, dateFilter, activeTab, today, weekAgo]);
 
   const pageLimit = parseInt(pageSize, 10) || 10;
   const pageRows = filtered.slice(0, pageLimit);
@@ -128,20 +138,20 @@ export default function EntryExitLogsPage() {
   return (
     <section className="section">
       <div className="pagetitle">
-        <h1>Entry Logs</h1>
+        <h1>Entry & Exit Logs</h1>
         <nav>
           <ol className="breadcrumb mb-0">
             <li className="breadcrumb-item">
               <a href="/dashboard">Home</a>
             </li>
-            <li className="breadcrumb-item active">Entry Logs</li>
+            <li className="breadcrumb-item active">Entry & Exit Logs</li>
           </ol>
         </nav>
       </div>
       {error ? (
         <div className="alert alert-danger">
           <i className="bi bi-exclamation-triangle me-2"></i>
-          Failed to load entry logs. Please refresh the page.
+          Failed to load recognition logs. Please refresh the page.
         </div>
       ) : null}
       <div className="card mb-3">
@@ -186,7 +196,7 @@ export default function EntryExitLogsPage() {
 
       <div className="card">
         <div className="card-body">
-          <h5 className="card-title">Recognition Log</h5>
+          <h5 className="card-title">Recognition Entry/Exit Log</h5>
 
           <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
             <div className="d-flex gap-2 flex-wrap">
@@ -213,6 +223,18 @@ export default function EntryExitLogsPage() {
                 <option value="high">High (80%+)</option>
                 <option value="med">Medium (60-79%)</option>
                 <option value="low">Low (&lt;60%)</option>
+              </select>
+              <select
+                id="directionFilter"
+                className="form-select"
+                style={{ width: 'auto' }}
+                value={directionFilter}
+                onChange={(ev) => setDirectionFilter(ev.target.value)}
+              >
+                <option value="">All Directions</option>
+                <option value="entry">Entry</option>
+                <option value="exit">Exit</option>
+                <option value="unknown">Unknown</option>
               </select>
             </div>
 
@@ -249,6 +271,7 @@ export default function EntryExitLogsPage() {
                   <th>Name</th>
                   <th>SR Code</th>
                   <th>Confidence</th>
+                  <th>Direction</th>
                   <th>Date</th>
                   <th>Time</th>
                 </tr>
@@ -259,6 +282,13 @@ export default function EntryExitLogsPage() {
                     let badgeClass = 'bg-danger';
                     if (row.conf_pct >= 80) badgeClass = 'bg-success';
                     else if (row.conf_pct >= 60) badgeClass = 'bg-warning text-dark';
+                    const eventType = String(row.event_type || 'unknown').toLowerCase();
+                    const directionBadgeClass =
+                      eventType === 'entry'
+                        ? 'bg-primary-subtle text-primary'
+                        : eventType === 'exit'
+                          ? 'bg-info-subtle text-info'
+                          : 'bg-secondary-subtle text-secondary';
 
                     return (
                       <tr key={`${row.name}-${idx}`}>
@@ -270,6 +300,11 @@ export default function EntryExitLogsPage() {
                         <td>
                           <span className={`badge ${badgeClass}`}>{row.conf_pct}%</span>
                         </td>
+                        <td>
+                          <span className={`badge ${directionBadgeClass}`}>
+                            {formatEventType(eventType)}
+                          </span>
+                        </td>
                         <td>{row.date || formatDate(row.timestamp)}</td>
                         <td>
                           <code>{row.time || formatTime(row.timestamp)}</code>
@@ -279,7 +314,7 @@ export default function EntryExitLogsPage() {
                   })
                 ) : (
                   <tr>
-                    <td colSpan="6" className="text-center text-muted py-4">
+                    <td colSpan="7" className="text-center text-muted py-4">
                       <i className="bi bi-journal-x fs-3 d-block mb-2"></i>
                       No recognition logs found.
                     </td>

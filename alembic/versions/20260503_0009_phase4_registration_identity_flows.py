@@ -17,6 +17,24 @@ branch_labels = None
 depends_on = None
 
 
+def _constraint_exists(bind: sa.Connection, table_name: str, constraint_name: str) -> bool:
+    row = bind.execute(
+        sa.text(
+            """
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = 'public'
+              AND t.relname = :table_name
+              AND c.conname = :constraint_name
+            """
+        ),
+        {"table_name": table_name, "constraint_name": constraint_name},
+    ).fetchone()
+    return row is not None
+
+
 def upgrade() -> None:
     bind = op.get_bind()
 
@@ -46,13 +64,14 @@ def upgrade() -> None:
         WHERE user_type IS NULL OR TRIM(user_type) = ''
         """
     )
-    op.execute(
-        """
-        ALTER TABLE users
-        ADD CONSTRAINT IF NOT EXISTS ck_users_user_type
-        CHECK (user_type IN ('enrolled', 'unrecognized', 'visitor', 'staff'))
-        """
-    )
+    if not _constraint_exists(bind, "users", "ck_users_user_type"):
+        op.execute(
+            """
+            ALTER TABLE users
+            ADD CONSTRAINT ck_users_user_type
+            CHECK (user_type IN ('enrolled', 'unrecognized', 'visitor', 'staff'))
+            """
+        )
 
     has_flow_type = bind.execute(
         sa.text(
@@ -77,13 +96,14 @@ def upgrade() -> None:
         WHERE flow_type IS NULL OR TRIM(flow_type) = ''
         """
     )
-    op.execute(
-        """
-        ALTER TABLE users
-        ADD CONSTRAINT IF NOT EXISTS ck_users_flow_type
-        CHECK (flow_type IN ('auto_entry', 'manual_entry', 'manual_registration'))
-        """
-    )
+    if not _constraint_exists(bind, "users", "ck_users_flow_type"):
+        op.execute(
+            """
+            ALTER TABLE users
+            ADD CONSTRAINT ck_users_flow_type
+            CHECK (flow_type IN ('auto_entry', 'manual_entry', 'manual_registration'))
+            """
+        )
 
     op.execute(
         """

@@ -20,16 +20,39 @@ class OccupancyService:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
 
-    def record_event(self, camera_id: int, captured_at: datetime | None = None) -> dict:
+    @staticmethod
+    def _coerce_target_date(target_date: date | datetime | str | None) -> date:
+        if target_date is None:
+            return datetime.now(timezone.utc).date()
+        if isinstance(target_date, datetime):
+            return target_date.date()
+        if isinstance(target_date, date):
+            return target_date
+        text = str(target_date).strip()
+        if not text:
+            return datetime.now(timezone.utc).date()
+        return datetime.fromisoformat(text).date()
+
+    @staticmethod
+    def _normalize_event_type(event_type: str | int | None) -> str:
+        text = str(event_type or "").strip().lower()
+        if text in {"entry", "1"}:
+            return "entry"
+        if text in {"exit", "2"}:
+            return "exit"
+        return "unknown"
+
+    def record_event(self, event_type: str | int, captured_at: datetime | None = None) -> dict:
         """Record a single recognition event into the daily occupancy state."""
         event_time = captured_at or datetime.now(timezone.utc)
         if event_time.tzinfo is None:
             event_time = event_time.replace(tzinfo=timezone.utc)
         event_time = event_time.astimezone(timezone.utc)
         state_date = event_time.date().isoformat()
+        normalized_event_type = self._normalize_event_type(event_type)
 
-        daily_entries = 1 if int(camera_id) == 1 else 0
-        daily_exits = 1 if int(camera_id) == 2 else 0
+        daily_entries = 1 if normalized_event_type == "entry" else 0
+        daily_exits = 1 if normalized_event_type == "exit" else 0
 
         conn = db_connect(self.db_path)
         c = conn.cursor()
@@ -128,21 +151,23 @@ class OccupancyService:
 
         date_str = target_date.isoformat()
 
-        # Count entry events (entered_at) for the target date
+        # Count entry events for the target date
         c.execute(
             """
             SELECT COUNT(*) FROM recognition_events
-            WHERE entered_at IS NOT NULL AND DATE(entered_at) = ?
+            WHERE event_type = 'entry'
+              AND DATE(COALESCE(captured_at, ingested_at)) = ?
             """,
             (date_str,),
         )
         daily_entries = c.fetchone()[0] or 0
 
-        # Count exit events (exited_at) for the target date
+        # Count exit events for the target date
         c.execute(
             """
             SELECT COUNT(*) FROM recognition_events
-            WHERE exited_at IS NOT NULL AND DATE(exited_at) = ?
+            WHERE event_type = 'exit'
+              AND DATE(COALESCE(captured_at, ingested_at)) = ?
             """,
             (date_str,),
         )
@@ -310,11 +335,10 @@ class OccupancyService:
         c.execute(
             """
             SELECT
-                SUM(CASE WHEN entered_at IS NOT NULL THEN 1 ELSE 0 END) as entries,
-                SUM(CASE WHEN exited_at IS NOT NULL THEN 1 ELSE 0 END) as exits
+                SUM(CASE WHEN event_type = 'entry' THEN 1 ELSE 0 END) as entries,
+                SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) as exits
             FROM recognition_events
-            WHERE (entered_at IS NOT NULL OR exited_at IS NOT NULL)
-              AND DATE(COALESCE(entered_at, exited_at)) = ?
+            WHERE DATE(COALESCE(captured_at, ingested_at)) = ?
             """,
             (date_str,),
         )
@@ -356,6 +380,206 @@ class OccupancyService:
             "peak_occupancy": peak_occupancy,
             "capacity_warnings_count": capacity_warnings_count,
             "tracked_state": self.get_daily_state(target_date),
+        }
+
+    def get_daily_report(self, target_date: date | datetime | str | None = None) -> dict:
+        """Return occupancy analytics for a single day."""
+        target_day = self._coerce_target_date(target_date)
+        date_str = target_day.isoformat()
+
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+
+        c.execute(
+            """
+            SELECT
+                SUM(CASE WHEN event_type = 'entry' THEN 1 ELSE 0 END) AS total_entries,
+                SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) AS total_exits
+            FROM recognition_events
+            WHERE DATE(COALESCE(captured_at, ingested_at)) = ?
+            """,
+            (date_str,),
+        )
+        total_row = c.fetchone() or (0, 0)
+        total_entries = int(total_row[0] or 0)
+        total_exits = int(total_row[1] or 0)
+
+        c.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
+                SUM(CASE WHEN re.event_type = 'entry' THEN 1 ELSE 0 END) AS entries,
+                SUM(CASE WHEN re.event_type = 'exit' THEN 1 ELSE 0 END) AS exits
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = ?
+            GROUP BY COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
+            """,
+            (date_str,),
+        )
+        by_user_type = {
+            "enrolled": {"entries": 0, "exits": 0},
+            "visitor": {"entries": 0, "exits": 0},
+            "unrecognized": {"entries": 0, "exits": 0},
+        }
+        for user_type, entries, exits in c.fetchall():
+            normalized = str(user_type or "").strip().lower() or "unrecognized"
+            current = by_user_type.setdefault(normalized, {"entries": 0, "exits": 0})
+            current["entries"] = int(entries or 0)
+            current["exits"] = int(exits or 0)
+
+        c.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(TRIM(u.course), ''), 'Unknown') AS program,
+                SUM(CASE WHEN re.event_type = 'entry' THEN 1 ELSE 0 END) AS entries,
+                SUM(CASE WHEN re.event_type = 'exit' THEN 1 ELSE 0 END) AS exits
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = ?
+            GROUP BY COALESCE(NULLIF(TRIM(u.course), ''), 'Unknown')
+            HAVING
+                SUM(CASE WHEN re.event_type = 'entry' THEN 1 ELSE 0 END) > 0
+                OR SUM(CASE WHEN re.event_type = 'exit' THEN 1 ELSE 0 END) > 0
+            ORDER BY entries DESC, exits DESC, program ASC
+            """,
+            (date_str,),
+        )
+        by_program: dict[str, dict[str, int]] = {}
+        for program, entries, exits in c.fetchall():
+            by_program[str(program or "Unknown")] = {
+                "entries": int(entries or 0),
+                "exits": int(exits or 0),
+            }
+
+        c.execute(
+            """
+            SELECT hour_slot, COUNT(*) AS event_count
+            FROM (
+                SELECT CAST(strftime('%H', COALESCE(captured_at, ingested_at)) AS INTEGER) AS hour_slot
+                FROM recognition_events
+                WHERE DATE(COALESCE(captured_at, ingested_at)) = ?
+            ) hourly_events
+            GROUP BY hour_slot
+            ORDER BY event_count DESC, hour_slot ASC
+            LIMIT 1
+            """,
+            (date_str,),
+        )
+        peak_hour_row = c.fetchone()
+        if peak_hour_row:
+            start_hour = int(peak_hour_row[0] or 0)
+            end_hour = (start_hour + 1) % 24
+            peak_hour = f"{start_hour:02d}:00-{end_hour:02d}:00"
+        else:
+            peak_hour = "N/A"
+
+        c.execute(
+            """
+            SELECT MAX(occupancy_count)
+            FROM occupancy_snapshots
+            WHERE DATE(snapshot_timestamp) = ?
+            """,
+            (date_str,),
+        )
+        peak_occupancy = int((c.fetchone() or [0])[0] or 0)
+        if peak_occupancy <= 0:
+            tracked = self.get_daily_state(target_day)
+            if tracked:
+                peak_occupancy = max(peak_occupancy, int(tracked.get("occupancy_count", 0)))
+        if peak_occupancy <= 0:
+            peak_occupancy = max(0, total_entries - total_exits)
+
+        conn.close()
+
+        return {
+            "date": date_str,
+            "total_entries": total_entries,
+            "total_exits": total_exits,
+            "by_user_type": by_user_type,
+            "by_program": by_program,
+            "peak_hour": peak_hour,
+            "peak_occupancy": peak_occupancy,
+        }
+
+    def get_occupancy_trends(self, days: int = 7) -> dict:
+        """Return daily occupancy trend aggregates over the requested period."""
+        day_count = max(1, min(int(days or 7), 365))
+        end_date = datetime.now(timezone.utc).date()
+        start_date = end_date - timedelta(days=day_count - 1)
+
+        start_str = start_date.isoformat()
+        end_str = end_date.isoformat()
+
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT
+                DATE(snapshot_timestamp) AS snapshot_date,
+                AVG(occupancy_count) AS avg_occupancy,
+                MAX(occupancy_count) AS peak_occupancy,
+                SUM(CASE WHEN capacity_warning = 1 THEN 1 ELSE 0 END) AS capacity_breaches
+            FROM occupancy_snapshots
+            WHERE DATE(snapshot_timestamp) BETWEEN ? AND ?
+            GROUP BY DATE(snapshot_timestamp)
+            ORDER BY snapshot_date ASC
+            """,
+            (start_str, end_str),
+        )
+        snapshot_rows = c.fetchall()
+
+        c.execute(
+            """
+            SELECT state_date, daily_entries, daily_exits
+            FROM daily_occupancy_state
+            WHERE state_date BETWEEN ? AND ?
+            """,
+            (start_str, end_str),
+        )
+        state_rows = c.fetchall()
+        conn.close()
+
+        snapshot_map = {
+            str(row[0]): {
+                "avg_occupancy": float(row[1] or 0.0),
+                "peak_occupancy": int(row[2] or 0),
+                "capacity_breaches": int(row[3] or 0),
+            }
+            for row in snapshot_rows
+        }
+        state_map = {
+            str(row[0]): max(0, int(row[1] or 0) - int(row[2] or 0))
+            for row in state_rows
+        }
+
+        series = []
+        for offset in range(day_count):
+            day_value = start_date + timedelta(days=offset)
+            day_str = day_value.isoformat()
+            metrics = snapshot_map.get(day_str)
+            if metrics is None:
+                fallback_occupancy = int(state_map.get(day_str, 0))
+                metrics = {
+                    "avg_occupancy": float(fallback_occupancy),
+                    "peak_occupancy": fallback_occupancy,
+                    "capacity_breaches": 0,
+                }
+            series.append(
+                {
+                    "date": day_str,
+                    "avg_occupancy": round(float(metrics["avg_occupancy"]), 1),
+                    "peak_occupancy": int(metrics["peak_occupancy"]),
+                    "capacity_breaches": int(metrics["capacity_breaches"]),
+                }
+            )
+
+        return {
+            "period": f"{day_count} days",
+            "days": day_count,
+            "start_date": start_str,
+            "end_date": end_str,
+            "data": series,
         }
 
     def adjust_occupancy(self, adjustment: int, reason: str, admin_id: int | None = None) -> dict:

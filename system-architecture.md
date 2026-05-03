@@ -1495,14 +1495,14 @@ frontend/
 - [x] Connect unrecognized face events to librarian approval before entry.
 - [x] Implement visitor registration flow fully tied to both entry and exit occupancy accounting.
 
-### Phase 5: Dashboard and Analytics Alignment (PARTIAL)
+### Phase 5: Dashboard and Analytics Alignment (COMPLETE)
 
 - [x] Keep dashboard/analytics/logs pages subscribed to websocket-triggered refresh (`analytics_updated`).
 - [x] Expose occupancy endpoints needed by frontend occupancy cards/trends.
-- [ ] Build occupancy-focused librarian/kiosk views (live count, utilization ratio, warning/full state).
-- [ ] Add contract-specific occupancy analytics endpoints (`daily-report`, `occupancy-trends`) or formalize equivalent existing endpoints.
-- [ ] Remove legacy entry-only assumptions in UI copy and behavior to match dual-camera occupancy model.
-- [ ] Add explicit UI for capacity alerts, acknowledgment, and manual override workflow.
+- [x] Build occupancy-focused librarian/kiosk views (live count, utilization ratio, warning/full state).
+- [x] Add contract-specific occupancy analytics endpoints (`daily-report`, `occupancy-trends`) or formalize equivalent existing endpoints.
+- [x] Remove legacy entry-only assumptions in UI copy and behavior to match dual-camera occupancy model.
+- [x] Add explicit UI for capacity alerts, acknowledgment, and manual override workflow.
 
 ### Phase 6: Integration and Reliability Validation (IN PROGRESS)
 

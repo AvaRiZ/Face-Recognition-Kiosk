@@ -18,11 +18,17 @@ def init_canonical_schema(db_path: str) -> None:
             "user_registrations",
         )
         missing = [name for name in required_tables if not table_columns(conn, name)]
+        recognition_event_columns = table_columns(conn, "recognition_events")
         conn.close()
         if missing:
             raise RuntimeError(
                 "PostgreSQL schema is missing required canonical tables "
                 f"{missing}. Run `alembic upgrade head` before starting the app."
+            )
+        if "event_type" not in recognition_event_columns:
+            raise RuntimeError(
+                "PostgreSQL schema is missing canonical recognition_events.event_type. "
+                "Run `alembic upgrade head` before starting the app."
             )
         ensure_version_settings(db_path)
         return
@@ -37,6 +43,7 @@ def init_canonical_schema(db_path: str) -> None:
             user_id INTEGER,
             sr_code TEXT,
             decision TEXT NOT NULL CHECK(decision IN ('allowed', 'denied', 'unknown')),
+            event_type TEXT NOT NULL DEFAULT 'entry' CHECK(event_type IN ('entry', 'exit')),
             confidence REAL,
             primary_confidence REAL,
             secondary_confidence REAL,
@@ -45,8 +52,6 @@ def init_canonical_schema(db_path: str) -> None:
             face_quality REAL,
             method TEXT,
             captured_at TIMESTAMP,
-            entered_at TIMESTAMP,
-            exited_at TIMESTAMP,
             ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             payload_json TEXT,
             FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE SET NULL,
@@ -65,14 +70,8 @@ def init_canonical_schema(db_path: str) -> None:
     )
     c.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_recognition_events_entered_at
-        ON recognition_events(entered_at)
-        """
-    )
-    c.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_recognition_events_exited_at
-        ON recognition_events(exited_at)
+        CREATE INDEX IF NOT EXISTS idx_recognition_events_event_type
+        ON recognition_events(event_type)
         """
     )
     c.execute(
@@ -91,6 +90,40 @@ def init_canonical_schema(db_path: str) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_recognition_events_sr_code
         ON recognition_events(sr_code)
+        """
+    )
+    existing_event_columns = table_columns(conn, "recognition_events")
+    if "event_type" not in existing_event_columns:
+        c.execute("ALTER TABLE recognition_events ADD COLUMN event_type TEXT DEFAULT 'entry'")
+        existing_event_columns = table_columns(conn, "recognition_events")
+    if "entered_at" in existing_event_columns and "exited_at" in existing_event_columns:
+        c.execute(
+            """
+            UPDATE recognition_events
+            SET event_type = CASE
+                WHEN LOWER(TRIM(COALESCE(event_type, ''))) IN ('entry', 'exit') THEN LOWER(TRIM(event_type))
+                WHEN exited_at IS NOT NULL THEN 'exit'
+                ELSE 'entry'
+            END
+            """
+        )
+        c.execute("DROP INDEX IF EXISTS idx_recognition_events_entered_at")
+        c.execute("DROP INDEX IF EXISTS idx_recognition_events_exited_at")
+        try:
+            c.execute("ALTER TABLE recognition_events DROP COLUMN entered_at")
+        except Exception:
+            pass
+        try:
+            c.execute("ALTER TABLE recognition_events DROP COLUMN exited_at")
+        except Exception:
+            pass
+    c.execute(
+        """
+        UPDATE recognition_events
+        SET event_type = CASE
+            WHEN LOWER(TRIM(COALESCE(event_type, ''))) IN ('exit', '2') THEN 'exit'
+            ELSE 'entry'
+        END
         """
     )
     c.execute(

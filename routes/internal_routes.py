@@ -38,6 +38,30 @@ def _optional_int(value):
         return None
 
 
+def _camera_id_from_event_type(event_type: str) -> int | None:
+    normalized = str(event_type or "").strip().lower()
+    if normalized == "entry":
+        return 1
+    if normalized == "exit":
+        return 2
+    return None
+
+
+def _resolve_event_type(payload: dict) -> tuple[str, int]:
+    raw_event_type = str(payload.get("event_type") or "").strip().lower()
+    if raw_event_type:
+        if raw_event_type not in {"entry", "exit"}:
+            raise ValueError("`event_type` must be 'entry' or 'exit'.")
+        return raw_event_type, int(_camera_id_from_event_type(raw_event_type) or 1)
+
+    camera_id = _optional_int(payload.get("camera_id"))
+    if camera_id is None:
+        return "entry", 1
+    if camera_id not in {1, 2}:
+        raise ValueError("`camera_id` must be 1 for entry or 2 for exit.")
+    return ("entry", 1) if camera_id == 1 else ("exit", 2)
+
+
 def _require_worker_token():
     configured = (os.environ.get("WORKER_INTERNAL_TOKEN") or "").strip()
     if not configured:
@@ -140,11 +164,10 @@ def create_internal_blueprint(deps):
                 user_id = None
 
         sr_code = str(payload.get("sr_code") or "").strip() or None
-        camera_id = _optional_int(payload.get("camera_id"))
-        if camera_id is None:
-            camera_id = 1
-        if camera_id not in {1, 2}:
-            return _json_error("`camera_id` must be 1 for entry or 2 for exit.", 400)
+        try:
+            event_type, camera_id = _resolve_event_type(payload)
+        except ValueError as exc:
+            return _json_error(str(exc), 400)
 
         captured_at_raw = payload.get("captured_at")
         captured_at = datetime.now(timezone.utc)
@@ -166,18 +189,13 @@ def create_internal_blueprint(deps):
         secondary_distance = _optional_float(payload.get("secondary_distance"))
         face_quality = _optional_float(payload.get("face_quality"))
         method = str(payload.get("method") or "two-factor")
+        entered_at = captured_at if event_type == "entry" else None
+        exited_at = captured_at if event_type == "exit" else None
         payload_for_json = dict(payload)
+        payload_for_json["event_type"] = event_type
         payload_for_json["captured_at"] = captured_at.isoformat()
-        if camera_id == 1:
-            entered_at = captured_at
-            exited_at = None
-            payload_for_json["entered_at"] = captured_at.isoformat()
-            payload_for_json.pop("exited_at", None)
-        else:
-            entered_at = None
-            exited_at = captured_at
-            payload_for_json["exited_at"] = captured_at.isoformat()
-            payload_for_json.pop("entered_at", None)
+        payload_for_json.pop("entered_at", None)
+        payload_for_json.pop("exited_at", None)
         payload_for_json.pop("camera_id", None)
         payload_for_json.pop("station_id", None)
         payload_json = json.dumps(payload_for_json, ensure_ascii=True)
@@ -196,11 +214,11 @@ def create_internal_blueprint(deps):
             c.execute(
                 """
                 INSERT INTO recognition_events (
-                    event_id, user_id, sr_code, decision, confidence,
+                    event_id, user_id, sr_code, decision, event_type, confidence,
                     primary_confidence, secondary_confidence, primary_distance, secondary_distance,
-                    face_quality, method, captured_at, entered_at, exited_at, payload_json
+                    face_quality, method, captured_at, payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_id) DO NOTHING
                 """,
                 (
@@ -208,6 +226,7 @@ def create_internal_blueprint(deps):
                     user_id,
                     sr_code,
                     decision,
+                    event_type,
                     confidence,
                     primary_confidence,
                     secondary_confidence,
@@ -216,8 +235,6 @@ def create_internal_blueprint(deps):
                     face_quality,
                     method,
                     captured_at,
-                    entered_at,
-                    exited_at,
                     payload_json,
                 ),
             )
@@ -260,7 +277,7 @@ def create_internal_blueprint(deps):
                     pass
 
         if inserted and decision == "allowed":
-            if camera_id == 2 and user_id:
+            if event_type == "exit" and user_id:
                 try:
                     audit_conn = db_connect(deps["db_path"])
                     audit_cursor = audit_conn.cursor()
@@ -297,7 +314,7 @@ def create_internal_blueprint(deps):
                         pass
             occupancy_service = OccupancyService(deps["db_path"])
             config = deps["config"]
-            occupancy_state = occupancy_service.record_event(camera_id, captured_at)
+            occupancy_state = occupancy_service.record_event(event_type, captured_at)
             occupancy_view = occupancy_service.get_current_occupancy(
                 config.max_library_capacity,
                 warning_threshold=config.occupancy_warning_threshold,
@@ -317,6 +334,8 @@ def create_internal_blueprint(deps):
                 {
                     "event_id": event_id,
                     "user_id": user_id,
+                    "event_type": event_type,
+                    "camera_id": camera_id,
                     "entered_at": entered_at.isoformat() if entered_at else None,
                     "exited_at": exited_at.isoformat() if exited_at else None,
                     "daily_entries": occupancy_state["daily_entries"],
@@ -375,6 +394,7 @@ def create_internal_blueprint(deps):
                 {
                     "reason": "unrecognized_detection",
                     "event_id": event_id,
+                    "event_type": event_type,
                     "camera_id": camera_id,
                     "captured_at": captured_at.isoformat(),
                     "confidence": confidence,
@@ -387,13 +407,22 @@ def create_internal_blueprint(deps):
                 "unrecognized_detection",
                 {
                     "event_id": event_id,
+                    "event_type": event_type,
                     "camera_id": camera_id,
                     "captured_at": captured_at.isoformat(),
                     "capacity_warning": capacity_warning,
                 },
             )
 
-        return jsonify({"success": True, "event_id": event_id, "duplicate": not inserted})
+        return jsonify(
+            {
+                "success": True,
+                "event_id": event_id,
+                "event_type": event_type,
+                "camera_id": camera_id,
+                "duplicate": not inserted,
+            }
+        )
 
     @bp.route("/capacity-gate", methods=["GET"], endpoint="capacity_gate")
     def capacity_gate():

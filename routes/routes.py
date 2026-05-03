@@ -230,12 +230,13 @@ def create_routes_blueprint(deps):
             "sr_code": sr_code,
             "decision": "allowed",
             "source": "librarian_manual_admission",
-            "entered_at": captured_at.isoformat(),
+            "event_type": "entry",
+            "captured_at": captured_at.isoformat(),
         }
         c.execute(
             """
             INSERT INTO recognition_events (
-                event_id, user_id, sr_code, decision, method, captured_at, entered_at, payload_json
+                event_id, user_id, sr_code, decision, event_type, method, captured_at, payload_json
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id) DO NOTHING
@@ -245,8 +246,8 @@ def create_routes_blueprint(deps):
                 user_id,
                 sr_code,
                 "allowed",
+                "entry",
                 "manual-approval",
-                captured_at,
                 captured_at,
                 json.dumps(payload_json, ensure_ascii=True),
             ),
@@ -256,7 +257,7 @@ def create_routes_blueprint(deps):
         conn.close()
         if inserted:
             occupancy_service = OccupancyService(deps["db_path"])
-            occupancy_state = occupancy_service.record_event(1, captured_at)
+            occupancy_state = occupancy_service.record_event("entry", captured_at)
             occ_view = occupancy_service.get_current_occupancy(
                 deps["config"].max_library_capacity,
                 warning_threshold=deps["config"].occupancy_warning_threshold,
@@ -283,12 +284,13 @@ def create_routes_blueprint(deps):
             "sr_code": sr_code,
             "decision": "allowed",
             "source": "librarian_manual_exit",
-            "exited_at": captured_at.isoformat(),
+            "event_type": "exit",
+            "captured_at": captured_at.isoformat(),
         }
         c.execute(
             """
             INSERT INTO recognition_events (
-                event_id, user_id, sr_code, decision, method, captured_at, exited_at, payload_json
+                event_id, user_id, sr_code, decision, event_type, method, captured_at, payload_json
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id) DO NOTHING
@@ -298,8 +300,8 @@ def create_routes_blueprint(deps):
                 user_id,
                 sr_code,
                 "allowed",
+                "exit",
                 "manual-exit",
-                captured_at,
                 captured_at,
                 json.dumps(payload_json, ensure_ascii=True),
             ),
@@ -309,7 +311,7 @@ def create_routes_blueprint(deps):
         conn.close()
         if inserted:
             occupancy_service = OccupancyService(deps["db_path"])
-            occupancy_state = occupancy_service.record_event(2, captured_at)
+            occupancy_state = occupancy_service.record_event("exit", captured_at)
             occ_view = occupancy_service.get_current_occupancy(
                 deps["config"].max_library_capacity,
                 warning_threshold=deps["config"].occupancy_warning_threshold,
@@ -333,11 +335,11 @@ def create_routes_blueprint(deps):
         c.execute(
             """
             SELECT
-                SUM(CASE WHEN entered_at IS NOT NULL THEN 1 ELSE 0 END) AS entries,
-                SUM(CASE WHEN exited_at IS NOT NULL THEN 1 ELSE 0 END) AS exits
+                SUM(CASE WHEN event_type = 'entry' THEN 1 ELSE 0 END) AS entries,
+                SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) AS exits
             FROM recognition_events
             WHERE user_id = ?
-              AND DATE(COALESCE(entered_at, exited_at, captured_at)) = DATE('now')
+              AND DATE(COALESCE(captured_at, ingested_at)) = DATE('now')
             """,
             (user_id,),
         )
@@ -2003,15 +2005,31 @@ def create_routes_blueprint(deps):
                 selected_date = ""
 
         query = """
-            SELECT u.name, u.sr_code, u.course, re.confidence, re.captured_at
+            SELECT
+                u.name,
+                u.sr_code,
+                u.course,
+                COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') AS event_type,
+                re.confidence,
+                COALESCE(re.captured_at, re.ingested_at) AS event_time,
+                CASE
+                    WHEN COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
+                    THEN COALESCE(re.captured_at, re.ingested_at)
+                    ELSE NULL
+                END AS entered_at,
+                CASE
+                    WHEN COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'exit'
+                    THEN COALESCE(re.captured_at, re.ingested_at)
+                    ELSE NULL
+                END AS exited_at
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
         """
         params = []
         if selected_date:
-            query += " WHERE DATE(re.captured_at) = ?"
+            query += " WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = ?"
             params.append(selected_date)
-        query += " ORDER BY re.captured_at DESC"
+        query += " ORDER BY COALESCE(re.captured_at, re.ingested_at) DESC"
 
         c.execute(query, params)
         logs = c.fetchall()
@@ -2019,11 +2037,11 @@ def create_routes_blueprint(deps):
  
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['Name', 'SR Code', 'Program', 'Confidence (%)', 'Timestamp'])
-        for name, sr_code, program, confidence, timestamp in logs:
+        writer.writerow(["Name", "SR Code", "Program", "Event Type", "Confidence (%)", "Entered At", "Exited At", "Timestamp"])
+        for name, sr_code, program, event_type, confidence, event_time, entered_at, exited_at in logs:
             confidence = _coerce_confidence(confidence)
             conf_value = f"{confidence * 100:.1f}" if isinstance(confidence, (int, float)) else ""
-            writer.writerow([name, sr_code, program, conf_value, timestamp])
+            writer.writerow([name, sr_code, program, event_type, conf_value, entered_at, exited_at, event_time])
  
         response = make_response(output.getvalue())
         filename = f"library_entry_logs_{date_for_name.strftime('%m-%d-%Y')}.csv"
@@ -2681,6 +2699,51 @@ def create_routes_blueprint(deps):
                 "details": str(e),
             }), 500
 
+    @bp.route("/api/analytics/daily-report", methods=["GET"], endpoint="api_analytics_daily_report")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def api_analytics_daily_report():
+        date_param = (request.args.get("date") or "").strip()
+        target_date = None
+        if date_param:
+            try:
+                target_date = datetime.fromisoformat(date_param).date()
+            except ValueError:
+                return jsonify(
+                    {
+                        "success": False,
+                        "message": "Invalid `date` format. Use YYYY-MM-DD.",
+                    }
+                ), 400
+
+        service = OccupancyService(deps["db_path"])
+        return jsonify(service.get_daily_report(target_date))
+
+    @bp.route("/api/analytics/occupancy-trends", methods=["GET"], endpoint="api_analytics_occupancy_trends")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def api_analytics_occupancy_trends():
+        days_param = (request.args.get("days") or "7").strip()
+        try:
+            days = int(days_param)
+        except ValueError:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "`days` must be an integer between 1 and 365.",
+                }
+            ), 400
+        if days < 1 or days > 365:
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "`days` must be an integer between 1 and 365.",
+                }
+            ), 400
+
+        service = OccupancyService(deps["db_path"])
+        return jsonify(service.get_occupancy_trends(days=days))
+
     @bp.route("/api/events", methods=["GET"], endpoint="api_events")
     @bp.route("/api/entry-logs", methods=["GET"])
     @bp.route("/api/entry-exit-logs", methods=["GET"])
@@ -2690,23 +2753,78 @@ def create_routes_blueprint(deps):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         raw_logs = []
+        source_mode = ""
+
+        start_date = (request.args.get("start_date") or "").strip()
+        end_date = (request.args.get("end_date") or "").strip()
+        event_type_filter = (request.args.get("type") or "").strip().lower()
+        user_type_filter = (request.args.get("user_type") or "").strip().lower()
+        if event_type_filter not in {"", "entry", "exit", "unrecognized"}:
+            event_type_filter = ""
+
+        for value, label in ((start_date, "start_date"), (end_date, "end_date")):
+            if not value:
+                continue
+            try:
+                parsed = datetime.fromisoformat(value).date().isoformat()
+                if label == "start_date":
+                    start_date = parsed
+                else:
+                    end_date = parsed
+            except ValueError:
+                conn.close()
+                return jsonify(
+                    {
+                        "success": False,
+                        "message": f"Invalid `{label}` format. Use YYYY-MM-DD.",
+                    }
+                ), 400
+
         try:
             c.execute(
                 """
                 SELECT
+                    e.id,
+                    COALESCE(e.event_id, '') AS event_id,
+                    e.user_id,
                     COALESCE(u.name, '-') AS name,
                     COALESCE(e.sr_code, u.sr_code, '-') AS sr_code,
+                    COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
                     COALESCE(e.confidence, 0.0) AS confidence,
-                    COALESCE(e.captured_at, e.ingested_at) AS event_time
+                    COALESCE(NULLIF(TRIM(e.event_type), ''), 'entry') AS event_type,
+                    COALESCE(e.captured_at, e.ingested_at) AS event_time,
+                    COALESCE(e.decision, 'allowed') AS decision
                 FROM recognition_events e
                 LEFT JOIN users u ON e.user_id = u.user_id
                 ORDER BY e.ingested_at DESC, e.id DESC
-                LIMIT 500
+                LIMIT 1000
                 """
             )
             raw_logs = c.fetchall()
+            source_mode = "enhanced"
         except Exception:
             raw_logs = []
+            source_mode = ""
+        if not raw_logs:
+            try:
+                c.execute(
+                    """
+                    SELECT
+                        COALESCE(u.name, '-') AS name,
+                        COALESCE(e.sr_code, u.sr_code, '-') AS sr_code,
+                        COALESCE(e.confidence, 0.0) AS confidence,
+                        COALESCE(e.captured_at, e.ingested_at) AS event_time
+                    FROM recognition_events e
+                    LEFT JOIN users u ON e.user_id = u.user_id
+                    ORDER BY e.ingested_at DESC, e.id DESC
+                    LIMIT 1000
+                    """
+                )
+                raw_logs = c.fetchall()
+                source_mode = "legacy_events"
+            except Exception:
+                raw_logs = []
+                source_mode = ""
         if not raw_logs:
             try:
                 c.execute(
@@ -2719,30 +2837,103 @@ def create_routes_blueprint(deps):
                     """
                 )
                 raw_logs = c.fetchall()
+                source_mode = "legacy_log"
             except Exception:
                 raw_logs = []
+                source_mode = ""
+
         rows = []
-        for name, sr_code, confidence, timestamp in raw_logs:
-            value = _coerce_confidence(confidence) or 0
-            conf_pct = int(value * 100)
-            if isinstance(timestamp, datetime):
-                timestamp_text = timestamp.isoformat(sep=" ", timespec="seconds")
-            elif timestamp:
-                timestamp_text = str(timestamp)
+        for raw in raw_logs:
+            if source_mode == "enhanced" and len(raw) >= 10:
+                (
+                    event_row_id,
+                    event_id,
+                    user_id,
+                    name,
+                    sr_code,
+                    user_type,
+                    confidence,
+                    event_type,
+                    event_time,
+                    decision,
+                ) = raw
+                event_type = str(event_type or "").strip().lower() or "entry"
+                if event_type not in {"entry", "exit"}:
+                    event_type = "unknown"
+                normalized_user_type = str(user_type or "unrecognized").strip().lower() or "unrecognized"
+                normalized_decision = str(decision or "allowed").strip().lower() or "allowed"
+            else:
+                if len(raw) == 4:
+                    name, sr_code, confidence, event_time = raw
+                else:
+                    name, sr_code, confidence, event_time = raw[0], raw[1], raw[2], raw[3]
+                event_row_id = None
+                event_id = ""
+                user_id = None
+                event_type = "entry"
+                normalized_user_type = "enrolled"
+                normalized_decision = "allowed"
+
+            value = _coerce_confidence(confidence) or 0.0
+            conf_pct = int(value * 100.0)
+            if isinstance(event_time, datetime):
+                timestamp_text = event_time.isoformat(sep=" ", timespec="seconds")
+            elif event_time:
+                timestamp_text = str(event_time)
             else:
                 timestamp_text = ""
             date_value = timestamp_text[:10] if timestamp_text else ""
-            rows.append(
-                {
-                    "name": name or "-",
-                    "sr_code": sr_code or "-",
-                    "conf_pct": conf_pct,
-                    "timestamp": _normalize_timestamp_for_json(timestamp_text),
-                    "date": date_value,
-                }
-            )
+            if (start_date or end_date) and not date_value:
+                continue
+            if start_date and date_value and date_value < start_date:
+                continue
+            if end_date and date_value and date_value > end_date:
+                continue
+            if event_type_filter == "entry" and event_type != "entry":
+                continue
+            if event_type_filter == "exit" and event_type != "exit":
+                continue
+            if event_type_filter == "unrecognized":
+                if normalized_user_type != "unrecognized" and normalized_decision != "unknown":
+                    continue
+            if user_type_filter and normalized_user_type != user_type_filter:
+                continue
+
+            camera_id = 1 if event_type == "entry" else 2 if event_type == "exit" else None
+            row_data = {
+                "id": event_row_id,
+                "event_id": event_id,
+                "user_id": user_id,
+                "name": name or "-",
+                "sr_code": sr_code or "-",
+                "user_type": normalized_user_type,
+                "event_type": event_type,
+                "camera_id": camera_id,
+                "status": normalized_decision,
+                "conf_pct": conf_pct,
+                "timestamp": _normalize_timestamp_for_json(timestamp_text),
+                "entered_at": _normalize_timestamp_for_json(timestamp_text) if event_type == "entry" else None,
+                "exited_at": _normalize_timestamp_for_json(timestamp_text) if event_type == "exit" else None,
+                "date": date_value,
+                "time": timestamp_text[11:19] if len(timestamp_text) >= 19 else "",
+            }
+            rows.append(row_data)
         conn.close()
-        return jsonify({"rows": rows})
+        events = [
+            {
+                "id": row.get("id"),
+                "event_id": row.get("event_id"),
+                "user_id": row.get("user_id"),
+                "user_name": row.get("name"),
+                "event_type": row.get("event_type"),
+                "camera_id": row.get("camera_id"),
+                "timestamp": row.get("timestamp"),
+                "status": row.get("status"),
+                "user_type": row.get("user_type"),
+            }
+            for row in rows
+        ]
+        return jsonify({"total": len(rows), "rows": rows, "events": events})
 
     @bp.route("/api/audit-log", methods=["GET"], endpoint="api_audit_log")
     @login_required

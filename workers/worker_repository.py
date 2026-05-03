@@ -88,8 +88,10 @@ class WorkerApiRepository:
         method: str = "two-factor",
         rejection_reason: str | None = None,
     ) -> None:
+        event_type = "exit" if int(self.camera_id) == 2 else "entry"
         payload = {
             "event_id": f"evt-{uuid.uuid4().hex}",
+            "event_type": event_type,
             "station_id": self.station_id,
             "camera_id": self.camera_id,
             "user_id": int(user_id),

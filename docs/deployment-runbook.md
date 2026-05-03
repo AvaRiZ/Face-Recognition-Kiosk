@@ -1,9 +1,10 @@
-# LAN Deployment Runbook (Host Stack: Web API + Worker)
+# LAN Deployment Runbook (Host Stack: Web API + Dual Workers)
 
 ## 1) Prerequisites
 - Python environment with `requirements.txt` installed.
 - PostgreSQL reachable from host.
 - `DATABASE_URL` points to PostgreSQL.
+- PostgreSQL CLI tools available on PATH for backup/restore checks (`pg_dump`, `pg_restore`, `psql`).
 - Optional internal worker token:
   - `WORKER_INTERNAL_TOKEN=<strong-random-token>`
 
@@ -24,32 +25,38 @@
 ## 3) Quick Start (Recommended: Unified Host Stack)
 1. Optional: create a persistent local env file:
    - `Copy-Item .env.local.example .env.local`
-   - Edit `.env.local` and set your real `DATABASE_URL`.
+   - Edit `.env.local` and set your real `DATABASE_URL` (the sample file already contains a local PostgreSQL example).
 2. If you do not use `.env.local`, set database URL for your shell (once per session):
    - PowerShell: `$env:DATABASE_URL = "postgresql://<user>:<password>@127.0.0.1:5432/facerec_kiosk"`
-3. Start unified host stack:
-    - `pwsh -File scripts/start_system.ps1`
-   - Or (Python wrapper): `python scripts/start_system.py`
-   - This now starts API + recognition worker together in one host process.
+3. Start unified host stack in the current terminal (recommended for first launch/troubleshooting):
+   - PowerShell launcher: `pwsh -File scripts/start_system.ps1 -Foreground`
+   - Python wrapper: `python scripts/start_system.py -Foreground`
+   - This launches one host stack that serves the API and runs entry/exit workers.
+
+Start application: `python -m app.host_stack` or `python scripts/start_system.py -Foreground`
+
+Example:
+```powershell
+$env:DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/facerec_kiosk"
+python scripts/start_system.py -Foreground
+```
 
 Initial admin provisioning:
 - Default `admin/password` bootstrap is disabled unless `ALLOW_DEFAULT_ADMIN_BOOTSTRAP=1` in dev/local setups.
 - For first-time production setup, create the initial super admin explicitly:
   - `python scripts/provision_initial_admin.py --username "<admin-user>" --password "<strong-password>" --full-name "<name>"`
 
-Run in terminal: $env:DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/facerec_kiosk"
-python scripts/start_system.py --Foreground
-
 Important:
 - Do not run `python scripts/start_system.ps1`; `.ps1` files must be launched by PowerShell.
+- When using `python scripts/start_system.py`, pass launcher switches with a single dash (for example `-Foreground`, not `--Foreground`).
 
 Optional flags:
 - `-EnvFile "C:\path\to\.env"` to load variables from a specific env file.
 - `-DatabaseUrl "postgresql://..."` to pass DB URL directly.
 - `-ApiPort 5050` to change API port.
 - `-Foreground` to run the unified host stack in the current terminal and show full errors.
-- `-SplitMode` to run API/worker as separate processes (advanced/debug only).
-- `-ApiOnly` or `-WorkerOnly` (with `-SplitMode`) to launch one service for troubleshooting.
+- `-SplitMode` to launch API and workers in separate terminal windows (advanced/debug only).
+- `-ApiOnly` or `-WorkerOnly` to launch a single service for troubleshooting.
 
 VS Code task shortcut:
 - Run task: `Start System (API + Worker)`
@@ -66,11 +73,17 @@ Start API service (LAN-exposed):
 
 Other LAN devices can now access: `http://<host-ip>:5000`.
 
-Start recognition worker (same host):
-- `pwsh -File scripts/start_worker.ps1`
+Start entry worker (same host):
+- `pwsh -File scripts/start_entry_worker.ps1`
 - Defaults:
    - `WORKER_API_BASE_URL=http://127.0.0.1:5000`
    - `WORKER_QUEUE_DIR=data/worker_queue`
+
+Start exit worker (same host):
+- `pwsh -File scripts/start_exit_worker.ps1`
+
+Legacy single-worker launcher (debug only):
+- `pwsh -File scripts/start_worker.ps1`
 
 ## 5) Backup/Restore Verification
 1. Backup:
@@ -83,6 +96,7 @@ Start recognition worker (same host):
 - `GET /api/internal/profiles/version`
 - `GET /api/internal/profiles/snapshot`
 - `GET /api/internal/runtime-config`
+- `GET /api/internal/capacity-gate`
 - `POST /api/internal/embedding-updates`
 
 If `WORKER_INTERNAL_TOKEN` is set, worker requests must include:
