@@ -927,6 +927,23 @@ def run_basic_analytics(db_path):
 
     conn = db_connect(db_path)
     c    = conn.cursor()
+    if getattr(conn, "dialect", "sqlite") == "sqlite":
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS imported_logs (
+                import_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sr_code TEXT NOT NULL,
+                name TEXT,
+                gender TEXT,
+                program TEXT,
+                year_level TEXT,
+                timestamp TIMESTAMP NOT NULL,
+                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                import_batch TEXT
+            )
+            """
+        )
+        conn.commit()
 
     # ── Ensure imported_logs exists ────────────────────────────
 
@@ -991,6 +1008,7 @@ def run_basic_analytics(db_path):
     after_conf = []
     for row in all_raw:
         sr, name, prog, gender, yr, conf, ts, src = row
+        ts_text = _timestamp_to_text(ts)
         if src == "live":
             cv = _coerce_confidence(conf)
             if cv is None or cv < 0.50:
@@ -999,7 +1017,7 @@ def run_basic_analytics(db_path):
         else:
             cv = float(conf) if conf else 0.85
         after_conf.append((sr, name, prog or "", gender or "",
-                           yr or "", cv, ts, src))
+                           yr or "", cv, ts_text, src))
 
     after_hrs = []
     for row in after_conf:
