@@ -1,7 +1,7 @@
 import React from 'react';
 import { getErrorMessage, showError, showSuccess } from '../alerts.js';
-import { getErrorMessage, showError, showSuccess } from '../alerts.js';
 import { fetchJson } from '../api.js';
+import { downloadFile } from '../downloads.js';
 import { socket } from '../socket.js';
 
 function formatDate(ts) {
@@ -25,6 +25,7 @@ export default function EntryExitLogsPage() {
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
+  const [exporting, setExporting] = React.useState(false);
 
   const [search, setSearch] = React.useState('');
   const [pageSize, setPageSize] = React.useState('10');
@@ -140,26 +141,6 @@ export default function EntryExitLogsPage() {
     }
   }
 
-  async function handleExportClick(event) {
-    event.preventDefault();
-    setExporting(true);
-
-    try {
-      await downloadFile(exportHref, `entry-logs-${dateFilter || 'all'}.csv`);
-      await showSuccess(
-        'Export Complete',
-        'Entry logs were exported successfully.'
-      );
-    } catch (error) {
-      await showError(
-        'Export Failed',
-        getErrorMessage(error, 'The entry log export could not be generated.')
-      );
-    } finally {
-      setExporting(false);
-    }
-  }
-
   function handleTab(tab) {
     setActiveTab(tab);
     if (tab === 'today') {
@@ -225,18 +206,12 @@ export default function EntryExitLogsPage() {
               />
               <button
                 type="button"
-              <button
-                type="button"
                 id="exportLogs"
                 className="btn btn-outline-success d-flex align-items-center"
                 style={{ height: '38px', whiteSpace: 'nowrap' }}
                 onClick={handleExportClick}
                 disabled={exporting}
-                onClick={handleExportClick}
-                disabled={exporting}
               >
-                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export CSV'}
-              </button>
                 <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export CSV'}
               </button>
             </div>

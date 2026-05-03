@@ -1,8 +1,6 @@
 import React from "react";
 import { getErrorMessage, showError, showSuccess } from "../alerts.js";
-import { getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { fetchJson } from "../api.js";
-import { getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { socket } from "../socket.js";
 
 const PEAK_HOUR_START = 7;
