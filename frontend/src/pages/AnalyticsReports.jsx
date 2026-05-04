@@ -3676,7 +3676,9 @@ function AnalyticsReportsInner() {
 
   React.useEffect(() => {
 
-    const intervalMs = socketConnected ? ANALYTICS_FALLBACK_POLL_MS : ANALYTICS_OFFLINE_POLL_MS;
+    const intervalMs = socketConnected
+      ? ANALYTICS_CONNECTED_POLL_MS
+      : ANALYTICS_FALLBACK_POLL_MS;
     const timer = window.setInterval(() => {
 
       runAnalyticsPipeline({ silent: true });

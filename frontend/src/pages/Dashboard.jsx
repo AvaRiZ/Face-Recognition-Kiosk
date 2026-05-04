@@ -1,8 +1,6 @@
 import React from "react";
 import { getErrorMessage, showError, showSuccess } from "../alerts.js";
-import { getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { fetchJson } from "../api.js";
-import { getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { socket } from "../socket.js";
 
 const PEAK_HOUR_START = 7;
@@ -96,11 +94,109 @@ function formatRangeLabel(startDate, endDate) {
   return `${formatter.format(start)} - ${formatter.format(end)}`;
 }
 
+function parseApiTimestamp(value) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  // Normalize backend timestamps to an ISO-like form for consistent parsing.
+  let normalized = raw.replace(" ", "T");
+  if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(normalized)) {
+    normalized = `${normalized}Z`;
+  }
+
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function formatSnapshotTime(timestamp) {
   if (!timestamp) return "-";
-  const parsed = new Date(timestamp);
-  if (Number.isNaN(parsed.getTime())) return String(timestamp);
+  const parsed = parseApiTimestamp(timestamp);
+  if (!parsed) return String(timestamp);
   return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatSnapshotTimeWithDate(timestamp) {
+  if (!timestamp) return "-";
+  const parsed = parseApiTimestamp(timestamp);
+  if (!parsed) return String(timestamp);
+  const time = parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const date = parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+  return `${time} ${date}`;
+}
+
+// Analyze occupancy trend from snapshot history (oldest to newest order)
+function calculateOccupancyTrend(snapshots) {
+  if (!Array.isArray(snapshots) || snapshots.length < 2) {
+    return { trend: "unknown", direction: "→", minutesOld: null, minCount: null, maxCount: null };
+  }
+
+  // Sort by timestamp ascending (oldest first) for analysis
+  const sorted = [...snapshots].sort((a, b) => {
+    const timeA = parseApiTimestamp(a.snapshot_timestamp)?.getTime() ?? 0;
+    const timeB = parseApiTimestamp(b.snapshot_timestamp)?.getTime() ?? 0;
+    return timeA - timeB;
+  });
+
+  const recent = sorted.slice(-6); // Last 6 snapshots (30 min if 5-min intervals)
+  const oldest = recent[0].occupancy_count;
+  const newest = recent[recent.length - 1].occupancy_count;
+  const minCount = Math.min(...recent.map((s) => s.occupancy_count));
+  const maxCount = Math.max(...recent.map((s) => s.occupancy_count));
+
+  let trend = "steady";
+  let direction = "→";
+  const diff = newest - oldest;
+  if (diff > 3) {
+    trend = "rising";
+    direction = "↑";
+  } else if (diff < -3) {
+    trend = "falling";
+    direction = "↓";
+  }
+
+  const oldestTime = parseApiTimestamp(recent[0].snapshot_timestamp)?.getTime() ?? new Date().getTime();
+  const nowTime = new Date().getTime();
+  const minutesOld = Math.max(0, Math.round((nowTime - oldestTime) / 60000));
+
+  return { trend, direction, minutesOld, minCount, maxCount };
+}
+
+// Generate plain-language status message for staff
+function getOccupancyStatusMessage(occupancyCount, capacityLimit, isFull, capacityWarning, trendData) {
+  if (isFull) {
+    return "🔴 At capacity. No new entries permitted.";
+  }
+
+  const ratio = capacityLimit > 0 ? occupancyCount / capacityLimit : 0;
+  const remainingSlots = capacityLimit - occupancyCount;
+
+  if (capacityWarning) {
+    const message = `⚠️ Near capacity: ${remainingSlots} slot${remainingSlots === 1 ? "" : "s"} available`;
+    if (trendData.trend === "rising") {
+      return `${message} and still rising.`;
+    }
+    if (trendData.trend === "falling") {
+      return `${message}, but occupancy is declining.`;
+    }
+    return `${message}.`;
+  }
+
+  if (ratio > 0.6 && trendData.trend === "rising") {
+    return `📈 Rising trend: Consider preparing for capacity limits soon.`;
+  }
+
+  if (ratio < 0.3 && trendData.trend === "falling") {
+    return `📉 Occupancy is declining, currently moderate.`;
+  }
+
+  if (trendData.trend === "steady") {
+    return `✓ Stable occupancy. No action needed.`;
+  }
+
+  return `✓ Occupancy is normal.`;
 }
 
 function sanitizeWorksheetName(name) {
@@ -916,6 +1012,7 @@ export default function Dashboard() {
   const [overrideReason, setOverrideReason] = React.useState("");
   const [overrideSubmitting, setOverrideSubmitting] = React.useState(false);
   const [dismissInFlightId, setDismissInFlightId] = React.useState(null);
+  const [showSnapshotDetail, setShowSnapshotDetail] = React.useState(false);
   const latestRequestRef = React.useRef(0);
   const hasLoadedDataRef = React.useRef(false);
 
@@ -1231,69 +1328,106 @@ export default function Dashboard() {
         <div className="col-xl-8">
           <div className="card h-100">
             <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center mb-2">
-                <h5 className="card-title mb-0">Live Occupancy Monitor</h5>
-                <span className={`badge ${occupancyStatusClass}`}>{occupancyStatusLabel}</span>
-              </div>
-              <div className="d-flex flex-wrap align-items-end gap-3 mb-2">
+              {/* Summary Section */}
+              <div className="d-flex justify-content-between align-items-start mb-3">
                 <div>
-                  <div className="display-6 fw-bold mb-0">
-                    {occupancyCount}
-                    <span className="text-muted fs-5">/{capacityLimit || 0}</span>
+                  <h5 className="card-title mb-3">Live Occupancy Monitor</h5>
+                  <div className="d-flex align-items-baseline gap-2 mb-2">
+                    <span className="display-6 fw-bold">{occupancyCount}</span>
+                    <span className="text-muted fs-6">/ {capacityLimit}</span>
+                    <span className={`badge ${occupancyStatusClass} ms-2`}>{occupancyStatusLabel}</span>
                   </div>
-                  <div className="text-muted small">Current occupancy vs configured capacity</div>
                 </div>
-                <div className="ms-auto text-end">
-                  <div className="fw-semibold">{occupancyPercent}% utilized</div>
-                  <div className="text-muted small">
-                    Entries today: <strong>{dailyEntries}</strong> · Exits today: <strong>{dailyExits}</strong>
-                  </div>
+                <div className="text-end">
+                  <div className="display-5 fw-bold text-primary">{occupancyPercent}%</div>
+                  <div className="text-muted small">capacity</div>
                 </div>
               </div>
+
+              {/* Progress Bar */}
               <div className="progress mb-3" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={occupancyPercent}>
                 <div
                   className={`progress-bar ${isFull ? "bg-danger" : capacityWarning ? "bg-warning" : "bg-success"}`}
                   style={{ width: `${occupancyPercent}%` }}
                 />
               </div>
+
+              {/* Trend Analysis & Status Guidance */}
+              {occupancyHistory.length > 0 ? (() => {
+                const trendData = calculateOccupancyTrend(occupancyHistory);
+                const statusMsg = getOccupancyStatusMessage(occupancyCount, capacityLimit, isFull, capacityWarning, trendData);
+                return (
+                  <>
+                    <div className="alert alert-info mb-3 py-2">
+                      <i className="bi bi-info-circle me-2"></i>
+                      <strong>Trend:</strong> {trendData.direction} {trendData.trend}{trendData.minutesOld ? ` (last ${trendData.minutesOld} min)` : ""}
+                    </div>
+                    <div className="alert alert-light mb-3 py-2">
+                      <i className="bi bi-chat-left-text me-2"></i>
+                      {statusMsg}
+                    </div>
+                  </>
+                );
+              })() : null}
+
               <div className="d-flex justify-content-between align-items-center mb-2">
-                <h6 className="mb-0">Recent Occupancy Snapshots</h6>
-                <span className="text-muted small">Today</span>
-              </div>
-              {occupancyHistory.length ? (
-                <div className="table-responsive">
-                  <table className="table table-sm align-middle mb-0">
-                    <thead>
-                      <tr>
-                        <th>Time</th>
-                        <th>Occupancy</th>
-                        <th>Entries</th>
-                        <th>Exits</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {occupancyHistory.slice(-8).map((snapshot) => (
-                        <tr key={`${snapshot.snapshot_timestamp}-${snapshot.occupancy_count}`}>
-                          <td>{formatSnapshotTime(snapshot.snapshot_timestamp)}</td>
-                          <td>{snapshot.occupancy_count}/{snapshot.capacity_limit}</td>
-                          <td>{snapshot.daily_entries}</td>
-                          <td>{snapshot.daily_exits}</td>
-                          <td>
-                            {snapshot.capacity_warning ? (
-                              <span className="badge bg-warning text-dark">Warning</span>
-                            ) : (
-                              <span className="badge bg-success">Normal</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div>
+                  <strong className="d-block">Activity Today</strong>
+                  <div className="text-muted small">
+                    Entries: <strong>{dailyEntries}</strong> · Exits: <strong>{dailyExits}</strong>
+                  </div>
                 </div>
-              ) : (
-                <div className="text-muted small">No snapshots available yet for today.</div>
-              )}
+              </div>
+
+              {/* Snapshot Detail (Collapsible) */}
+              <div className="mt-3 pt-3 border-top">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-link text-decoration-none"
+                  onClick={() => setShowSnapshotDetail(!showSnapshotDetail)}
+                  aria-expanded={showSnapshotDetail}
+                >
+                  <i className={`bi bi-chevron-${showSnapshotDetail ? "up" : "down"} me-1`}></i>
+                  {showSnapshotDetail ? "Hide" : "Show"} Snapshot Timeline
+                </button>
+                {showSnapshotDetail && occupancyHistory.length ? (
+                  <div className="table-responsive mt-2">
+                    <table className="table table-sm align-middle mb-0">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Occupancy</th>
+                          <th>Entries</th>
+                          <th>Exits</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {occupancyHistory.slice(-12).map((snapshot) => (
+                          <tr key={`${snapshot.snapshot_timestamp}-${snapshot.occupancy_count}`}>
+                            <td className="small">{formatSnapshotTimeWithDate(snapshot.snapshot_timestamp)}</td>
+                            <td>
+                              <strong>{snapshot.occupancy_count}</strong>
+                              <span className="text-muted">/{snapshot.capacity_limit}</span>
+                            </td>
+                            <td>{snapshot.daily_entries}</td>
+                            <td>{snapshot.daily_exits}</td>
+                            <td>
+                              {snapshot.capacity_warning ? (
+                                <span className="badge bg-warning text-dark">Warning</span>
+                              ) : (
+                                <span className="badge bg-success">Normal</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : showSnapshotDetail && !occupancyHistory.length ? (
+                  <div className="text-muted small mt-2">No snapshots available yet for today.</div>
+                ) : null}
+              </div>
             </div>
           </div>
         </div>

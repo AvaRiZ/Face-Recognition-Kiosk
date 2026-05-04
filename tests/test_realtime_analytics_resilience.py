@@ -12,7 +12,7 @@ from core.config import AppConfig
 from core.state import AppStateManager
 from database.schema import init_canonical_schema
 from db import connect as db_connect
-from routes.ml_analytics import run_ml_analytics
+from routes.ml_analytics import run_basic_analytics, run_ml_analytics
 
 try:
     from routes.internal_routes import create_internal_blueprint
@@ -151,6 +151,56 @@ class AnalyticsPipelineResilienceTests(unittest.TestCase):
                 result = run_ml_analytics(db_path)
 
         self.assertNotIn("message", result)
+        self.assertEqual(result.get("data_quality", {}).get("total_live"), 1)
+
+    def test_run_basic_analytics_accepts_datetime_live_timestamps(self) -> None:
+        class _FakeCursor:
+            def __init__(self) -> None:
+                self._rows = []
+
+            def execute(self, query, _params=None):
+                normalized = " ".join(str(query).split()).lower()
+                if "from recognition_events re" in normalized:
+                    self._rows = [
+                        (
+                            "SR001",
+                            "Alice",
+                            "BSCS",
+                            None,
+                            None,
+                            0.93,
+                            datetime(2026, 4, 22, 13, 20, 48),
+                            "live",
+                        )
+                    ]
+                elif "from imported_logs i" in normalized:
+                    self._rows = []
+                elif "from programs" in normalized:
+                    self._rows = [("Computer Science", "BSCS")]
+                elif "select count(*) from users" in normalized:
+                    self._rows = [(1,)]
+                else:
+                    self._rows = []
+
+            def fetchall(self):
+                return list(self._rows)
+
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+        class _FakeConn:
+            dialect = "postgres"
+
+            def cursor(self):
+                return _FakeCursor()
+
+            def close(self):
+                return None
+
+        with patch("routes.ml_analytics.db_connect", return_value=_FakeConn()):
+            result = run_basic_analytics("ignored")
+
+        self.assertIn("data_quality", result)
         self.assertEqual(result.get("data_quality", {}).get("total_live"), 1)
 
 

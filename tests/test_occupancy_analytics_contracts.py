@@ -248,6 +248,74 @@ class OccupancyAnalyticsContractTests(unittest.TestCase):
         self.assertEqual(by_date[day_2.isoformat()]["capacity_breaches"], 0)
         self.assertEqual(by_date[day_3.isoformat()]["capacity_breaches"], 1)
 
+    def test_occupancy_snapshot_history_has_required_fields_for_trend_analysis(self) -> None:
+        """Verify snapshot history API returns all fields needed for frontend trend calculation."""
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        db_path = str(Path(temp_dir.name) / "trend_analysis.db")
+        _create_tables(db_path)
+
+        report_date = date(2026, 5, 2)
+        date_str = report_date.isoformat()
+
+        conn = db_connect(db_path)
+        c = conn.cursor()
+        # Insert 6 snapshots simulating a rising trend (5-min intervals = 30 min span)
+        for i in range(6):
+            c.execute(
+                """
+                INSERT INTO occupancy_snapshots (
+                    snapshot_timestamp, occupancy_count, capacity_limit, capacity_warning,
+                    daily_entries, daily_exits, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"{date_str} {8 + i // 4:02d}:{5 * i % 60:02d}:00",
+                    20 + (i * 2),  # Rising: 20, 22, 24, 26, 28, 30
+                    300,
+                    0,
+                    20 + i,
+                    0,
+                    f"{date_str} {8 + i // 4:02d}:{5 * i % 60:02d}:00",
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+        service = OccupancyService(db_path)
+        history = service.get_history(report_date, limit=288)
+
+        # Verify all required fields are present for trend calculation
+        self.assertGreater(len(history), 0)
+        for snapshot in history:
+            self.assertIn("snapshot_timestamp", snapshot)
+            self.assertIn("occupancy_count", snapshot)
+            self.assertIn("capacity_limit", snapshot)
+            self.assertIn("capacity_warning", snapshot)
+            self.assertIn("daily_entries", snapshot)
+            self.assertIn("daily_exits", snapshot)
+            # Verify types are correct for frontend
+            self.assertIsInstance(snapshot["snapshot_timestamp"], str)
+            self.assertIsInstance(snapshot["occupancy_count"], int)
+            self.assertIsInstance(snapshot["capacity_limit"], int)
+            self.assertIsInstance(snapshot["capacity_warning"], (int, bool))
+
+    def test_occupancy_history_empty_case_when_no_snapshots(self) -> None:
+        """Verify empty snapshot history is handled gracefully."""
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        db_path = str(Path(temp_dir.name) / "empty_history.db")
+        _create_tables(db_path)
+
+        report_date = date(2026, 5, 2)
+
+        service = OccupancyService(db_path)
+        history = service.get_history(report_date, limit=288)
+
+        # Empty history should return empty list, not None or error
+        self.assertIsInstance(history, list)
+        self.assertEqual(len(history), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

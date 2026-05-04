@@ -1,6 +1,7 @@
 from core.config import AppConfig
 from core.state import AppStateManager
 from database.repository import UserRepository
+from database.schema import init_canonical_schema
 from auth import init_auth_db
 from routes.routes import init_imported_logs_table
 from app.flask_app import create_flask_app
@@ -16,6 +17,7 @@ def main():
     print("boot: auth", flush=True)
     init_auth_db()
     init_imported_logs_table(config.db_path)
+    init_canonical_schema(config.db_path)
 
     print("boot: state", flush=True)
     state = AppStateManager(config)
