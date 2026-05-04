@@ -63,7 +63,7 @@ export default function SettingsPage() {
 
   async function clearRecognitionLog() {
     const confirmed = await confirmAction({
-      title: 'Clear Recognition Log?',
+      title: 'Clear Recognition Events?',
       text: 'This will clear all recognition history. This action cannot be undone.',
       confirmButtonText: 'Yes, clear',
       confirmButtonColor: '#fd7e14'
@@ -72,7 +72,7 @@ export default function SettingsPage() {
 
     try {
       await fetchJson('/api/clear_log', { method: 'POST' });
-      await showSuccess('Completed', 'Recognition log cleared successfully.');
+      await showSuccess('Completed', 'Recognition events cleared successfully.');
       window.location.reload();
     } catch (error) {
       await showError('Request Failed', getErrorMessage(error));
@@ -229,7 +229,7 @@ export default function SettingsPage() {
                   Reset Database
                 </button>
                 <button onClick={clearRecognitionLog} className="btn btn-warning" type="button">
-                  Clear Recognition Log
+                  Clear Recognition Events
                 </button>
               </div>
             </div>

@@ -1441,7 +1441,6 @@ def create_routes_blueprint(deps):
             delete_order = [
                 "recognition_events",
                 "user_embeddings",
-                "recognition_log",
                 "users",
             ]
             for table_name in delete_order:
@@ -1470,10 +1469,10 @@ def create_routes_blueprint(deps):
         try:
             conn = db_connect(deps["db_path"])
             c = conn.cursor()
-            c.execute("DELETE FROM recognition_log")
+            c.execute("DELETE FROM recognition_events")
             conn.commit()
             conn.close()
-            return {"success": True, "message": "Recognition log cleared"}
+            return {"success": True, "message": "Recognition events cleared"}
         except Exception as e:
             return {"success": False, "message": str(e)}, 500
 
@@ -1936,9 +1935,6 @@ def create_routes_blueprint(deps):
                 return redirect(url_for("routes.registered_profiles"))
  
             name, sr_code = student
- 
-            # Delete recognition logs first (foreign key constraint)
-            c.execute("DELETE FROM recognition_log WHERE user_id = ?", (user_id,))
  
             # Delete the student
             c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
@@ -2821,23 +2817,7 @@ def create_routes_blueprint(deps):
                     """
                 )
                 raw_logs = c.fetchall()
-                source_mode = "legacy_events"
-            except Exception:
-                raw_logs = []
-                source_mode = ""
-        if not raw_logs:
-            try:
-                c.execute(
-                    """
-                    SELECT u.name, u.sr_code, r.confidence, r.timestamp
-                    FROM recognition_log r
-                    JOIN users u ON r.user_id = u.user_id
-                    ORDER BY r.timestamp DESC
-                    LIMIT 500
-                    """
-                )
-                raw_logs = c.fetchall()
-                source_mode = "legacy_log"
+                source_mode = "events_fallback"
             except Exception:
                 raw_logs = []
                 source_mode = ""

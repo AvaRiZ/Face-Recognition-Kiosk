@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pickle
 import sqlite3
+import uuid
 from typing import Iterable
 
 import numpy as np
@@ -14,7 +16,6 @@ from psycopg import sql
 TABLES = [
     "users",
     "staff_accounts",
-    "recognition_log",
     "recognition_events",
     "app_settings",
     "audit_log",
@@ -61,6 +62,13 @@ def _fetch_sqlite_rows(conn: sqlite3.Connection, table: str):
     rows = cur.fetchall()
     columns = [desc[0] for desc in cur.description]
     return columns, rows
+
+
+def _count_sqlite_rows(conn: sqlite3.Connection, table: str) -> int:
+    cur = conn.cursor()
+    cur.execute(f"SELECT COUNT(*) FROM {table}")
+    row = cur.fetchone()
+    return int(row[0] or 0)
 
 
 def _copy_rows_postgres(conn: psycopg.Connection, table: str, columns: list[str], rows: Iterable[tuple]):
@@ -210,6 +218,94 @@ def _backfill_user_embeddings_from_users(conn: psycopg.Connection) -> int:
     return inserted
 
 
+def _backfill_legacy_recognition_log_into_events(sqlite_conn: sqlite3.Connection, pg_conn: psycopg.Connection) -> int:
+    if not _table_exists_sqlite(sqlite_conn, "recognition_log"):
+        return 0
+    if not _table_exists_postgres(pg_conn, "recognition_events"):
+        return 0
+    if _table_exists_sqlite(sqlite_conn, "recognition_events") and _count_sqlite_rows(sqlite_conn, "recognition_events") > 0:
+        return 0
+
+    columns, rows = _fetch_sqlite_rows(sqlite_conn, "recognition_log")
+    if not rows:
+        return 0
+
+    col_index = {name: idx for idx, name in enumerate(columns)}
+    has_users = _table_exists_sqlite(sqlite_conn, "users")
+    user_sr_map: dict[int, str] = {}
+    if has_users:
+        cur = sqlite_conn.cursor()
+        try:
+            cur.execute("SELECT user_id, sr_code FROM users")
+            for raw_user_id, raw_sr_code in cur.fetchall():
+                try:
+                    uid = int(raw_user_id)
+                except Exception:
+                    continue
+                user_sr_map[uid] = str(raw_sr_code or "")
+        except Exception:
+            user_sr_map = {}
+
+    def _value(row: tuple, key: str):
+        idx = col_index.get(key)
+        if idx is None:
+            return None
+        return row[idx]
+
+    insert_rows = []
+    for row in rows:
+        raw_log_id = _value(row, "log_id")
+        try:
+            log_id = int(raw_log_id) if raw_log_id is not None else None
+        except Exception:
+            log_id = None
+        raw_user_id = _value(row, "user_id")
+        try:
+            user_id = int(raw_user_id) if raw_user_id is not None else None
+        except Exception:
+            user_id = None
+        sr_code = user_sr_map.get(int(user_id), "") if user_id is not None else ""
+        captured_at = _value(row, "timestamp")
+        event_id = f"legacy-log-{log_id}" if log_id is not None else f"legacy-log-{uuid.uuid4().hex}"
+        payload_json = json.dumps({"source": "sqlite_recognition_log", "legacy_log_id": log_id}, ensure_ascii=True)
+        insert_rows.append(
+            (
+                event_id,
+                user_id,
+                sr_code or None,
+                "allowed",
+                "entry",
+                _value(row, "confidence"),
+                _value(row, "primary_confidence"),
+                _value(row, "secondary_confidence"),
+                _value(row, "primary_distance"),
+                _value(row, "secondary_distance"),
+                _value(row, "face_quality"),
+                _value(row, "method") or "two-factor",
+                captured_at,
+                payload_json,
+            )
+        )
+
+    if not insert_rows:
+        return 0
+
+    with pg_conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence,
+                primary_confidence, secondary_confidence, primary_distance, secondary_distance,
+                face_quality, method, captured_at, payload_json
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            insert_rows,
+        )
+    return len(insert_rows)
+
+
 def migrate(sqlite_path: str, postgres_url: str) -> None:
     sqlite_conn = sqlite3.connect(sqlite_path)
     pg_conn = psycopg.connect(_normalize_postgres_url(postgres_url))
@@ -234,6 +330,12 @@ def migrate(sqlite_path: str, postgres_url: str) -> None:
     backfilled = _backfill_user_embeddings_from_users(pg_conn)
     if backfilled > 0:
         print(f"Backfilled user_embeddings: {backfilled} embedding rows")
+    backfilled_events = _backfill_legacy_recognition_log_into_events(sqlite_conn, pg_conn)
+    if backfilled_events > 0:
+        print(
+            "Backfilled recognition_events from legacy SQLite recognition_log: "
+            f"{backfilled_events} event rows"
+        )
 
     pg_conn.commit()
 

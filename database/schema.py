@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from db import connect as db_connect
 from db import table_columns
 from services.versioning_service import ensure_version_settings
@@ -239,7 +241,88 @@ def init_canonical_schema(db_path: str) -> None:
         ON occupancy_alerts(alert_type, state_date, dismissed_at)
         """
     )
+
+    _backfill_and_drop_legacy_recognition_log(conn, c)
     conn.commit()
     conn.close()
 
     ensure_version_settings(db_path)
+
+
+def _backfill_and_drop_legacy_recognition_log(conn, cursor) -> None:
+    legacy_columns = table_columns(conn, "recognition_log")
+    if not legacy_columns:
+        return
+
+    def _legacy_column_expr(column_name: str) -> str:
+        if column_name in legacy_columns:
+            return f"r.{column_name} AS {column_name}"
+        return f"NULL AS {column_name}"
+
+    cursor.execute(
+        f"""
+        SELECT
+            r.log_id,
+            r.user_id,
+            COALESCE(u.sr_code, '') AS sr_code,
+            {_legacy_column_expr("confidence")},
+            {_legacy_column_expr("primary_confidence")},
+            {_legacy_column_expr("secondary_confidence")},
+            {_legacy_column_expr("primary_distance")},
+            {_legacy_column_expr("secondary_distance")},
+            {_legacy_column_expr("face_quality")},
+            {_legacy_column_expr("method")},
+            {_legacy_column_expr("timestamp")}
+        FROM recognition_log r
+        LEFT JOIN users u ON u.user_id = r.user_id
+        ORDER BY r.log_id ASC
+        """
+    )
+    rows = cursor.fetchall()
+    for (
+        log_id,
+        user_id,
+        sr_code,
+        confidence,
+        primary_confidence,
+        secondary_confidence,
+        primary_distance,
+        secondary_distance,
+        face_quality,
+        method,
+        timestamp_value,
+    ) in rows:
+        event_id = f"legacy-log-{int(log_id)}"
+        payload_json = json.dumps(
+            {"source": "sqlite_recognition_log", "legacy_log_id": int(log_id)},
+            ensure_ascii=True,
+        )
+        cursor.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence,
+                primary_confidence, secondary_confidence, primary_distance, secondary_distance,
+                face_quality, method, captured_at, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            (
+                event_id,
+                int(user_id) if user_id is not None else None,
+                str(sr_code or "") or None,
+                "allowed",
+                "entry",
+                confidence,
+                primary_confidence,
+                secondary_confidence,
+                primary_distance,
+                secondary_distance,
+                face_quality,
+                str(method or "two-factor"),
+                timestamp_value,
+                payload_json,
+            ),
+        )
+
+    cursor.execute("DROP TABLE IF EXISTS recognition_log")

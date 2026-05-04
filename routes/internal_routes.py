@@ -244,38 +244,6 @@ def create_internal_blueprint(deps):
         finally:
             conn.close()
 
-        if inserted and user_id:
-            try:
-                conn = db_connect(deps["db_path"])
-                c = conn.cursor()
-                c.execute(
-                    """
-                    INSERT INTO recognition_log (
-                        user_id, confidence, primary_confidence, secondary_confidence,
-                        primary_distance, secondary_distance, face_quality, method
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        user_id,
-                        confidence,
-                        primary_confidence,
-                        secondary_confidence,
-                        primary_distance,
-                        secondary_distance,
-                        face_quality,
-                        method,
-                    ),
-                )
-                conn.commit()
-            except Exception:
-                pass
-            finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
         if inserted and decision == "allowed":
             if event_type == "exit" and user_id:
                 try:

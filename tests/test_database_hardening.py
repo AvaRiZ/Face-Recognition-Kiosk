@@ -15,6 +15,8 @@ from core.models import RecognitionResult, User
 if "app.realtime" not in sys.modules:
     realtime_stub = types.ModuleType("app.realtime")
     realtime_stub.emit_analytics_update = lambda *_args, **_kwargs: None
+    realtime_stub.emit_capacity_threshold_alert = lambda *_args, **_kwargs: None
+    realtime_stub.emit_unrecognized_detection = lambda *_args, **_kwargs: None
     sys.modules["app.realtime"] = realtime_stub
 
 from database.repository import UserRepository
@@ -139,14 +141,11 @@ class RepositoryCanonicalizationTests(unittest.TestCase):
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM recognition_events")
         event_count = int(c.fetchone()[0] or 0)
-        c.execute("SELECT COUNT(*) FROM recognition_log")
-        legacy_count = int(c.fetchone()[0] or 0)
         c.execute("SELECT decision FROM recognition_events LIMIT 1")
         decision = c.fetchone()[0]
         conn.close()
 
         self.assertEqual(event_count, 1)
-        self.assertEqual(legacy_count, 1)
         self.assertEqual(decision, "allowed")
 
 

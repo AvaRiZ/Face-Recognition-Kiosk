@@ -2,45 +2,7 @@ import pickle
 from html import escape
 from pathlib import Path
 import re
-from db import connect as db_connect, table_columns
-
-
-def init_db(db_path):
-    conn = db_connect(db_path)
-    c = conn.cursor()
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            sr_code TEXT UNIQUE,
-            course TEXT,
-            embeddings BLOB NOT NULL,
-            image_paths TEXT NOT NULL,
-            embedding_dim INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            archived_at TIMESTAMP
-        )
-        """
-    )
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS recognition_log (
-            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            confidence REAL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-        """
-    )
-
-    existing_cols = table_columns(conn, "users")
-    if "archived_at" not in existing_cols:
-        c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
-    conn.commit()
-    conn.close()
+from db import connect as db_connect
 
 
 def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, name, sr_code, program):
@@ -112,14 +74,6 @@ def load_all_embeddings(db_path):
             all_embeddings.append(embeddings_list)
             user_info.append({"id": user_id, "name": name, "sr_code": sr_code})
     return all_embeddings, user_info
-
-
-def log_recognition(db_path, user_id, confidence):
-    conn = db_connect(db_path)
-    c = conn.cursor()
-    c.execute("INSERT INTO recognition_log (user_id, confidence) VALUES (?, ?)", (user_id, confidence))
-    conn.commit()
-    conn.close()
 
 
 def render_markdown_as_html(markdown_file: Path) -> str:

@@ -266,8 +266,8 @@ class InternalIngestRealtimeTests(unittest.TestCase):
 
 
 @unittest.skipIf(create_routes_blueprint is None, "Route blueprint dependencies are unavailable.")
-class ApiEventsFallbackTests(unittest.TestCase):
-    def test_api_events_falls_back_to_legacy_recognition_log(self) -> None:
+class ApiEventsContractTests(unittest.TestCase):
+    def test_api_events_reads_canonical_recognition_events(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         temp_path = Path(temp_dir.name)
@@ -286,19 +286,26 @@ class ApiEventsFallbackTests(unittest.TestCase):
         )
         c.execute(
             """
-            CREATE TABLE recognition_log (
-                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            CREATE TABLE recognition_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
                 user_id INTEGER,
+                sr_code TEXT,
+                decision TEXT NOT NULL,
+                event_type TEXT NOT NULL DEFAULT 'entry',
                 confidence REAL,
-                timestamp TEXT
+                captured_at TEXT,
+                ingested_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
         c.execute("INSERT INTO users (name, sr_code) VALUES ('Alice', 'SR001')")
         c.execute(
             """
-            INSERT INTO recognition_log (user_id, confidence, timestamp)
-            VALUES (1, 0.91, '2026-04-22 08:45:00')
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence, captured_at
+            )
+            VALUES ('evt-001', 1, 'SR001', 'allowed', 'entry', 0.91, '2026-04-22 08:45:00')
             """
         )
         conn.commit()

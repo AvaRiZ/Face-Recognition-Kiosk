@@ -1,23 +1,18 @@
 ﻿"""
 User and Recognition Event Repository
 
-DATABASE SCHEMA POLICY (as of Alembic 0003):
+DATABASE SCHEMA POLICY (as of Alembic 0011):
     - recognition_events: CANONICAL source of truth for face recognition events
       * Contains: event_id (unique), decision, confidence scores, full payload, timestamps
       * Records persist even if user is deleted (ON DELETE SET NULL)
       * Use for: new event ingestion, auditing, future analytics
-    
-    - recognition_log: LEGACY compatibility layer (maintained for backwards compatibility)
-      * Contains: subset of recognition_events data (user_id, confidence, method, timestamps)
-      * Records remain if user is deleted (ON DELETE SET NULL as of Alembic 0003)
-      * Use for: existing dashboards/analytics only (planned deprecation)
     
     - user_embeddings: Per-user ML model embeddings
       * Uses CASCADE delete: embeddings are purged when user is deleted
       * Timestamps standardized to TIMESTAMPTZ (as of Alembic 0003)
     
     - users: Core identity/profile table
-      * Archival/deletion now works correctly (no FK blocks on recognition_log)
+      * Archival/deletion keeps event history via recognition_events.user_id ON DELETE SET NULL
       * See: docs/database_schema_policy.md for complete migration details
 """
 
@@ -77,7 +72,6 @@ class UserRepository:
         if dialect == "postgres":
             required_tables = (
                 "users",
-                "recognition_log",
                 "programs",
                 "recognition_events",
                 "user_embeddings",
@@ -116,24 +110,6 @@ class UserRepository:
 
         c.execute(
             """
-            CREATE TABLE IF NOT EXISTS recognition_log (
-                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                confidence REAL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                primary_confidence REAL,
-                secondary_confidence REAL,
-                primary_distance REAL,
-                secondary_distance REAL,
-                face_quality REAL,
-                method TEXT DEFAULT 'two-factor',
-                FOREIGN KEY (user_id) REFERENCES users (user_id)
-            )
-            """
-        )
-
-        c.execute(
-            """
             CREATE TABLE IF NOT EXISTS programs (
                 program_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 program_name TEXT NOT NULL UNIQUE,
@@ -145,19 +121,6 @@ class UserRepository:
             )
             """
         )
-
-        existing_columns = table_columns(conn, "recognition_log")
-        extra_columns = {
-            "primary_confidence": "REAL",
-            "secondary_confidence": "REAL",
-            "primary_distance": "REAL",
-            "secondary_distance": "REAL",
-            "face_quality": "REAL",
-            "method": "TEXT DEFAULT 'two-factor'",
-        }
-        for col_name, col_type in extra_columns.items():
-            if col_name not in existing_columns:
-                c.execute(f"ALTER TABLE recognition_log ADD COLUMN {col_name} {col_type}")
 
         existing_columns = table_columns(conn, "users")
         if "gender" not in existing_columns:
@@ -180,19 +143,6 @@ class UserRepository:
             c.execute("ALTER TABLE programs ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         if "last_updated" not in existing_program_columns:
             c.execute("ALTER TABLE programs ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-
-        c.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_recognition_log_user_id
-            ON recognition_log(user_id)
-            """
-        )
-        c.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_recognition_log_timestamp
-            ON recognition_log(timestamp)
-            """
-        )
 
         _seed_programs_table(c)
 
@@ -485,7 +435,6 @@ class UserRepository:
         c = conn.cursor()
         if self._supports_embedding_table(conn):
             c.execute("DELETE FROM user_embeddings WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM recognition_log WHERE user_id = ?", (user_id,))
         c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         conn.commit()
         conn.close()
@@ -494,7 +443,7 @@ class UserRepository:
     def reset_database(self) -> None:
         conn = db_connect(self.db_path)
         c = conn.cursor()
-        for table_name in ("recognition_events", "user_embeddings", "recognition_log", "users"):
+        for table_name in ("recognition_events", "user_embeddings", "users"):
             if table_columns(conn, table_name):
                 c.execute(f"DELETE FROM {table_name}")
         conn.commit()
@@ -520,7 +469,6 @@ class UserRepository:
         camera_id = int(getattr(self, "camera_id", 1) or 1)
         event_type = "exit" if camera_id == 2 else "entry"
 
-        inserted_event = False
         if table_columns(conn, "recognition_events"):
             event_id = f"evt-{uuid.uuid4().hex}"
             payload_json = json.dumps(
@@ -569,29 +517,6 @@ class UserRepository:
                     payload_json,
                 ),
             )
-            inserted_event = (c.rowcount or 0) > 0
-
-        if table_columns(conn, "recognition_log"):
-            c.execute(
-                """
-                INSERT INTO recognition_log (
-                    user_id, confidence, primary_confidence, secondary_confidence,
-                    primary_distance, secondary_distance, face_quality, method, timestamp
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    int(result.user_id),
-                    confidence,
-                    primary_confidence,
-                    secondary_confidence,
-                    primary_distance,
-                    secondary_distance,
-                    quality_value,
-                    method,
-                    captured_at,
-                ),
-            )
 
         conn.commit()
         conn.close()
@@ -603,12 +528,12 @@ class UserRepository:
         c.execute(
             """
             SELECT u.user_id, u.name, u.sr_code, u.embedding_dim, u.embeddings,
-                   COUNT(r.log_id) as recognitions,
-                   AVG(r.confidence) as avg_confidence,
-                   MAX(r.confidence) as best_confidence,
-                   MAX(r.timestamp) as last_seen
+                   COUNT(re.id) as recognitions,
+                   AVG(re.confidence) as avg_confidence,
+                   MAX(re.confidence) as best_confidence,
+                   MAX(COALESCE(re.captured_at, re.ingested_at)) as last_seen
             FROM users u
-            LEFT JOIN recognition_log r ON u.user_id = r.user_id
+            LEFT JOIN recognition_events re ON u.user_id = re.user_id
             GROUP BY u.user_id
             ORDER BY recognitions DESC
             """
@@ -622,11 +547,13 @@ class UserRepository:
         c = conn.cursor()
         c.execute(
             """
-            SELECT timestamp, method, primary_confidence, secondary_confidence,
+            SELECT COALESCE(captured_at, ingested_at) AS event_time,
+                   method,
+                   primary_confidence, secondary_confidence,
                    primary_distance, secondary_distance, face_quality
-            FROM recognition_log
+            FROM recognition_events
             WHERE user_id = ?
-            ORDER BY timestamp DESC, log_id DESC
+            ORDER BY COALESCE(captured_at, ingested_at) DESC, id DESC
             LIMIT 1
             """,
             (user_id,),

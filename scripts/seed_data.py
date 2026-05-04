@@ -4,6 +4,7 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+import uuid
 
 import numpy as np
 
@@ -61,9 +62,23 @@ def _insert_logs(db_path, user_ids, days, avg_logs_per_day):
                 minutes=random.randint(0, 59),
                 seconds=random.randint(0, 59),
             )
+            event_type = "entry" if random.random() < 0.7 else "exit"
             c.execute(
-                "INSERT INTO recognition_log (user_id, confidence, timestamp) VALUES (?, ?, ?)",
-                (user_id, confidence, timestamp.strftime("%Y-%m-%d %H:%M:%S")),
+                """
+                INSERT INTO recognition_events (
+                    event_id, user_id, sr_code, decision, event_type, confidence, captured_at, method
+                )
+                SELECT ?, u.user_id, u.sr_code, 'allowed', ?, ?, ?, 'two-factor'
+                FROM users u
+                WHERE u.user_id = ?
+                """,
+                (
+                    f"seed-{uuid.uuid4().hex}",
+                    event_type,
+                    confidence,
+                    timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                    user_id,
+                ),
             )
 
     conn.commit()
@@ -73,7 +88,7 @@ def _insert_logs(db_path, user_ids, days, avg_logs_per_day):
 def _reset_db(db_path):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
-    c.execute("DELETE FROM recognition_log")
+    c.execute("DELETE FROM recognition_events")
     c.execute("DELETE FROM users")
     conn.commit()
     conn.close()
