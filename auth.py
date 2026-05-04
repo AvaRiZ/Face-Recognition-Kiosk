@@ -4,7 +4,7 @@ from functools import wraps
 from flask import session, redirect, url_for, jsonify, request
 from db import connect, resolve_database_target, table_columns
 
-DB_PATH = resolve_database_target("database/faces_improved.db")
+DB_PATH = resolve_database_target()
 
 # -------------------------------
 # Password hashing (no bcrypt needed)
@@ -39,55 +39,19 @@ def _default_admin_bootstrap_enabled():
 # Database setup for staff accounts
 # -------------------------------
 def init_auth_db():
-    """Create staff_accounts and audit_log tables."""
+    """Validate auth tables and bootstrap default admin if enabled."""
     conn = connect(DB_PATH)
     c = conn.cursor()
-    dialect = getattr(conn, "dialect", "sqlite")
-
-    if dialect == "postgres":
-        missing = []
-        if not table_columns(conn, "staff_accounts"):
-            missing.append("staff_accounts")
-        if not table_columns(conn, "audit_log"):
-            missing.append("audit_log")
-        if missing:
-            conn.close()
-            raise RuntimeError(
-                "PostgreSQL schema is missing authentication tables "
-                f"{missing}. Run alembic upgrade head before starting the app."
-            )
-    else:
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS staff_accounts (
-                staff_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                username    TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                full_name   TEXT NOT NULL,
-                role        TEXT NOT NULL CHECK(role IN ('super_admin', 'library_admin', 'library_staff')),
-                is_active   INTEGER DEFAULT 1,
-                profile_image TEXT,
-                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login  TIMESTAMP
-            )
-            """
-        )
-        existing_columns = table_columns(conn, "staff_accounts")
-        if "profile_image" not in existing_columns:
-            c.execute("ALTER TABLE staff_accounts ADD COLUMN profile_image TEXT")
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS audit_log (
-                audit_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                staff_id    INTEGER,
-                username    TEXT,
-                action      TEXT NOT NULL,
-                target      TEXT,
-                ip_address  TEXT,
-                timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (staff_id) REFERENCES staff_accounts(staff_id)
-            )
-            """
+    missing = []
+    if not table_columns(conn, "staff_accounts"):
+        missing.append("staff_accounts")
+    if not table_columns(conn, "audit_log"):
+        missing.append("audit_log")
+    if missing:
+        conn.close()
+        raise RuntimeError(
+            "PostgreSQL schema is missing authentication tables "
+            f"{missing}. Run alembic upgrade head before starting the app."
         )
 
     conn.commit()

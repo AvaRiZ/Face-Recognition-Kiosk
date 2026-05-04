@@ -16,8 +16,8 @@
 ## Operational Notes
 
 1. Apply migrations with `alembic upgrade head` before starting services.
-2. SQLite initialization backfills old legacy rows (if present) into canonical events, then drops the legacy table.
-3. PostgreSQL migration `20260504_0011` performs the same backfill/drop flow.
+2. Runtime startup validates canonical PostgreSQL tables and fails fast if schema is outdated.
+3. Migration `20260504_0011` performs legacy backfill/drop in PostgreSQL environments.
 
 ## Verification Queries
 

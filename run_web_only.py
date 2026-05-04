@@ -3,12 +3,20 @@ from core.state import AppStateManager
 from database.repository import UserRepository
 from database.schema import init_canonical_schema
 from auth import init_auth_db
+from db import is_postgres_target, resolve_database_target
 from routes.routes import init_imported_logs_table
 from app.flask_app import create_flask_app
 from app.realtime import socketio
 
 
 def main():
+    db_target = resolve_database_target(AppConfig().db_path)
+    if not is_postgres_target(db_target):
+        raise RuntimeError(
+            "This architecture requires PostgreSQL as the persistent datastore. "
+            "Set DATABASE_URL to a postgres://, postgresql://, or postgresql+<driver>:// target."
+        )
+
     print("boot: config", flush=True)
     config = AppConfig()
     print("boot: repository", flush=True)

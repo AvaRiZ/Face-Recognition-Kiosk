@@ -9,7 +9,7 @@
 3. Removed legacy fallback reads in `/api/events` that depended on the old compatibility table.
 4. Updated reset/clear/delete flows to operate on canonical tables only.
 5. Added migration `20260504_0011` to backfill old event rows into canonical events and drop the legacy table.
-6. Updated SQLite canonical initializer to perform the same backfill/drop flow.
+6. Removed runtime schema fallback logic; startup now enforces canonical PostgreSQL schema state.
 
 ## Runtime Result
 

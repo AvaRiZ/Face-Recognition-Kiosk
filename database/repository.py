@@ -67,82 +67,19 @@ class UserRepository:
     def init_db(self) -> None:
         conn = db_connect(self.db_path)
         c = conn.cursor()
-        dialect = getattr(conn, "dialect", "sqlite")
-
-        if dialect == "postgres":
-            required_tables = (
-                "users",
-                "programs",
-                "recognition_events",
-                "user_embeddings",
-            )
-            missing = [name for name in required_tables if not table_columns(conn, name)]
-            if missing:
-                conn.close()
-                raise RuntimeError(
-                    "PostgreSQL schema is missing required repository tables "
-                    f"{missing}. Run `alembic upgrade head` before starting the app."
-                )
-            _seed_programs_table(c)
-            conn.commit()
+        required_tables = (
+            "users",
+            "programs",
+            "recognition_events",
+            "user_embeddings",
+        )
+        missing = [name for name in required_tables if not table_columns(conn, name)]
+        if missing:
             conn.close()
-            return
-
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                sr_code TEXT UNIQUE,
-                gender TEXT,
-                course TEXT,
-                embeddings BLOB NOT NULL,
-                image_paths TEXT NOT NULL,
-                embedding_dim INTEGER NOT NULL,
-                user_type TEXT DEFAULT 'enrolled',
-                flow_type TEXT DEFAULT 'auto_entry',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                archived_at TIMESTAMP
+            raise RuntimeError(
+                "PostgreSQL schema is missing required repository tables "
+                f"{missing}. Run `alembic upgrade head` before starting the app."
             )
-            """
-        )
-
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS programs (
-                program_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                program_name TEXT NOT NULL UNIQUE,
-                program_code TEXT,
-                department_name TEXT,
-                is_active INTEGER DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-
-        existing_columns = table_columns(conn, "users")
-        if "gender" not in existing_columns:
-            c.execute("ALTER TABLE users ADD COLUMN gender TEXT")
-        if "archived_at" not in existing_columns:
-            c.execute("ALTER TABLE users ADD COLUMN archived_at TIMESTAMP")
-        if "user_type" not in existing_columns:
-            c.execute("ALTER TABLE users ADD COLUMN user_type TEXT DEFAULT 'enrolled'")
-        if "flow_type" not in existing_columns:
-            c.execute("ALTER TABLE users ADD COLUMN flow_type TEXT DEFAULT 'auto_entry'")
-
-        existing_program_columns = table_columns(conn, "programs")
-        if "program_code" not in existing_program_columns:
-            c.execute("ALTER TABLE programs ADD COLUMN program_code TEXT")
-        if "department_name" not in existing_program_columns:
-            c.execute("ALTER TABLE programs ADD COLUMN department_name TEXT")
-        if "is_active" not in existing_program_columns:
-            c.execute("ALTER TABLE programs ADD COLUMN is_active INTEGER DEFAULT 1")
-        if "created_at" not in existing_program_columns:
-            c.execute("ALTER TABLE programs ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-        if "last_updated" not in existing_program_columns:
-            c.execute("ALTER TABLE programs ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
         _seed_programs_table(c)
 
@@ -313,41 +250,23 @@ class UserRepository:
             else:
                 legacy_blob = self._serialize_legacy_embeddings_blob(normalized_embeddings)
 
-            if getattr(conn, "dialect", "sqlite") == "postgres":
-                c.execute(
-                    """
-                    INSERT INTO users (name, sr_code, gender, course, embeddings, image_paths, embedding_dim)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    RETURNING user_id
-                    """,
-                    (
-                        user.name,
-                        user.sr_code,
-                        user.gender,
-                        user.program,
-                        legacy_blob,
-                        ";".join(user.image_paths),
-                        infer_embedding_dim(normalized_embeddings),
-                    ),
-                )
-                user_id = int(c.fetchone()[0])
-            else:
-                c.execute(
-                    """
-                    INSERT INTO users (name, sr_code, gender, course, embeddings, image_paths, embedding_dim)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        user.name,
-                        user.sr_code,
-                        user.gender,
-                        user.program,
-                        legacy_blob,
-                        ";".join(user.image_paths),
-                        infer_embedding_dim(normalized_embeddings),
-                    ),
-                )
-                user_id = int(c.lastrowid)
+            c.execute(
+                """
+                INSERT INTO users (name, sr_code, gender, course, embeddings, image_paths, embedding_dim)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                RETURNING user_id
+                """,
+                (
+                    user.name,
+                    user.sr_code,
+                    user.gender,
+                    user.program,
+                    legacy_blob,
+                    ";".join(user.image_paths),
+                    infer_embedding_dim(normalized_embeddings),
+                ),
+            )
+            user_id = int(c.fetchone()[0])
 
         if supports_embedding_table:
             self._replace_user_embeddings(c, int(user_id), merged_embeddings)

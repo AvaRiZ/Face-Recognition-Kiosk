@@ -34,25 +34,15 @@ def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, na
     else:
         embeddings_blob = pickle.dumps(embeddings_list)
         embedding_dim = len(embeddings_list[0])
-        if getattr(conn, "dialect", "sqlite") == "postgres":
-            c.execute(
-                """
-                INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
-                VALUES (?, ?, ?, ?, ?, ?)
-                RETURNING user_id
-                """,
-                (name, sr_code, program, embeddings_blob, ";".join(image_paths), embedding_dim),
-            )
-            user_id = c.fetchone()[0]
-        else:
-            c.execute(
-                """
-                INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (name, sr_code, program, embeddings_blob, ";".join(image_paths), embedding_dim),
-            )
-            user_id = c.lastrowid
+        c.execute(
+            """
+            INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
+            VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING user_id
+            """,
+            (name, sr_code, program, embeddings_blob, ";".join(image_paths), embedding_dim),
+        )
+        user_id = c.fetchone()[0]
 
     conn.commit()
     conn.close()

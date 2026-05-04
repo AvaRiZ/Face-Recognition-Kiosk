@@ -456,7 +456,7 @@ class OccupancyService:
             """
             SELECT hour_slot, COUNT(*) AS event_count
             FROM (
-                SELECT CAST(strftime('%H', COALESCE(captured_at, ingested_at)) AS INTEGER) AS hour_slot
+                SELECT EXTRACT(HOUR FROM COALESCE(captured_at, ingested_at))::int AS hour_slot
                 FROM recognition_events
                 WHERE DATE(COALESCE(captured_at, ingested_at)) = ?
             ) hourly_events

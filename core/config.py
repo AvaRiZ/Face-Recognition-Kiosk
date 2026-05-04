@@ -35,7 +35,7 @@ class AppConfig:
     # Paths and dataset locations
     # ------------------------------------------------------------------
     model_path: str = "model-training/runs/training/yolov8n-mobile-sam/weights/best.pt"
-    db_path: str = "database/faces_improved.db"
+    db_path: str = ""
     base_save_dir: str = "faces_improved"
     detector_dataset_dir: str = "detector_dataset"
     detector_train_split: str = "train"

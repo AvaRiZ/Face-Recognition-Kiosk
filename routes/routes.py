@@ -71,28 +71,11 @@ def _normalize_timestamp_for_json(value, default=""):
 def init_imported_logs_table(db_path):
     conn = db_connect(db_path)
     c = conn.cursor()
-    if getattr(conn, "dialect", "sqlite") == "postgres":
-        if not table_columns(conn, "imported_logs"):
-            conn.close()
-            raise RuntimeError(
-                "PostgreSQL schema is missing `imported_logs`. "
-                "Run `alembic upgrade head` before starting the app."
-            )
-    else:
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS imported_logs (
-                import_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sr_code TEXT NOT NULL,
-                name TEXT,
-                gender TEXT,
-                program TEXT,
-                year_level TEXT,
-                timestamp TIMESTAMP NOT NULL,
-                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                import_batch TEXT
-            )
-            """
+    if not table_columns(conn, "imported_logs"):
+        conn.close()
+        raise RuntimeError(
+            "PostgreSQL schema is missing `imported_logs`. "
+            "Run `alembic upgrade head` before starting the app."
         )
     c.execute(
         """
@@ -193,30 +176,18 @@ def create_routes_blueprint(deps):
             user_type,
             flow_type,
         )
-        if getattr(conn, "dialect", "sqlite") == "postgres":
-            c.execute(
-                """
-                INSERT INTO users (
-                    name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type, flow_type
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                RETURNING user_id
-                """,
-                params,
+        c.execute(
+            """
+            INSERT INTO users (
+                name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type, flow_type
             )
-            row = c.fetchone()
-            user_id = int(row[0])
-        else:
-            c.execute(
-                """
-                INSERT INTO users (
-                    name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type, flow_type
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                params,
-            )
-            user_id = int(c.lastrowid or 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING user_id
+            """,
+            params,
+        )
+        row = c.fetchone()
+        user_id = int(row[0])
         conn.commit()
         conn.close()
         return user_id
@@ -339,7 +310,7 @@ def create_routes_blueprint(deps):
                 SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) AS exits
             FROM recognition_events
             WHERE user_id = ?
-              AND DATE(COALESCE(captured_at, ingested_at)) = DATE('now')
+              AND DATE(COALESCE(captured_at, ingested_at)) = CURRENT_DATE
             """,
             (user_id,),
         )
@@ -679,24 +650,12 @@ def create_routes_blueprint(deps):
 
     def _ensure_settings_table(db_path):
         conn = db_connect(db_path)
-        c = conn.cursor()
-        if getattr(conn, "dialect", "sqlite") == "postgres":
-            if not table_columns(conn, "app_settings"):
-                conn.close()
-                raise RuntimeError(
-                    "PostgreSQL schema is missing `app_settings`. "
-                    "Run `alembic upgrade head` before starting the app."
-                )
-        else:
-            c.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-                """
+        if not table_columns(conn, "app_settings"):
+            conn.close()
+            raise RuntimeError(
+                "PostgreSQL schema is missing `app_settings`. "
+                "Run `alembic upgrade head` before starting the app."
             )
-        conn.commit()
         conn.close()
 
     def _get_setting(db_path, key, default=None):
@@ -872,7 +831,7 @@ def create_routes_blueprint(deps):
         c.execute("""
                         SELECT COUNT(*) FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) = DATE('now')
+                            AND DATE(captured_at) = CURRENT_DATE
         """)
         today_logs = c.fetchone()[0]
 
@@ -968,7 +927,7 @@ def create_routes_blueprint(deps):
         # ── Peak hours (24-slot array, index = hour) ───────────────
 
         c.execute("""
-                        SELECT CAST(strftime('%H', captured_at) AS INTEGER) as hour,
+                        SELECT EXTRACT(HOUR FROM captured_at)::int AS hour,
                    COUNT(*) as count
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
@@ -996,19 +955,19 @@ def create_routes_blueprint(deps):
         ]
         
         # ── Weekly Heatmap (Day 0=Mon to 6=Sun, Hours 7AM–7PM) ──
-        # SQLite: strftime('%w') returns 0=Sun,1=Mon,...6=Sat
-        # We remap to Mon=0 ... Sun=6
+        # PostgreSQL EXTRACT(DOW) returns 0=Sun,1=Mon,...6=Sat.
+        # Remap to Mon=0 ... Sun=6.
         c.execute("""
             SELECT
-                CASE CAST(strftime('%w', captured_at) AS INTEGER)
+                CASE EXTRACT(DOW FROM captured_at)::int
                     WHEN 0 THEN 6
-                    ELSE CAST(strftime('%w', captured_at) AS INTEGER) - 1
+                    ELSE EXTRACT(DOW FROM captured_at)::int - 1
                 END as day_of_week,
-                CAST(strftime('%H', captured_at) AS INTEGER) as hour,
+                EXTRACT(HOUR FROM captured_at)::int AS hour,
                 COUNT(*) as count
             FROM recognition_events
             WHERE captured_at IS NOT NULL
-              AND CAST(strftime('%H', captured_at) AS INTEGER) BETWEEN 7 AND 19
+              AND EXTRACT(HOUR FROM captured_at)::int BETWEEN 7 AND 19
               AND DATE(captured_at) BETWEEN ? AND ?
             GROUP BY day_of_week, hour
             ORDER BY day_of_week, hour
@@ -1031,7 +990,7 @@ def create_routes_blueprint(deps):
         # ── Monthly Visitors — last 6 months ──────────────────────
         c.execute("""
             SELECT
-                strftime('%Y-%m', captured_at) as month,
+                TO_CHAR(captured_at, 'YYYY-MM') AS month,
                 COUNT(*) as count
             FROM recognition_events
             WHERE captured_at IS NOT NULL
@@ -1330,7 +1289,7 @@ def create_routes_blueprint(deps):
             """
                         SELECT COUNT(*) FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) = DATE('now')
+                            AND DATE(captured_at) = CURRENT_DATE
             """
         )
         today_logs = c.fetchone()[0]
@@ -1340,7 +1299,7 @@ def create_routes_blueprint(deps):
             SELECT COUNT(DISTINCT user_id)
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) = DATE('now')
+                            AND DATE(captured_at) = CURRENT_DATE
             """
         )
         today_unique = c.fetchone()[0]

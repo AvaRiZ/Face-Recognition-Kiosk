@@ -1,6 +1,5 @@
 import argparse
 import random
-import sqlite3
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from db import connect as db_connect
 from services.face_service import save_user_with_multiple_embeddings
 
 
@@ -46,8 +46,8 @@ def _random_embeddings(dim, count=3):
     return embeddings
 
 
-def _insert_logs(db_path, user_ids, days, avg_logs_per_day):
-    conn = sqlite3.connect(db_path)
+def _insert_logs(db_target, user_ids, days, avg_logs_per_day):
+    conn = db_connect(db_target)
     c = conn.cursor()
 
     start_date = datetime.now() - timedelta(days=days - 1)
@@ -86,7 +86,7 @@ def _insert_logs(db_path, user_ids, days, avg_logs_per_day):
 
 
 def _reset_db(db_path):
-    conn = sqlite3.connect(db_path)
+    conn = db_connect(db_path)
     c = conn.cursor()
     c.execute("DELETE FROM recognition_events")
     c.execute("DELETE FROM users")
@@ -96,7 +96,7 @@ def _reset_db(db_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Seed database with sample UI data.")
-    parser.add_argument("--db", default="database/faces_improved.db")
+    parser.add_argument("--db", default=None, help="PostgreSQL DSN target (defaults to DATABASE_URL).")
     parser.add_argument("--users", type=int, default=40)
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--avg-logs", type=int, default=40)
