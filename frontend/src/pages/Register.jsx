@@ -116,6 +116,21 @@ const INITIAL_INFO = {
   status_reason_code: null,
   status_reason_message: '',
   status_updated_at: null,
+  session_timeout_seconds: 0,
+  session_started_at: null,
+  last_activity_at: null,
+  session_expires_at: null,
+  seconds_until_expiry: null,
+  required_poses: [],
+  current_pose: null,
+  current_pose_index: 0,
+  pose_progress: {},
+  total_progress: {
+    captured: 0,
+    required: 0,
+    retained: 0,
+    retained_required: 0
+  },
   sample_previews: [],
   camera_stream: {
     state: 'unknown',
@@ -129,58 +144,110 @@ const ALLOWED_GENDERS = new Set(['Male', 'Female', 'Other']);
 const NAME_PATTERN = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
 const SR_CODE_PATTERN = /^\d{2}-\d{5}$/;
 const PROGRAM_PATTERN = /^[A-Za-z0-9&(),./' -]+$/;
+const EXPIRING_SOON_THRESHOLD_SECONDS = 120;
 
-function StatusAlert({ tone, icon, title, children }) {
-  const variants = {
-    danger: { className: 'alert-danger', iconClass: 'bi bi-exclamation-triangle-fill' },
-    success: { className: 'alert-success', iconClass: 'bi bi-check-circle-fill' },
-    info: { className: 'alert-info', iconClass: 'bi bi-hourglass-split' },
-    ready: { className: 'alert-primary', iconClass: 'bi bi-check2-all' }
-  };
+const STATUS_REASON_VIEWS = {
+  worker_unattached: {
+    title: 'Worker runtime unavailable',
+    message: 'The capture worker is not attached to this API process.',
+    action: 'Start the host stack (API + worker) on the host PC, then start a new session.'
+  },
+  session_already_active: {
+    title: 'Session already active',
+    message: 'A registration session is already active and waiting for a student.',
+    action: 'Continue the current flow or cancel the session before starting a new one.'
+  },
+  capture_in_progress: {
+    title: 'Capture in progress',
+    message: 'A registration capture is already in progress.',
+    action: 'Keep the student in frame until capture completes, or cancel/reset if needed.'
+  },
+  capture_complete: {
+    title: 'Capture complete',
+    message: 'Required face samples are complete and ready for profile submission.',
+    action: 'Review previews, fill in details, and complete registration.'
+  },
+  session_expired: {
+    title: 'Session expired',
+    message: 'The registration session expired due to inactivity.',
+    action: 'Start a new session to continue registration capture.'
+  },
+  session_started: {
+    title: 'Session started',
+    message: 'Session is active and waiting to lock onto one unregistered student.',
+    action: 'Keep one student centered and well-lit in the camera flow.'
+  },
+  session_canceled: {
+    title: 'Session canceled',
+    message: 'The active registration session was canceled.',
+    action: 'Start a new session when ready.'
+  },
+  detection_paused: {
+    title: 'Detection paused',
+    message: 'Detection is paused while website registration uses the camera stream.',
+    action: 'Resume detection from the host flow when ready.'
+  },
+  stream_connecting: {
+    title: 'Camera reconnecting',
+    message: 'Camera stream is connecting.',
+    action: 'Keep this page open while stream health recovers.'
+  },
+  stream_reconnecting: {
+    title: 'Camera reconnecting',
+    message: 'Camera stream is reconnecting.',
+    action: 'Keep this page open while stream health recovers.'
+  },
+  stream_disconnected: {
+    title: 'Camera offline',
+    message: 'Camera stream is unavailable.',
+    action: 'Check the CCTV source or camera index, then retry.'
+  }
+};
 
-  const variant = variants[tone] || variants.info;
+const FLOW_STEPS = ['Start Session', 'Capture', 'Fill Details', 'Submit'];
 
+function MetricPill({ icon, label, value }) {
   return (
-    <div className={`alert ${variant.className} d-flex align-items-start gap-2 mb-3`} role="alert">
-      <i className={`${icon || variant.iconClass} flex-shrink-0 mt-1`}></i>
+    <div className="d-flex align-items-center gap-3 px-3 py-3 rounded-3 bg-light border" style={{ minHeight: '72px' }}>
+      <span
+        className="d-inline-flex align-items-center justify-content-center rounded-circle"
+        style={{ width: '34px', height: '34px', background: 'rgba(13, 110, 253, 0.12)', color: '#0d6efd' }}
+      >
+        <i className={icon}></i>
+      </span>
       <div>
-        <div className="fw-semibold mb-1">{title}</div>
-        <div className="small">{children}</div>
+        <div className="text-uppercase text-muted" style={{ fontSize: '11px', letterSpacing: '0.08em' }}>
+          {label}
+        </div>
+        <div className="fw-semibold" style={{ fontSize: '15px', color: '#012970' }}>
+          {value}
+        </div>
       </div>
     </div>
   );
 }
 
-function MetricPill({ icon, label, value }) {
+function FlowStepper({ activeStep }) {
   return (
-    <div
-      className="d-flex align-items-center gap-3 px-3 py-3 rounded-3 bg-light border"
-      style={{
-        minHeight: '72px'
-      }}
-    >
-      <span
-        className="d-inline-flex align-items-center justify-content-center rounded-circle"
-        style={{
-          width: '34px',
-          height: '34px',
-          background: 'rgba(65, 84, 241, 0.12)',
-          color: '#4154f1'
-        }}
-      >
-        <i className={icon}></i>
-      </span>
-      <div>
-        <div
-          className="text-uppercase text-muted"
-          style={{ fontSize: '10px', letterSpacing: '0.08em' }}
-        >
-          {label}
-        </div>
-        <div className="fw-semibold" style={{ fontSize: '14px', color: '#012970' }}>
-          {value}
-        </div>
-      </div>
+    <div className="d-flex flex-wrap gap-2 mb-4" role="list" aria-label="Registration progress">
+      {FLOW_STEPS.map((label, index) => {
+        const completed = index < activeStep;
+        const active = index === activeStep;
+        const itemClass = completed
+          ? 'border-success-subtle bg-success-subtle text-success'
+          : active
+            ? 'border-primary-subtle bg-primary-subtle text-primary'
+            : 'border-secondary-subtle bg-light text-muted';
+        const iconClass = completed ? 'bi bi-check-circle-fill' : active ? 'bi bi-record-circle-fill' : 'bi bi-circle';
+        return (
+          <div key={label} role="listitem" className={`d-flex align-items-center gap-2 px-3 py-2 rounded-3 border ${itemClass}`}>
+            <i className={iconClass} aria-hidden="true"></i>
+            <span className="fw-semibold" style={{ fontSize: '14px' }}>
+              {label}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -189,58 +256,180 @@ function normalizeSpaces(value) {
   return value.trim().replace(/\s+/g, ' ');
 }
 
-function validateRegistrationForm(form) {
-  const errors = {};
-  const normalizedName = normalizeSpaces(form.name);
-  const normalizedSrCode = form.sr_code.trim();
-  const normalizedProgram = normalizeSpaces(form.program);
+function formatCountdown(secondsRemaining) {
+  if (typeof secondsRemaining !== 'number' || !Number.isFinite(secondsRemaining)) {
+    return '--:--';
+  }
+  const clamped = Math.max(0, Math.floor(secondsRemaining));
+  const minutes = Math.floor(clamped / 60);
+  const seconds = clamped % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
 
-  if (!normalizedName) {
-    errors.name = 'Name is required.';
-  } else if (!normalizedName.includes(',')) {
-    errors.name = 'Use the name format: Last Name, First Name.';
-  } else {
+function validateField(field, form) {
+  const normalizedName = normalizeSpaces(form.name || '');
+  const normalizedSrCode = (form.sr_code || '').trim();
+  const normalizedProgram = normalizeSpaces(form.program || '');
+
+  if (field === 'name') {
+    if (!normalizedName) {
+      return 'Name is required.';
+    }
+    if (!normalizedName.includes(',')) {
+      return 'Use the name format: Last Name, First Name.';
+    }
     const [lastName, firstName] = normalizedName.split(',', 2).map((part) => part.trim());
     if (!lastName || !firstName) {
-      errors.name = 'Use the name format: Last Name, First Name.';
-    } else if (!NAME_PATTERN.test(normalizedName)) {
-      errors.name = 'Name contains invalid characters.';
+      return 'Use the name format: Last Name, First Name.';
+    }
+    if (!NAME_PATTERN.test(normalizedName)) {
+      return 'Name contains invalid characters.';
     }
   }
 
-  if (!normalizedSrCode) {
-    errors.sr_code = 'SR Code is required.';
-  } else if (!SR_CODE_PATTERN.test(normalizedSrCode)) {
-    errors.sr_code = 'SR Code must use the format 23-12345.';
+  if (field === 'sr_code') {
+    if (!normalizedSrCode) {
+      return 'SR Code is required.';
+    }
+    if (!SR_CODE_PATTERN.test(normalizedSrCode)) {
+      return 'SR Code must use the format 23-12345.';
+    }
   }
 
-  if (!form.gender) {
-    errors.gender = 'Gender is required.';
-  } else if (!ALLOWED_GENDERS.has(form.gender)) {
-    errors.gender = 'Please select a valid gender.';
+  if (field === 'gender') {
+    if (!form.gender) {
+      return 'Gender is required.';
+    }
+    if (!ALLOWED_GENDERS.has(form.gender)) {
+      return 'Please select a valid gender.';
+    }
   }
 
-  if (!form.college) {
-    errors.college = 'Please select a college before choosing a program.';
+  if (field === 'college') {
+    if (!form.college) {
+      return 'College is required.';
+    }
   }
 
-  if (!normalizedProgram) {
-    errors.program = 'Program is required.';
-  } else if (normalizedProgram.length < 4 || normalizedProgram.length > 120) {
-    errors.program = 'Program must be between 4 and 120 characters.';
-  } else if (!PROGRAM_PATTERN.test(normalizedProgram)) {
-    errors.program = 'Program contains invalid characters.';
+  if (field === 'program') {
+    if (!normalizedProgram) {
+      return 'Program is required.';
+    }
+    if (normalizedProgram.length < 4 || normalizedProgram.length > 120) {
+      return 'Program must be between 4 and 120 characters.';
+    }
+    if (!PROGRAM_PATTERN.test(normalizedProgram)) {
+      return 'Program contains invalid characters.';
+    }
+  }
+
+  return '';
+}
+
+function validateRegistrationForm(form) {
+  const errors = {};
+  const normalized = {
+    name: normalizeSpaces(form.name || ''),
+    sr_code: (form.sr_code || '').trim(),
+    gender: form.gender || '',
+    college: form.college || '',
+    program: normalizeSpaces(form.program || '')
+  };
+
+  ['name', 'sr_code', 'gender', 'college', 'program'].forEach((field) => {
+    const fieldError = validateField(field, normalized);
+    if (fieldError) {
+      errors[field] = fieldError;
+    }
+  });
+
+  return { errors, normalized };
+}
+
+function deriveUiState({ captureError, info, readyToSubmit, webSessionActive, captureInProgress }) {
+  if (captureError) {
+    return 'error';
+  }
+  if (info.session_expired) {
+    return 'expired';
+  }
+  if (readyToSubmit) {
+    return 'ready_to_submit';
+  }
+  if (webSessionActive && !captureInProgress) {
+    return 'waiting_lock';
+  }
+  if (webSessionActive || captureInProgress) {
+    return 'capturing';
+  }
+  return 'idle';
+}
+
+function getStatePresentation({ uiState, currentPose, currentPoseCaptured, currentPoseRequired }) {
+  if (uiState === 'error') {
+    return {
+      icon: 'bi bi-exclamation-triangle-fill',
+      title: 'Registration action requires attention',
+      message: 'Resolve the error below before continuing this registration flow.',
+      toneClass: 'border-danger-subtle bg-danger-subtle',
+      badgeClass: 'text-bg-danger',
+      badgeText: 'Attention Needed'
+    };
+  }
+
+  if (uiState === 'expired') {
+    return {
+      icon: 'bi bi-hourglass-bottom',
+      title: 'Session expired',
+      message: 'Start a new session to continue collecting captures for this student.',
+      toneClass: 'border-warning-subtle bg-warning-subtle',
+      badgeClass: 'text-bg-warning',
+      badgeText: 'Expired'
+    };
+  }
+
+  if (uiState === 'ready_to_submit') {
+    return {
+      icon: 'bi bi-check2-circle',
+      title: 'Capture complete',
+      message: 'Required face samples are complete. Fill in student details and submit registration.',
+      toneClass: 'border-success-subtle bg-success-subtle',
+      badgeClass: 'text-bg-success',
+      badgeText: 'Ready to Submit'
+    };
+  }
+
+  if (uiState === 'waiting_lock') {
+    return {
+      icon: 'bi bi-camera-video',
+      title: 'Session active - waiting for lock',
+      message: 'Keep one unregistered student centered in the live camera flow to begin capture.',
+      toneClass: 'border-primary-subtle bg-primary-subtle',
+      badgeClass: 'text-bg-primary',
+      badgeText: 'Waiting for Lock'
+    };
+  }
+
+  if (uiState === 'capturing') {
+    return {
+      icon: 'bi bi-person-video3',
+      title: 'Capture in progress',
+      message: currentPose
+        ? `Current pose: ${currentPose}. Captured ${currentPoseCaptured} of ${currentPoseRequired} samples for this pose.`
+        : 'Capture is active. Keep the student steady and well-lit in frame.',
+      toneClass: 'border-info-subtle bg-info-subtle',
+      badgeClass: 'text-bg-info',
+      badgeText: 'Capturing'
+    };
   }
 
   return {
-    errors,
-    normalized: {
-      name: normalizedName,
-      sr_code: normalizedSrCode,
-      gender: form.gender,
-      college: form.college,
-      program: normalizedProgram
-    }
+    icon: 'bi bi-play-circle',
+    title: 'Waiting for session start',
+    message: 'Start a registration session, then keep one unregistered student in frame until capture completes.',
+    toneClass: 'border-secondary-subtle bg-light',
+    badgeClass: 'text-bg-secondary',
+    badgeText: 'Idle'
   };
 }
 
@@ -249,6 +438,7 @@ export default function RegisterPage() {
   const [loading, setLoading] = React.useState(true);
   const [captureError, setCaptureError] = React.useState('');
   const [fieldErrors, setFieldErrors] = React.useState({});
+  const [touchedFields, setTouchedFields] = React.useState({});
   const [submitting, setSubmitting] = React.useState(false);
   const [sessionAction, setSessionAction] = React.useState('');
   const [result, setResult] = React.useState(null);
@@ -270,7 +460,7 @@ export default function RegisterPage() {
           setInfo((prev) => ({ ...prev, ...payload }));
         }
       } catch {
-        // Ignore polling failures and keep the latest state we have.
+        // Ignore transient polling failures.
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -345,30 +535,87 @@ export default function RegisterPage() {
     };
   }, []);
 
-  function updateForm(key, value) {
+  const allProgramOptions = React.useMemo(() => {
+    const seen = new Set();
+    const flattened = [];
+    Object.values(programOptionsByCollege).forEach((programs) => {
+      (programs || []).forEach((program) => {
+        const normalized = normalizeSpaces(program);
+        if (!normalized) {
+          return;
+        }
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          flattened.push(normalized);
+        }
+      });
+    });
+    return flattened.sort((a, b) => a.localeCompare(b));
+  }, [programOptionsByCollege]);
+
+  const programCollegeLookup = React.useMemo(() => {
+    const lookup = {};
+    Object.entries(programOptionsByCollege).forEach(([college, programs]) => {
+      (programs || []).forEach((program) => {
+        const normalizedKey = normalizeSpaces(program).toLowerCase();
+        if (normalizedKey) {
+          lookup[normalizedKey] = college;
+        }
+      });
+    });
+    return lookup;
+  }, [programOptionsByCollege]);
+
+  React.useEffect(() => {
+    const touchedKeys = Object.keys(touchedFields).filter((key) => touchedFields[key]);
+    if (!touchedKeys.length) {
+      return;
+    }
     setFieldErrors((prev) => {
-      if (!prev[key]) {
-        return prev;
-      }
       const next = { ...prev };
-      delete next[key];
+      let changed = false;
+      touchedKeys.forEach((key) => {
+        const message = validateField(key, form);
+        if (message) {
+          if (next[key] !== message) {
+            next[key] = message;
+            changed = true;
+          }
+          return;
+        }
+        if (next[key]) {
+          delete next[key];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [form, touchedFields]);
+
+  function updateForm(key, value) {
+    setCaptureError('');
+    setResult(null);
+    setForm((prev) => {
+      const next = { ...prev, [key]: value };
+      if (key === 'program') {
+        const mappedCollege = programCollegeLookup[normalizeSpaces(value).toLowerCase()];
+        if (mappedCollege) {
+          next.college = mappedCollege;
+        }
+      }
       return next;
     });
-    setForm((prev) => ({ ...prev, [key]: value }));
+
+    if (key === 'name' || key === 'sr_code' || key === 'program') {
+      setTouchedFields((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+    }
   }
 
-  function updateCollege(value) {
-    setForm((prev) => {
-      const allowedPrograms = programOptionsByCollege[value] || [];
-      return {
-        ...prev,
-        college: value,
-        program: allowedPrograms.includes(prev.program) ? prev.program : ''
-      };
-    });
+  function handleFieldBlur(key) {
+    setTouchedFields((prev) => ({ ...prev, [key]: true }));
   }
 
-  async function handleReset() {
+  const handleReset = React.useCallback(async () => {
     const confirmed = await confirmAction({
       title: 'Reset Captured Samples?',
       text: 'This will clear the current registration capture set for the student in progress.',
@@ -381,6 +628,7 @@ export default function RegisterPage() {
 
     setCaptureError('');
     setFieldErrors({});
+    setTouchedFields({});
     setResult(null);
 
     try {
@@ -393,89 +641,16 @@ export default function RegisterPage() {
         setCaptureError(payload.message || 'Unable to reset the capture session.');
         return;
       }
-      setInfo((prev) => ({
-        ...prev,
-        capture_count: payload.capture_count ?? 0,
-        max_captures: payload.max_captures ?? prev.max_captures,
-        has_pending_registration: false,
-        is_in_progress: false,
-        ready_to_submit: false
-      }));
-      await showSuccess('Samples Reset', 'The current registration samples were cleared successfully.');
+      setInfo((prev) => ({ ...prev, ...payload }));
+      await showSuccess('Samples Reset', payload.message || 'The current registration samples were cleared successfully.');
     } catch (error) {
       const message = getErrorMessage(error, 'Unable to reset the current capture session.');
       setCaptureError(message);
       await showError('Reset Failed', message);
     }
-  }
+  }, []);
 
-  async function handleSubmit(ev) {
-    ev.preventDefault();
-    setCaptureError('');
-    setFieldErrors({});
-    setResult(null);
-
-    if (!info.ready_to_submit || !info.has_pending_registration) {
-      setCaptureError('Registration capture is not complete yet. Finish all required face samples before saving.');
-      return;
-    }
-
-    const { errors, normalized } = validateRegistrationForm(form);
-    if (Object.keys(errors).length > 0) {
-      setFieldErrors(errors);
-      setCaptureError(Object.values(errors)[0]);
-      return;
-    }
-
-    setSubmitting(true);
-
-    const formData = new FormData();
-    formData.append('name', normalized.name);
-    formData.append('sr_code', normalized.sr_code);
-    formData.append('gender', normalized.gender);
-    formData.append('program', normalized.program);
-
-    try {
-      const response = await fetch('/register', {
-        method: 'POST',
-        credentials: 'include',
-        body: formData
-      });
-      const payload = await response.json();
-
-      if (!response.ok || !payload.success) {
-        if (payload.field) {
-          setFieldErrors({ [payload.field]: payload.message || 'Please review this field.' });
-        } else if ((payload.message || '').toLowerCase().includes('sr code')) {
-          setFieldErrors({ sr_code: payload.message || 'This SR Code is already registered.' });
-        }
-        setCaptureError(payload.message || 'Unable to save the registration.');
-        return;
-      }
-
-      setResult(payload);
-      setInfo((prev) => ({
-        ...prev,
-        capture_count: 0,
-        has_pending_registration: false,
-        is_in_progress: false,
-        ready_to_submit: false,
-        web_session_active: false,
-        session_expired: false,
-        sample_previews: []
-      }));
-      setForm(INITIAL_FORM);
-      await showSuccess('Registration Complete', payload.message || 'Student registration saved successfully.');
-    } catch (error) {
-      const message = getErrorMessage(error, 'Unable to reach the server. Please try again.');
-      setCaptureError(message);
-      await showError('Registration Failed', message);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleStartSession() {
+  const handleStartSession = React.useCallback(async () => {
     setCaptureError('');
     setResult(null);
     setSessionAction('start');
@@ -500,9 +675,9 @@ export default function RegisterPage() {
     } finally {
       setSessionAction('');
     }
-  }
+  }, []);
 
-  async function handleCancelSession() {
+  const handleCancelSession = React.useCallback(async () => {
     setCaptureError('');
     setResult(null);
     setSessionAction('cancel');
@@ -527,20 +702,119 @@ export default function RegisterPage() {
     } finally {
       setSessionAction('');
     }
+  }, []);
+
+  async function handleSubmit(ev) {
+    ev.preventDefault();
+    setCaptureError('');
+    setResult(null);
+
+    if (!info.ready_to_submit || !info.has_pending_registration) {
+      setCaptureError('Registration capture is not complete yet. Finish all required face samples before saving.');
+      return;
+    }
+
+    const { errors, normalized } = validateRegistrationForm(form);
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setTouchedFields({
+        name: true,
+        sr_code: true,
+        gender: true,
+        college: true,
+        program: true
+      });
+      setCaptureError(Object.values(errors)[0]);
+      return;
+    }
+
+    const reviewConfirmed = await confirmAction({
+      icon: 'info',
+      title: 'Review Registration Before Submit',
+      text: [
+        `Student: ${normalized.name}`,
+        `SR Code: ${normalized.sr_code}`,
+        `Gender: ${normalized.gender}`,
+        `College: ${normalized.college}`,
+        `Program: ${normalized.program}`,
+        `Retained Samples: ${info.total_progress?.retained ?? info.sample_previews?.length ?? 0} / ${info.total_progress?.retained_required ?? 0}`,
+        `Capture Ready: ${info.ready_to_submit ? 'Yes' : 'No'}`
+      ].join('\n'),
+      confirmButtonText: 'Submit Registration',
+      confirmButtonColor: '#0d6efd'
+    });
+    if (!reviewConfirmed) {
+      return;
+    }
+
+    setSubmitting(true);
+
+    const formData = new FormData();
+    formData.append('name', normalized.name);
+    formData.append('sr_code', normalized.sr_code);
+    formData.append('gender', normalized.gender);
+    formData.append('program', normalized.program);
+
+    try {
+      const response = await fetch('/register', {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+      });
+      const payload = await response.json();
+
+      if (!response.ok || !payload.success) {
+        if (payload.field) {
+          setFieldErrors((prev) => ({ ...prev, [payload.field]: payload.message || 'Please review this field.' }));
+          setTouchedFields((prev) => ({ ...prev, [payload.field]: true }));
+        } else if ((payload.message || '').toLowerCase().includes('sr code')) {
+          setFieldErrors((prev) => ({ ...prev, sr_code: payload.message || 'This SR Code is already registered.' }));
+          setTouchedFields((prev) => ({ ...prev, sr_code: true }));
+        }
+        setCaptureError(payload.message || 'Unable to save the registration.');
+        return;
+      }
+
+      setResult(payload);
+      setInfo((prev) => ({
+        ...prev,
+        ...payload,
+        capture_count: 0,
+        has_pending_registration: false,
+        is_in_progress: false,
+        ready_to_submit: false,
+        web_session_active: false,
+        session_expired: false,
+        sample_previews: [],
+        total_progress: {
+          ...(prev.total_progress || {}),
+          captured: 0,
+          retained: 0
+        }
+      }));
+      setForm(INITIAL_FORM);
+      setFieldErrors({});
+      setTouchedFields({});
+      await showSuccess('Registration Complete', payload.message || 'Student registration saved successfully.');
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to reach the server. Please try again.');
+      setCaptureError(message);
+      await showError('Registration Failed', message);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
-  const progressPercent = info.max_captures
-    ? Math.min(100, Math.round((info.capture_count / info.max_captures) * 100))
-    : 0;
   const readyToSubmit = Boolean(info.ready_to_submit && info.has_pending_registration);
   const webSessionActive = Boolean(info.web_session_active);
   const captureInProgress = !readyToSubmit && Boolean(info.capture_count > 0 || info.is_in_progress);
   const sessionControlBusy = sessionAction === 'start' || sessionAction === 'cancel';
   const canStartSession = !readyToSubmit && !webSessionActive && !captureInProgress && !submitting && !sessionControlBusy;
   const canCancelSession = (webSessionActive || captureInProgress) && !submitting && !sessionControlBusy;
-  const filteredProgramOptions = form.college ? programOptionsByCollege[form.college] || [] : [];
   const sampleCount = info.sample_previews?.length || 0;
   const visibleSamplePreviews = React.useMemo(() => (info.sample_previews || []).slice(0, 8), [info.sample_previews]);
+  const firstPreview = visibleSamplePreviews[0] || null;
+
   const currentPose = info.current_pose || null;
   const currentPoseProgress = currentPose ? info.pose_progress?.[currentPose] : null;
   const currentPoseCaptured = currentPoseProgress?.captured ?? 0;
@@ -549,73 +823,103 @@ export default function RegisterPage() {
     ? info.required_poses.filter((pose) => info.pose_progress?.[pose]?.completed).length
     : 0;
   const totalPoses = Array.isArray(info.required_poses) ? info.required_poses.length : 0;
-  const captureStateTitle = readyToSubmit
-    ? 'Capture complete'
-    : webSessionActive
-      ? 'Session active - waiting for lock'
-      : sampleCount > 0 || info.capture_count > 0
-        ? 'Capture still in progress'
-        : 'Waiting for session start';
-  const captureStateBody = readyToSubmit
-    ? 'The required face samples are ready. Review the previews, then complete the student details below to save the registration.'
-    : webSessionActive
-      ? 'The session is active. Keep one unregistered student centered in the camera window so the capture service can lock and collect required pose samples.'
-      : currentPose
-      ? `The camera capture flow is still collecting samples. Current pose: ${currentPose}. Captured ${currentPoseCaptured} of ${currentPoseRequired} required samples for this pose.`
-      : 'No active registration session yet. Start a session below, then keep the student in the camera window flow until required samples are collected.';
-  const resetHelperText = 'Use reset only when the wrong student was captured or the sample set is incomplete.';
+
+  const progressPercent = info.max_captures
+    ? Math.min(100, Math.round((info.capture_count / info.max_captures) * 100))
+    : 0;
+  const uiState = deriveUiState({
+    captureError,
+    info,
+    readyToSubmit,
+    webSessionActive,
+    captureInProgress
+  });
+  const statePresentation = getStatePresentation({
+    uiState,
+    currentPose,
+    currentPoseCaptured,
+    currentPoseRequired
+  });
+
+  const statusReasonCode = (info.status_reason_code || '').trim();
+  const statusReasonMessage = (info.status_reason_message || '').trim();
+  const reasonView = STATUS_REASON_VIEWS[statusReasonCode] || null;
+  const reasonTitle = reasonView?.title || (statusReasonMessage ? 'Capture status' : '');
+  const reasonMessage = reasonView?.message || statusReasonMessage;
+  const reasonAction = reasonView?.action || '';
+
   const cameraState = (info.camera_stream?.state || 'unknown').toLowerCase();
   const cameraMessage = info.camera_stream?.message || '';
   const frameAgeSeconds = typeof info.camera_stream?.last_frame_age_seconds === 'number'
     ? Math.round(info.camera_stream.last_frame_age_seconds)
     : null;
-  const statusReasonMessage = (info.status_reason_message || '').trim();
-  const statusReasonCode = (info.status_reason_code || '').trim();
   const streamStale = frameAgeSeconds != null && frameAgeSeconds > 4;
 
   let healthVariant = 'text-bg-success';
   let healthLabel = 'Detection Live';
+  let healthIcon = 'bi bi-broadcast';
   if (info.detection_paused) {
     healthVariant = 'text-bg-warning';
     healthLabel = 'Detection Paused';
+    healthIcon = 'bi bi-pause-circle';
   } else if (cameraState === 'live' || cameraState === 'connected') {
     healthVariant = streamStale ? 'text-bg-warning' : 'text-bg-success';
     healthLabel = streamStale ? 'Stream Stale' : 'Detection Live';
+    healthIcon = streamStale ? 'bi bi-exclamation-circle' : 'bi bi-camera-video';
   } else if (cameraState === 'connecting' || cameraState === 'reconnecting') {
     healthVariant = 'text-bg-warning';
     healthLabel = 'Reconnecting';
+    healthIcon = 'bi bi-arrow-repeat';
   } else {
     healthVariant = 'text-bg-danger';
     healthLabel = 'Stream Offline';
+    healthIcon = 'bi bi-slash-circle';
   }
 
-  const guidanceSteps = [];
-  if (info.detection_paused) {
-    guidanceSteps.push('Detection is paused. Resume detection or finish website capture before expecting live updates.');
-  } else if (cameraState === 'reconnecting' || cameraState === 'connecting') {
-    guidanceSteps.push(cameraMessage || 'Camera is reconnecting. Keep this page open while stream health recovers.');
-  } else if (cameraState === 'disconnected') {
-    guidanceSteps.push(cameraMessage || 'Camera stream is offline. Check CCTV source or camera index, then retry.');
-  }
+  const secondsUntilExpiry = typeof info.seconds_until_expiry === 'number' ? info.seconds_until_expiry : null;
+  const expiringSoon = secondsUntilExpiry != null
+    && secondsUntilExpiry > 0
+    && secondsUntilExpiry <= EXPIRING_SOON_THRESHOLD_SECONDS;
 
-  if (readyToSubmit) {
-    guidanceSteps.push('Capture is complete. Review previews and submit student details.');
-  } else if (!webSessionActive && !captureInProgress) {
-    guidanceSteps.push('Start a registration session to lock onto an unregistered student.');
-  } else if (webSessionActive && currentPose) {
-    guidanceSteps.push(`Current required pose: ${currentPose}. Keep the student steady until this pose is completed.`);
-  }
+  const formLocked = !readyToSubmit;
+  const canResetSamples = !submitting && !sessionControlBusy && (sampleCount > 0 || captureInProgress || readyToSubmit);
+  const resetHelperText = 'Use reset only when the wrong student was captured or the sample set is incomplete.';
 
-  if (currentPose && !readyToSubmit) {
-    guidanceSteps.push(`Pose progress: ${currentPoseCaptured} of ${currentPoseRequired} samples collected for ${currentPose}.`);
-  }
+  const activeStep = result?.profile
+    ? 3
+    : readyToSubmit
+      ? 2
+      : (webSessionActive || captureInProgress)
+        ? 1
+        : 0;
 
-  if (sampleCount === 0 && webSessionActive) {
-    guidanceSteps.push('No sample previews yet. Keep one face centered and well lit in the CCTV window.');
-  }
+  const primaryAction = readyToSubmit ? 'submit' : (webSessionActive || captureInProgress ? 'cancel' : 'start');
+  const primaryActionBusy = (primaryAction === 'start' && sessionAction === 'start')
+    || (primaryAction === 'cancel' && sessionAction === 'cancel')
+    || (primaryAction === 'submit' && submitting);
+  const primaryActionDisabled = primaryAction === 'start'
+    ? !canStartSession
+    : primaryAction === 'cancel'
+      ? !canCancelSession
+      : submitting || sessionControlBusy || !readyToSubmit;
 
-  if (statusReasonMessage && !guidanceSteps.includes(statusReasonMessage)) {
-    guidanceSteps.unshift(statusReasonMessage);
+  React.useEffect(() => {
+    function onKeyDown(ev) {
+      if (ev.key === 'Escape' && canCancelSession) {
+        ev.preventDefault();
+        void handleCancelSession();
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [canCancelSession, handleCancelSession]);
+
+  function handleFormKeyDown(ev) {
+    if (ev.key === 'Enter' && !readyToSubmit) {
+      ev.preventDefault();
+    }
   }
 
   if (loading) {
@@ -650,160 +954,163 @@ export default function RegisterPage() {
                         <div className="text-uppercase text-muted fw-semibold" style={{ fontSize: '11px', letterSpacing: '0.08em' }}>
                           First-Time Registration Only
                         </div>
-                        <h5 className="card-title mb-1">
-                          Complete first-time student registration
-                        </h5>
-                        <p className="text-muted mb-0 small">
-                          Use this page only for students who are not yet registered. Review the captured samples, then fill out the form below to create the student profile.
+                        <h5 className="card-title mb-1">Complete first-time student registration</h5>
+                        <p className="text-muted mb-0" style={{ fontSize: '14px' }}>
+                          Use this page only for students who are not yet registered. Complete capture first, then submit details.
                         </p>
                       </div>
-                      <span className={`badge rounded-pill ${readyToSubmit ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'}`}>
-                        {readyToSubmit
-                          ? 'Ready for submission'
-                          : webSessionActive
-                            ? 'Session active'
-                            : info.capture_count > 0
-                              ? 'Capture in progress'
-                              : 'Session not started'}
+                      <span className={`badge rounded-pill ${statePresentation.badgeClass}`} style={{ fontSize: '13px' }}>
+                        {statePresentation.badgeText}
                       </span>
                     </div>
 
-                    <div className="register-kiosk-status-pane">
+                    <FlowStepper activeStep={activeStep} />
 
-                    <div className="d-flex flex-wrap gap-2 align-items-center mb-3">
-                      <span className={`badge ${healthVariant}`}>{healthLabel}</span>
-                      <span className="small text-muted">
+                    <div className={`rounded-3 border p-3 p-md-4 mb-4 ${statePresentation.toneClass}`}>
+                      <div className="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                        <div className="d-flex align-items-start gap-3">
+                          <span
+                            className="d-inline-flex align-items-center justify-content-center rounded-circle bg-white border"
+                            style={{ width: '40px', height: '40px', color: '#012970' }}
+                          >
+                            <i className={statePresentation.icon}></i>
+                          </span>
+                          <div>
+                            <div className="fw-semibold mb-1" style={{ color: '#012970', fontSize: '16px' }}>
+                              {statePresentation.title}
+                            </div>
+                            <div className="text-muted" style={{ fontSize: '14px', lineHeight: 1.6 }}>
+                              {statePresentation.message}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="d-flex flex-column gap-2 align-items-start align-items-md-end">
+                          <span className={`badge ${healthVariant}`} style={{ fontSize: '12px' }}>
+                            <i className={`${healthIcon} me-1`} aria-hidden="true"></i>
+                            {healthLabel}
+                          </span>
+                          {secondsUntilExpiry != null ? (
+                            <span className={`badge ${expiringSoon ? 'text-bg-warning' : 'text-bg-secondary'}`} style={{ fontSize: '12px' }}>
+                              <i className="bi bi-clock me-1" aria-hidden="true"></i>
+                              Session expires in {formatCountdown(secondsUntilExpiry)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="small text-muted mt-3" style={{ fontSize: '14px' }}>
                         {cameraMessage || 'Camera status is being monitored.'}
                         {frameAgeSeconds != null ? ` Last frame ${frameAgeSeconds}s ago.` : ''}
-                      </span>
-                    </div>
-
-                    {captureError ? (
-                      <StatusAlert tone="danger" title="Registration error">
-                        {captureError}
-                      </StatusAlert>
-                    ) : null}
-
-                    {!captureError && statusReasonMessage ? (
-                      <StatusAlert
-                        tone={statusReasonCode === 'capture_complete' || statusReasonCode === 'registration_submitted' ? 'ready' : 'info'}
-                        title="Capture status"
-                      >
-                        {statusReasonMessage}
-                      </StatusAlert>
-                    ) : null}
-
-                    {info.session_expired ? (
-                      <StatusAlert tone="info" title="Session expired">
-                        The registration session expired due to inactivity. Start a new session to continue capture.
-                      </StatusAlert>
-                    ) : null}
-
-                    {result?.profile ? (
-                      <StatusAlert tone="success" title={result.message}>
-                        Saved as {result.profile.name} ({result.profile.sr_code}) - {result.profile.gender},{' '}
-                        {result.profile.program}. You can start another registration when you are ready.
-                      </StatusAlert>
-                    ) : null}
-
-                    {!readyToSubmit && webSessionActive ? (
-                      <StatusAlert tone="info" title="Session started">
-                        Registration session is active. Keep the unregistered student on the live camera window. Capture begins automatically once the face is locked.
-                      </StatusAlert>
-                    ) : null}
-
-                    {!readyToSubmit && !webSessionActive ? (
-                      <StatusAlert tone="info" title="Waiting for unregistered-student capture">
-                        This page is only for students who are not yet registered. Start a registration session, then keep the student on the live camera window until required face samples are completed.
-                      </StatusAlert>
-                    ) : null}
-
-                    {readyToSubmit ? (
-                      <StatusAlert tone="ready" title="Unregistered student detected">
-                        The required face samples are ready for a student who is not yet registered. You can now enter the
-                        student details below to complete first-time registration.
-                      </StatusAlert>
-                    ) : null}
-
-                    <div className={`rounded-3 border p-3 p-md-4 mb-4 ${readyToSubmit ? 'border-success-subtle bg-success-subtle' : 'bg-light'}`}>
-                      <div className="d-flex flex-wrap justify-content-between align-items-start gap-3">
-                        <div>
-                          <div className="fw-semibold mb-1" style={{ color: '#012970' }}>{captureStateTitle}</div>
-                          <div className="small text-muted">{captureStateBody}</div>
-                        </div>
-                        <span className={`badge rounded-pill ${readyToSubmit ? 'text-bg-success' : 'text-bg-secondary'}`}>
-                          {readyToSubmit ? 'Ready now' : `${progressPercent}% complete`}
-                        </span>
                       </div>
 
-                      <div className="row g-2 mt-2">
+                      {reasonMessage ? (
+                        <div className="rounded-3 border bg-white p-3 mt-3">
+                          <div className="fw-semibold mb-1" style={{ color: '#012970', fontSize: '15px' }}>
+                            <i className="bi bi-info-circle me-2" aria-hidden="true"></i>
+                            {reasonTitle}
+                          </div>
+                          <div className="text-muted" style={{ fontSize: '14px', lineHeight: 1.6 }}>
+                            {reasonMessage}
+                          </div>
+                          {reasonAction ? (
+                            <div className="mt-2" style={{ fontSize: '14px' }}>
+                              <span className="fw-semibold">Next action: </span>
+                              {reasonAction}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {expiringSoon ? (
+                        <div className="rounded-3 border border-warning-subtle bg-warning-subtle px-3 py-2 mt-3">
+                          <div className="fw-semibold text-warning-emphasis" style={{ fontSize: '14px' }}>
+                            <i className="bi bi-exclamation-triangle me-2" aria-hidden="true"></i>
+                            Session expires soon
+                          </div>
+                          <div className="text-muted" style={{ fontSize: '14px' }}>
+                            Keep the student in frame or submit immediately if capture is complete.
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {captureError ? (
+                        <div className="rounded-3 border border-danger-subtle bg-danger-subtle px-3 py-2 mt-3">
+                          <div className="fw-semibold text-danger" style={{ fontSize: '14px' }}>
+                            <i className="bi bi-exclamation-octagon me-2" aria-hidden="true"></i>
+                            Registration error
+                          </div>
+                          <div style={{ fontSize: '14px' }}>{captureError}</div>
+                        </div>
+                      ) : null}
+
+                      {result?.profile ? (
+                        <div className="rounded-3 border border-success-subtle bg-success-subtle px-3 py-2 mt-3">
+                          <div className="fw-semibold text-success" style={{ fontSize: '14px' }}>
+                            <i className="bi bi-check-circle me-2" aria-hidden="true"></i>
+                            {result.message}
+                          </div>
+                          <div style={{ fontSize: '14px' }}>
+                            Saved as {result.profile.name} ({result.profile.sr_code}) - {result.profile.gender}, {result.profile.program}.
+                          </div>
+                        </div>
+                      ) : null}
+
+                      <div className="row g-3 mt-2">
                         <div className="col-md-4">
-                          <div className="small text-muted">Overall progress</div>
-                          <div className="fw-semibold">{info.capture_count || 0} / {info.max_captures || 0} captures</div>
+                          <MetricPill icon="bi bi-camera" label="Captured" value={`${info.capture_count}/${info.max_captures}`} />
                         </div>
                         <div className="col-md-4">
-                          <div className="small text-muted">Completed poses</div>
-                          <div className="fw-semibold">{completedPoses} / {totalPoses || '-'}</div>
+                          <MetricPill icon="bi bi-arrows-angle-expand" label="Completed Poses" value={`${completedPoses}/${totalPoses || 0}`} />
                         </div>
                         <div className="col-md-4">
-                          <div className="small text-muted">Current pose</div>
-                          <div className="fw-semibold text-capitalize">{currentPose || (readyToSubmit ? 'Done' : 'Waiting')}</div>
+                          <MetricPill
+                            icon="bi bi-person-check"
+                            label="Submission"
+                            value={readyToSubmit ? 'Ready to save' : 'Locked until capture is complete'}
+                          />
                         </div>
                       </div>
-                    </div>
 
-                    <div className="rounded-3 border bg-white p-3 p-md-4 mb-4 register-kiosk-guidance-card">
-                      <div className="d-flex justify-content-between align-items-center mb-2">
-                        <div className="fw-semibold" style={{ color: '#012970' }}>Live Capture Guidance</div>
-                        <span className="small text-muted">Updates every 1.5s</span>
+                      <div className="mt-3">
+                        <div className="d-flex justify-content-between align-items-center text-muted mb-1" style={{ fontSize: '14px' }}>
+                          <span>Capture progress</span>
+                          <span>{progressPercent}%</span>
+                        </div>
+                        <div className="progress" style={{ height: '8px' }}>
+                          <div className="progress-bar" style={{ width: `${progressPercent}%`, transition: 'width 0.35s ease' }} />
+                        </div>
                       </div>
-                      <ul className="mb-0 ps-3 text-muted register-kiosk-guidance-list" style={{ fontSize: '13px', lineHeight: 1.7 }}>
-                        {guidanceSteps.map((step, index) => (
-                          <li key={`${step}-${index}`}>{step}</li>
-                        ))}
-                      </ul>
-                    </div>
 
-                    <div className="row g-3 mb-4 register-kiosk-metrics">
-                      <div className="col-md-4">
-                        <MetricPill icon="bi bi-camera" label="Captured" value={`${info.capture_count}/${info.max_captures}`} />
-                      </div>
-                      <div className="col-md-4">
-                        <MetricPill
-                          icon="bi bi-images"
-                          label="Preview Tiles"
-                          value={sampleCount ? `${sampleCount} sample${sampleCount > 1 ? 's' : ''}` : 'No previews yet'}
-                        />
-                      </div>
-                      <div className="col-md-4">
-                        <MetricPill
-                          icon="bi bi-patch-check"
-                          label="Submission"
-                          value={readyToSubmit ? 'Ready to save' : 'Locked until capture is complete'}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="mb-4">
-                      <div className="d-flex justify-content-between small text-muted mb-2">
-                        <span>Capture progress</span>
-                        <span>{progressPercent}%</span>
-                      </div>
-                      <div className="progress" style={{ height: '8px' }}>
-                        <div
-                          className="progress-bar"
-                          style={{
-                            width: `${progressPercent}%`,
-                            transition: 'width 0.35s ease'
-                          }}
-                        />
-                      </div>
+                      {firstPreview ? (
+                        <div className="d-flex align-items-start gap-3 mt-3 p-2 rounded-3 border bg-white">
+                          <img
+                            src={firstPreview.image_url}
+                            alt="Primary captured preview"
+                            className="rounded-3"
+                            style={{ width: '88px', height: '88px', objectFit: 'cover' }}
+                          />
+                          <div>
+                            <div className="fw-semibold" style={{ fontSize: '14px', color: '#012970' }}>
+                              Quick identity preview
+                            </div>
+                            <div className="text-muted" style={{ fontSize: '14px', lineHeight: 1.5 }}>
+                              Verify this is the correct student before completing registration.
+                            </div>
+                            <div className="small text-muted" style={{ fontSize: '13px' }}>
+                              Quality score: {firstPreview.quality_score}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="rounded-3 border bg-light p-3 p-md-4 mb-4 register-kiosk-previews-card">
                       <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-                        <div className="fw-semibold" style={{ color: '#012970' }}>Captured face previews</div>
-                        <div className="small text-muted">
+                        <div className="fw-semibold" style={{ color: '#012970', fontSize: '16px' }}>
+                          Captured face previews
+                        </div>
+                        <div className="text-muted" style={{ fontSize: '14px' }}>
                           {sampleCount} preview{sampleCount === 1 ? '' : 's'} available
                           {sampleCount > visibleSamplePreviews.length ? ` - showing ${visibleSamplePreviews.length}` : ''}
                         </div>
@@ -815,11 +1122,7 @@ export default function RegisterPage() {
                             <div
                               key={sample.id ?? index}
                               className="text-center register-kiosk-preview-tile"
-                              style={{
-                                padding: '6px',
-                                border: '1px solid #e6e7eb',
-                                background: '#fff'
-                              }}
+                              style={{ padding: '6px', border: '1px solid #e6e7eb', background: '#fff' }}
                             >
                               <img
                                 src={sample.image_url}
@@ -832,215 +1135,230 @@ export default function RegisterPage() {
                           ))}
                         </div>
                       ) : (
-                        <div className="rounded-3 d-flex align-items-center justify-content-center text-center px-4 border border-secondary-subtle bg-white text-muted register-kiosk-empty-previews" style={{ minHeight: '112px', borderStyle: 'dashed' }}>
+                        <div
+                          className="rounded-3 d-flex align-items-center justify-content-center text-center px-4 border border-secondary-subtle bg-white text-muted register-kiosk-empty-previews"
+                          style={{ minHeight: '112px', borderStyle: 'dashed', fontSize: '14px' }}
+                        >
                           No preview tiles yet. Stay on the CCTV capture flow until the sample set is completed.
                         </div>
                       )}
                     </div>
 
-                    </div>
-
                     <div className="register-kiosk-form-pane">
-                    <form className="row g-3" onSubmit={handleSubmit}>
-                      <div className="col-12">
-                        <div className="rounded-3 border bg-light p-3 register-kiosk-saving-card">
-                      <div className="fw-semibold mb-2" style={{ color: '#012970' }}>Before saving</div>
-                          <ul className="mb-0 ps-3 text-muted" style={{ fontSize: '13px', lineHeight: 1.7 }}>
-                            <li>Use the format Last Name, First Name.</li>
-                            <li>Select the correct college first so the program list is filtered properly.</li>
-                            <li>Use this page only for students who are not yet registered in the system.</li>
-                            <li>Reset samples only if the wrong student was captured or the face set is incomplete.</li>
-                          </ul>
-                        </div>
-                      </div>
-
-                      <div className="col-12">
-                        <label htmlFor="name" className="form-label" style={{ fontSize: '13px' }}>
-                          Last Name, First Name
-                        </label>
-                        <input
-                          type="text"
-                          id="name"
-                          name="name"
-                          className={`form-control ${fieldErrors.name ? 'is-invalid' : ''}`}
-                          placeholder="Dela Cruz, Juan"
-                          value={form.name}
-                          onChange={(ev) => updateForm('name', ev.target.value)}
-                          required
-                        />
-                        {fieldErrors.name ? <div className="invalid-feedback">{fieldErrors.name}</div> : null}
-                        <div className="form-text">Enter the student name using the official Last Name, First Name format.</div>
-                      </div>
-
-                      <div className="col-md-6">
-                        <label htmlFor="sr_code" className="form-label" style={{ fontSize: '13px' }}>
-                          SR Code
-                        </label>
-                        <input
-                          type="text"
-                          id="sr_code"
-                          name="sr_code"
-                          className={`form-control ${fieldErrors.sr_code ? 'is-invalid' : ''}`}
-                          placeholder="23-12345"
-                          value={form.sr_code}
-                          onChange={(ev) => updateForm('sr_code', ev.target.value)}
-                          required
-                        />
-                        {fieldErrors.sr_code ? <div className="invalid-feedback">{fieldErrors.sr_code}</div> : null}
-                        <div className="form-text">Each student must have one unique SR Code. Duplicate SR Codes cannot be registered.</div>
-                      </div>
-
-                      <div className="col-md-6">
-                        <label htmlFor="gender" className="form-label" style={{ fontSize: '13px' }}>
-                          Gender
-                        </label>
-                        <select
-                          id="gender"
-                          name="gender"
-                          className={`form-select ${fieldErrors.gender ? 'is-invalid' : ''}`}
-                          value={form.gender}
-                          onChange={(ev) => updateForm('gender', ev.target.value)}
-                          required
-                        >
-                          <option value="">Select gender</option>
-                          <option value="Male">Male</option>
-                          <option value="Female">Female</option>
-                          <option value="Other">Other</option>
-                        </select>
-                        {fieldErrors.gender ? <div className="invalid-feedback">{fieldErrors.gender}</div> : null}
-                      </div>
-
-                      <div className="col-md-6">
-                        <label htmlFor="college" className="form-label" style={{ fontSize: '13px' }}>
-                          College
-                        </label>
-                        <select
-                          id="college"
-                          name="college"
-                          className={`form-select ${fieldErrors.college ? 'is-invalid' : ''}`}
-                          value={form.college}
-                          onChange={(ev) => updateCollege(ev.target.value)}
-                          required
-                        >
-                          <option value="">Select college</option>
-                          {collegeOptions.map((college) => (
-                            <option key={college} value={college}>
-                              {college}
-                            </option>
-                          ))}
-                        </select>
-                        {fieldErrors.college ? <div className="invalid-feedback">{fieldErrors.college}</div> : null}
-                      </div>
-
-                      <div className="col-md-6">
-                        <label htmlFor="program" className="form-label" style={{ fontSize: '13px' }}>
-                          Program
-                        </label>
-                        <input
-                          type="text"
-                          id="program"
-                          name="program"
-                          className={`form-control ${fieldErrors.program ? 'is-invalid' : ''}`}
-                          list="program-options"
-                          placeholder={form.college ? 'Select or type a program' : 'Select a college first'}
-                          value={form.program}
-                          onChange={(ev) => updateForm('program', ev.target.value)}
-                          disabled={!form.college}
-                          required
-                        />
-                        {fieldErrors.program ? <div className="invalid-feedback">{fieldErrors.program}</div> : null}
-                        <datalist id="program-options">
-                          {filteredProgramOptions.map((program) => (
-                            <option key={program} value={program} />
-                          ))}
-                        </datalist>
-                        <div className="form-text">Program suggestions are filtered based on the selected college.</div>
-                      </div>
-
-                      <div className="col-12">
-                        <div className="alert alert-info d-flex align-items-start gap-3 mb-0">
-                          <i className="bi bi-info-circle-fill mt-1"></i>
-                          <div className="small">
-                            The live recognition camera continues running while this page is open. Only the captured face
-                            samples for the unregistered student are used for this first-time registration record.
+                      <form className="row g-3" onSubmit={handleSubmit} onKeyDown={handleFormKeyDown}>
+                        <div className="col-12">
+                          <div className="rounded-3 border bg-light p-3 register-kiosk-saving-card">
+                            <div className="fw-semibold mb-2" style={{ color: '#012970', fontSize: '15px' }}>
+                              Before saving
+                            </div>
+                            <ul className="mb-0 ps-3 text-muted" style={{ fontSize: '14px', lineHeight: 1.7 }}>
+                              <li>Use the format Last Name, First Name.</li>
+                              <li>SR Code must follow the format 23-12345.</li>
+                              <li>Program search is available without selecting college first.</li>
+                              <li>Reset samples only if the wrong student was captured or the set is incomplete.</li>
+                            </ul>
                           </div>
                         </div>
-                      </div>
 
-                      <div className="col-12 pt-1">
-                        <div className="d-flex flex-wrap gap-2 align-items-center">
-                          <button
-                            className="btn btn-outline-primary"
-                            type="button"
-                            onClick={handleStartSession}
-                            disabled={!canStartSession}
-                          >
-                            {sessionAction === 'start' ? (
-                              <>
-                                <span className="spinner-border spinner-border-sm me-2" role="status" />
-                                Starting Session...
-                              </>
-                            ) : (
-                              <>
-                                <i className="bi bi-play-circle me-2"></i>
-                                Start Session
-                              </>
-                            )}
-                          </button>
+                        {formLocked ? (
+                          <div className="col-12">
+                            <div className="alert alert-secondary d-flex align-items-start gap-2 mb-0">
+                              <i className="bi bi-lock-fill mt-1"></i>
+                              <div style={{ fontSize: '14px' }}>
+                                Complete face capture first to unlock form.
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
 
-                          <button
-                            className="btn btn-outline-warning"
-                            type="button"
-                            onClick={handleCancelSession}
-                            disabled={!canCancelSession}
-                          >
-                            {sessionAction === 'cancel' ? (
-                              <>
-                                <span className="spinner-border spinner-border-sm me-2" role="status" />
-                                Canceling Session...
-                              </>
-                            ) : (
-                              <>
-                                <i className="bi bi-x-circle me-2"></i>
-                                Cancel Session
-                              </>
-                            )}
-                          </button>
-
-                          <button
-                            className="btn btn-primary px-4"
-                            type="submit"
-                            disabled={submitting || sessionControlBusy || !readyToSubmit}
-                          >
-                            {submitting ? (
-                              <>
-                                <span className="spinner-border spinner-border-sm me-2" role="status" />
-                                Saving Registration...
-                              </>
-                            ) : (
-                              <>
-                                <i className="bi bi-person-check-fill me-2"></i>
-                                Complete Registration
-                              </>
-                            )}
-                          </button>
-
-                          <button
-                            className="btn btn-outline-secondary"
-                            type="button"
-                            onClick={handleReset}
-                            disabled={submitting || sessionControlBusy}
-                          >
-                            <i className="bi bi-arrow-counterclockwise me-2"></i>
-                            Reset Samples
-                          </button>
-
+                        <div className="col-12">
+                          <label htmlFor="name" className="form-label" style={{ fontSize: '14px' }}>
+                            Last Name, First Name
+                          </label>
+                          <input
+                            type="text"
+                            id="name"
+                            name="name"
+                            className={`form-control ${fieldErrors.name ? 'is-invalid' : ''}`}
+                            placeholder="Dela Cruz, Juan"
+                            value={form.name}
+                            onChange={(ev) => updateForm('name', ev.target.value)}
+                            onBlur={() => handleFieldBlur('name')}
+                            disabled={formLocked}
+                            required
+                          />
+                          {fieldErrors.name ? <div className="invalid-feedback">{fieldErrors.name}</div> : null}
+                          <div className="form-text" style={{ fontSize: '14px' }}>
+                            Enter the official student name using Last Name, First Name.
+                          </div>
                         </div>
-                        <div className="small mt-2 text-muted">
-                          {resetHelperText}
+
+                        <div className="col-md-6">
+                          <label htmlFor="sr_code" className="form-label" style={{ fontSize: '14px' }}>
+                            SR Code
+                          </label>
+                          <input
+                            type="text"
+                            id="sr_code"
+                            name="sr_code"
+                            className={`form-control ${fieldErrors.sr_code ? 'is-invalid' : ''}`}
+                            placeholder="23-12345"
+                            value={form.sr_code}
+                            onChange={(ev) => updateForm('sr_code', ev.target.value)}
+                            onBlur={() => handleFieldBlur('sr_code')}
+                            disabled={formLocked}
+                            required
+                          />
+                          {fieldErrors.sr_code ? <div className="invalid-feedback">{fieldErrors.sr_code}</div> : null}
+                          <div className="form-text" style={{ fontSize: '14px' }}>
+                            Duplicate SR Codes are blocked to prevent registration conflicts.
+                          </div>
                         </div>
-                      </div>
-                    </form>
+
+                        <div className="col-md-6">
+                          <label htmlFor="gender" className="form-label" style={{ fontSize: '14px' }}>
+                            Gender
+                          </label>
+                          <select
+                            id="gender"
+                            name="gender"
+                            className={`form-select ${fieldErrors.gender ? 'is-invalid' : ''}`}
+                            value={form.gender}
+                            onChange={(ev) => updateForm('gender', ev.target.value)}
+                            onBlur={() => handleFieldBlur('gender')}
+                            disabled={formLocked}
+                            required
+                          >
+                            <option value="">Select gender</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                            <option value="Other">Other</option>
+                          </select>
+                          {fieldErrors.gender ? <div className="invalid-feedback">{fieldErrors.gender}</div> : null}
+                        </div>
+
+                        <div className="col-md-6">
+                          <label htmlFor="college" className="form-label" style={{ fontSize: '14px' }}>
+                            College
+                          </label>
+                          <select
+                            id="college"
+                            name="college"
+                            className={`form-select ${fieldErrors.college ? 'is-invalid' : ''}`}
+                            value={form.college}
+                            onChange={(ev) => updateForm('college', ev.target.value)}
+                            onBlur={() => handleFieldBlur('college')}
+                            disabled={formLocked}
+                            required
+                          >
+                            <option value="">Select college</option>
+                            {collegeOptions.map((college) => (
+                              <option key={college} value={college}>
+                                {college}
+                              </option>
+                            ))}
+                          </select>
+                          {fieldErrors.college ? <div className="invalid-feedback">{fieldErrors.college}</div> : null}
+                        </div>
+
+                        <div className="col-md-6">
+                          <label htmlFor="program" className="form-label" style={{ fontSize: '14px' }}>
+                            Program
+                          </label>
+                          <input
+                            type="text"
+                            id="program"
+                            name="program"
+                            className={`form-control ${fieldErrors.program ? 'is-invalid' : ''}`}
+                            list="program-options"
+                            placeholder="Search or type a program"
+                            value={form.program}
+                            onChange={(ev) => updateForm('program', ev.target.value)}
+                            onBlur={() => handleFieldBlur('program')}
+                            disabled={formLocked}
+                            required
+                          />
+                          {fieldErrors.program ? <div className="invalid-feedback">{fieldErrors.program}</div> : null}
+                          <datalist id="program-options">
+                            {allProgramOptions.map((program) => (
+                              <option key={program} value={program} />
+                            ))}
+                          </datalist>
+                          <div className="form-text" style={{ fontSize: '14px' }}>
+                            Program is searchable across all colleges. Known programs auto-fill the matching college.
+                          </div>
+                        </div>
+
+                        <div className="col-12">
+                          <div className="alert alert-info d-flex align-items-start gap-3 mb-0">
+                            <i className="bi bi-info-circle-fill mt-1"></i>
+                            <div style={{ fontSize: '14px' }}>
+                              The live recognition camera continues running while this page is open. Only captured samples
+                              for the current unregistered student are used for this registration record.
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="col-12 pt-1">
+                          <div className="d-flex flex-wrap gap-2 align-items-center">
+                            {primaryAction === 'start' ? (
+                              <button className="btn btn-primary px-4" type="button" onClick={handleStartSession} disabled={primaryActionDisabled}>
+                                {primaryActionBusy ? (
+                                  <>
+                                    <span className="spinner-border spinner-border-sm me-2" role="status" />
+                                    Starting Session...
+                                  </>
+                                ) : (
+                                  <>
+                                    <i className="bi bi-play-circle me-2"></i>
+                                    Start Session
+                                  </>
+                                )}
+                              </button>
+                            ) : null}
+
+                            {primaryAction === 'cancel' ? (
+                              <button className="btn btn-primary px-4" type="button" onClick={handleCancelSession} disabled={primaryActionDisabled}>
+                                {primaryActionBusy ? (
+                                  <>
+                                    <span className="spinner-border spinner-border-sm me-2" role="status" />
+                                    Canceling Session...
+                                  </>
+                                ) : (
+                                  <>
+                                    <i className="bi bi-x-circle me-2"></i>
+                                    Cancel Session
+                                  </>
+                                )}
+                              </button>
+                            ) : null}
+
+                            {primaryAction === 'submit' ? (
+                              <button className="btn btn-primary px-4" type="submit" disabled={primaryActionDisabled}>
+                                {primaryActionBusy ? (
+                                  <>
+                                    <span className="spinner-border spinner-border-sm me-2" role="status" />
+                                    Saving Registration...
+                                  </>
+                                ) : (
+                                  <>
+                                    <i className="bi bi-person-check-fill me-2"></i>
+                                    Complete Registration
+                                  </>
+                                )}
+                              </button>
+                            ) : null}
+
+                            <button className="btn btn-outline-secondary" type="button" onClick={handleReset} disabled={!canResetSamples}>
+                              <i className="bi bi-arrow-counterclockwise me-2"></i>
+                              Reset Samples
+                            </button>
+                          </div>
+                          <div className="text-muted mt-2" style={{ fontSize: '14px' }}>
+                            {resetHelperText}
+                          </div>
+                        </div>
+                      </form>
                     </div>
                   </div>
                 </div>

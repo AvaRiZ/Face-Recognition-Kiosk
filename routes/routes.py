@@ -448,6 +448,16 @@ def create_routes_blueprint(deps):
         stream_status = deps["stream_status"]() if deps.get("stream_status") else {"state": "unknown", "message": "Camera status unavailable."}
         worker_attached = bool(deps.get("worker_runtime_attached"))
         detection_paused = bool(deps["detection_paused"]())
+        session_timeout_seconds = int(getattr(deps["config"], "registration_session_timeout_seconds", 0) or 0)
+        session_started_at = float(reg_state.session_started_at) if reg_state.session_started_at is not None else None
+        last_activity_at = float(reg_state.last_activity_at) if reg_state.last_activity_at is not None else None
+        session_expires_at = None
+        seconds_until_expiry = None
+        if session_timeout_seconds > 0 and last_activity_at is not None:
+            session_expires_at = last_activity_at + session_timeout_seconds
+            seconds_until_expiry = max(0, int(session_expires_at - time.time()))
+        elif bool(getattr(reg_state, "session_expired", False)):
+            seconds_until_expiry = 0
         reason_code, reason_message, reason_updated_at = _resolve_registration_status_reason(
             reg_state=reg_state,
             stream_status=stream_status,
@@ -474,6 +484,11 @@ def create_routes_blueprint(deps):
             "status_reason_code": reason_code,
             "status_reason_message": reason_message,
             "status_updated_at": reason_updated_at,
+            "session_timeout_seconds": session_timeout_seconds,
+            "session_started_at": session_started_at,
+            "last_activity_at": last_activity_at,
+            "session_expires_at": session_expires_at,
+            "seconds_until_expiry": seconds_until_expiry,
         }
 
     def _registration_error_payload(reg_state, message: str, status_reason_code: str | None = None, **extra):

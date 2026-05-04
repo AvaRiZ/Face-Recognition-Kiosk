@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -35,6 +36,7 @@ class RegistrationApiHardeningTests(unittest.TestCase):
         stream_state: str = "live",
         stream_message: str = "Camera stream active.",
         detection_paused: bool = False,
+        session_timeout_seconds: int = 180,
     ):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
@@ -44,7 +46,9 @@ class RegistrationApiHardeningTests(unittest.TestCase):
         config = AppConfig()
         config.db_path = db_path
         config.base_save_dir = str(temp_path / "faces")
+        config.registration_session_timeout_seconds = int(session_timeout_seconds)
         state = AppStateManager(config)
+        self._last_state = state
 
         app = Flask(__name__)
         app.secret_key = "test-secret"
@@ -112,6 +116,53 @@ class RegistrationApiHardeningTests(unittest.TestCase):
         self.assertIn("status_updated_at", payload)
         self.assertEqual(payload.get("status_reason_code"), "stream_reconnecting")
         self.assertEqual(payload.get("status_reason_message"), "Retrying camera link.")
+
+    def test_register_info_includes_session_timing_fields(self) -> None:
+        client = self._build_client()
+        self._set_session(client, "library_staff")
+        response = client.get("/api/register-info")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("session_timeout_seconds", payload)
+        self.assertIn("session_started_at", payload)
+        self.assertIn("last_activity_at", payload)
+        self.assertIn("session_expires_at", payload)
+        self.assertIn("seconds_until_expiry", payload)
+        self.assertIsInstance(payload.get("session_timeout_seconds"), int)
+
+    def test_register_info_expiry_countdown_above_warning_threshold(self) -> None:
+        client = self._build_client(session_timeout_seconds=300)
+        self._set_session(client, "library_staff")
+        started = client.post("/api/register-session/start")
+        self.assertEqual(started.status_code, 200)
+        response = client.get("/api/register-info")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIsInstance(payload.get("seconds_until_expiry"), int)
+        self.assertGreater(payload.get("seconds_until_expiry"), 120)
+
+    def test_register_info_expiry_countdown_at_or_below_warning_threshold(self) -> None:
+        client = self._build_client(session_timeout_seconds=120)
+        self._set_session(client, "library_staff")
+        started = client.post("/api/register-session/start")
+        self.assertEqual(started.status_code, 200)
+        response = client.get("/api/register-info")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIsInstance(payload.get("seconds_until_expiry"), int)
+        self.assertLessEqual(payload.get("seconds_until_expiry"), 120)
+
+    def test_register_info_marks_expired_session_and_zeroes_countdown(self) -> None:
+        client = self._build_client(session_timeout_seconds=120)
+        self._set_session(client, "library_staff")
+        started = client.post("/api/register-session/start")
+        self.assertEqual(started.status_code, 200)
+        self._last_state.registration_state.last_activity_at = time.time() - 200
+        response = client.get("/api/register-info")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get("session_expired"))
+        self.assertEqual(payload.get("seconds_until_expiry"), 0)
 
     def test_start_session_reports_worker_unattached_reason(self) -> None:
         client = self._build_client(worker_attached=False)
