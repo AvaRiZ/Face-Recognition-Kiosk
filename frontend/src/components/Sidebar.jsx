@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { useSession } from '../App.jsx';
+import { useSession } from '../contexts.jsx';
 import { confirmAction } from '../alerts.js';
 
 function getInitials(name) {

@@ -25,7 +25,7 @@ class AlertService:
         c.execute(
             """
             SELECT id FROM occupancy_alerts
-            WHERE alert_type = ? AND state_date = ? AND dismissed_at IS NULL
+            WHERE alert_type = %s AND state_date = %s AND dismissed_at IS NULL
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -38,9 +38,9 @@ class AlertService:
             c.execute(
                 """
                 UPDATE occupancy_alerts
-                SET level = ?, message = ?, occupancy_count = ?, capacity_limit = ?,
-                    occupancy_ratio = ?, is_active = 1, updated_at = ?
-                WHERE id = ?
+                SET level = %s, message = %s, occupancy_count = %s, capacity_limit = %s,
+                    occupancy_ratio = %s, is_active = 1, updated_at = %s
+                WHERE id = %s
                 """,
                 ("full", message, int(occupancy_count), int(capacity_limit), float(ratio), now, alert_id),
             )
@@ -50,14 +50,16 @@ class AlertService:
                 INSERT INTO occupancy_alerts (
                     alert_type, level, message, occupancy_count, capacity_limit, occupancy_ratio,
                     is_active, state_date, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
+                RETURNING id
                 """,
                 ("capacity_reached", "full", message, int(occupancy_count), int(capacity_limit), float(ratio), state_date, now, now),
             )
-            alert_id = int(c.lastrowid or 0)
+            row = c.fetchone()
+            alert_id = int(row[0]) if row else 0
             if alert_id <= 0:
                 c.execute(
-                    "SELECT id FROM occupancy_alerts WHERE alert_type = ? AND state_date = ? ORDER BY id DESC LIMIT 1",
+                    "SELECT id FROM occupancy_alerts WHERE alert_type = %s AND state_date = %s ORDER BY id DESC LIMIT 1",
                     ("capacity_reached", state_date),
                 )
                 fallback = c.fetchone()
@@ -78,7 +80,7 @@ class AlertService:
                 FROM occupancy_alerts
                 WHERE dismissed_at IS NULL
                 ORDER BY created_at DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (int(limit),),
             )
@@ -89,7 +91,7 @@ class AlertService:
                        is_active, state_date, dismissed_at, dismissed_by, created_at, updated_at
                 FROM occupancy_alerts
                 ORDER BY created_at DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (int(limit),),
             )
@@ -122,8 +124,8 @@ class AlertService:
         c.execute(
             """
             UPDATE occupancy_alerts
-            SET dismissed_at = ?, dismissed_by = ?, is_active = 0, updated_at = ?
-            WHERE id = ? AND dismissed_at IS NULL
+            SET dismissed_at = %s, dismissed_by = %s, is_active = 0, updated_at = %s
+            WHERE id = %s AND dismissed_at IS NULL
             """,
             (now, str(dismissed_by or "unknown"), now, int(alert_id)),
         )

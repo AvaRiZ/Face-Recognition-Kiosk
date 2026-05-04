@@ -8,12 +8,12 @@ from db import connect as db_connect
 def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, name, sr_code, program):
     conn = db_connect(db_path)
     c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE sr_code = ?", (sr_code,))
+    c.execute("SELECT user_id FROM users WHERE sr_code = %s", (sr_code,))
     existing = c.fetchone()
 
     if existing:
         user_id = existing[0]
-        c.execute("SELECT embeddings FROM users WHERE user_id = ?", (user_id,))
+        c.execute("SELECT embeddings FROM users WHERE user_id = %s", (user_id,))
         existing_emb_blob = c.fetchone()[0]
         if existing_emb_blob:
             existing_embeddings = pickle.loads(existing_emb_blob)
@@ -25,9 +25,9 @@ def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, na
         c.execute(
             """
             UPDATE users
-            SET name = ?, course = ?, embeddings = ?, image_paths = ?,
-                embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
-            WHERE user_id = ?
+            SET name = %s, course = %s, embeddings = %s, image_paths = %s,
+                embedding_dim = %s, last_updated = CURRENT_TIMESTAMP
+            WHERE user_id = %s
             """,
             (name, program, embeddings_blob, ";".join(image_paths), len(embeddings_list[0]), user_id),
         )
@@ -37,7 +37,7 @@ def save_user_with_multiple_embeddings(db_path, embeddings_list, image_paths, na
         c.execute(
             """
             INSERT INTO users (name, sr_code, course, embeddings, image_paths, embedding_dim)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING user_id
             """,
             (name, sr_code, program, embeddings_blob, ";".join(image_paths), embedding_dim),

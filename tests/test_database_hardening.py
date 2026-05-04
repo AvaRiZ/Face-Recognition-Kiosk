@@ -104,9 +104,9 @@ class RepositoryCanonicalizationTests(unittest.TestCase):
 
         conn = db_connect(db_path)
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM user_embeddings WHERE user_id = ?", (user_id,))
+        c.execute("SELECT COUNT(*) FROM user_embeddings WHERE user_id = %s", (user_id,))
         embedding_rows = int(c.fetchone()[0] or 0)
-        c.execute("SELECT embeddings FROM users WHERE user_id = ?", (user_id,))
+        c.execute("SELECT embeddings FROM users WHERE user_id = %s", (user_id,))
         legacy_blob = c.fetchone()[0]
         conn.close()
 

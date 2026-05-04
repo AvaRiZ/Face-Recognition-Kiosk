@@ -62,7 +62,7 @@ def init_auth_db():
         c.execute(
             """
             INSERT INTO staff_accounts (username, password_hash, full_name, role)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             """,
             ("admin", default_password, "System Administrator", "super_admin"),
         )
@@ -86,7 +86,7 @@ def login_user(username, password):
     c = conn.cursor()
     c.execute("""
         SELECT staff_id, username, password_hash, full_name, role, is_active, profile_image
-        FROM staff_accounts WHERE username = ?
+        FROM staff_accounts WHERE username = %s
     """, (username,))
     user = c.fetchone()
 
@@ -105,13 +105,13 @@ def login_user(username, password):
         return None, "Invalid username or password"
 
     # Update last login
-    c.execute("UPDATE staff_accounts SET last_login = CURRENT_TIMESTAMP WHERE staff_id = ?", (staff_id,))
+    c.execute("UPDATE staff_accounts SET last_login = CURRENT_TIMESTAMP WHERE staff_id = %s", (staff_id,))
 
     # Log the login action
     ip = request.remote_addr if request else "unknown"
     c.execute("""
         INSERT INTO audit_log (staff_id, username, action, ip_address)
-        VALUES (?, ?, 'LOGIN', ?)
+        VALUES (%s, %s, 'LOGIN', %s)
     """, (staff_id, uname, ip))
 
     conn.commit()
@@ -133,7 +133,7 @@ def logout_user():
         ip = request.remote_addr if request else "unknown"
         c.execute("""
             INSERT INTO audit_log (staff_id, username, action, ip_address)
-            VALUES (?, ?, 'LOGOUT', ?)
+            VALUES (%s, %s, 'LOGOUT', %s)
         """, (session.get('staff_id'), session.get('username'), ip))
         conn.commit()
         conn.close()
@@ -148,7 +148,7 @@ def log_action(action, target=None):
     ip = request.remote_addr if request else "unknown"
     c.execute("""
         INSERT INTO audit_log (staff_id, username, action, target, ip_address)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s)
     """, (session['staff_id'], session['username'], action, target, ip))
     conn.commit()
     conn.close()
@@ -226,7 +226,7 @@ def create_staff(username, password, full_name, role):
         password_hash = hash_password(password)
         c.execute("""
             INSERT INTO staff_accounts (username, password_hash, full_name, role)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
         """, (username, password_hash, full_name, role))
         conn.commit()
         conn.close()
@@ -245,7 +245,7 @@ def toggle_staff_status(staff_id):
             WHEN COALESCE(is_active, 0) = 0 THEN 1
             ELSE 0
         END
-        WHERE staff_id = ?
+        WHERE staff_id = %s
         """,
         (staff_id,),
     )
@@ -256,7 +256,7 @@ def change_password(staff_id, new_password):
     conn = connect(DB_PATH)
     c = conn.cursor()
     password_hash = hash_password(new_password)
-    c.execute("UPDATE staff_accounts SET password_hash = ? WHERE staff_id = ?", (password_hash, staff_id))
+    c.execute("UPDATE staff_accounts SET password_hash = %s WHERE staff_id = %s", (password_hash, staff_id))
     conn.commit()
     conn.close()
 
@@ -266,7 +266,7 @@ def get_staff_by_id(staff_id):
     c.execute("""
         SELECT staff_id, username, full_name, role, profile_image
         FROM staff_accounts
-        WHERE staff_id = ?
+        WHERE staff_id = %s
     """, (staff_id,))
     row = c.fetchone()
     conn.close()
@@ -283,7 +283,7 @@ def get_staff_by_id(staff_id):
 def verify_staff_password(staff_id, password):
     conn = connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT password_hash FROM staff_accounts WHERE staff_id = ?", (staff_id,))
+    c.execute("SELECT password_hash FROM staff_accounts WHERE staff_id = %s", (staff_id,))
     row = c.fetchone()
     conn.close()
     if not row:
@@ -297,14 +297,14 @@ def update_staff_profile(staff_id, full_name, username, profile_image=None):
         if profile_image is None:
             c.execute("""
                 UPDATE staff_accounts
-                SET full_name = ?, username = ?
-                WHERE staff_id = ?
+                SET full_name = %s, username = %s
+                WHERE staff_id = %s
             """, (full_name, username, staff_id))
         else:
             c.execute("""
                 UPDATE staff_accounts
-                SET full_name = ?, username = ?, profile_image = ?
-                WHERE staff_id = ?
+                SET full_name = %s, username = %s, profile_image = %s
+                WHERE staff_id = %s
             """, (full_name, username, profile_image, staff_id))
         conn.commit()
         conn.close()

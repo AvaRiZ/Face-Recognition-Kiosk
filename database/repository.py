@@ -127,7 +127,7 @@ class UserRepository:
             """
             SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim
             FROM users
-            WHERE sr_code = ?
+            WHERE sr_code = %s
             """,
             (sr_code,),
         )
@@ -158,7 +158,7 @@ class UserRepository:
             """
             SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim
             FROM users
-            WHERE user_id = ?
+            WHERE user_id = %s
             """,
             (user_id,),
         )
@@ -189,7 +189,7 @@ class UserRepository:
         normalized_embeddings = normalize_embeddings_by_model(user.embeddings)
         supports_embedding_table = self._supports_embedding_table(conn)
 
-        c.execute("SELECT user_id, embeddings, image_paths FROM users WHERE sr_code = ?", (user.sr_code,))
+        c.execute("SELECT user_id, embeddings, image_paths FROM users WHERE sr_code = %s", (user.sr_code,))
         existing = c.fetchone()
         if existing:
             user_id = int(existing[0])
@@ -203,13 +203,13 @@ class UserRepository:
                 c.execute(
                     """
                     UPDATE users
-                    SET name = ?,
-                        gender = ?,
-                        course = ?,
-                        image_paths = ?,
-                        embedding_dim = ?,
+                    SET name = %s,
+                        gender = %s,
+                        course = %s,
+                        image_paths = %s,
+                        embedding_dim = %s,
                         last_updated = CURRENT_TIMESTAMP
-                    WHERE user_id = ?
+                    WHERE user_id = %s
                     """,
                     (
                         user.name,
@@ -224,14 +224,14 @@ class UserRepository:
                 c.execute(
                     """
                     UPDATE users
-                    SET name = ?,
-                        gender = ?,
-                        course = ?,
-                        embeddings = ?,
-                        image_paths = ?,
-                        embedding_dim = ?,
+                    SET name = %s,
+                        gender = %s,
+                        course = %s,
+                        embeddings = %s,
+                        image_paths = %s,
+                        embedding_dim = %s,
                         last_updated = CURRENT_TIMESTAMP
-                    WHERE user_id = ?
+                    WHERE user_id = %s
                     """,
                     (
                         user.name,
@@ -253,7 +253,7 @@ class UserRepository:
             c.execute(
                 """
                 INSERT INTO users (name, sr_code, gender, course, embeddings, image_paths, embedding_dim)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING user_id
                 """,
                 (
@@ -285,7 +285,7 @@ class UserRepository:
             """
             SELECT name, sr_code, gender, course, embeddings, image_paths, embedding_dim
             FROM users
-            WHERE user_id = ?
+            WHERE user_id = %s
             """,
             (user_id,),
         )
@@ -310,8 +310,8 @@ class UserRepository:
             c.execute(
                 """
                 UPDATE users
-                SET image_paths = ?, embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
-                WHERE user_id = ?
+                SET image_paths = %s, embedding_dim = %s, last_updated = CURRENT_TIMESTAMP
+                WHERE user_id = %s
                 """,
                 (
                     ";".join(image_paths),
@@ -324,8 +324,8 @@ class UserRepository:
             c.execute(
                 """
                 UPDATE users
-                SET embeddings = ?, image_paths = ?, embedding_dim = ?, last_updated = CURRENT_TIMESTAMP
-                WHERE user_id = ?
+                SET embeddings = %s, image_paths = %s, embedding_dim = %s, last_updated = CURRENT_TIMESTAMP
+                WHERE user_id = %s
                 """,
                 (
                     self._serialize_legacy_embeddings_blob(merged_embeddings),
@@ -353,8 +353,8 @@ class UserRepository:
         conn = db_connect(self.db_path)
         c = conn.cursor()
         if self._supports_embedding_table(conn):
-            c.execute("DELETE FROM user_embeddings WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            c.execute("DELETE FROM user_embeddings WHERE user_id = %s", (user_id,))
+        c.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
         conn.commit()
         conn.close()
         emit_analytics_update("user_deleted", {"user_id": int(user_id)})
@@ -416,7 +416,7 @@ class UserRepository:
                     primary_confidence, secondary_confidence, primary_distance, secondary_distance,
                     face_quality, method, captured_at, payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(event_id) DO NOTHING
                 """,
                 (
@@ -471,7 +471,7 @@ class UserRepository:
                    primary_confidence, secondary_confidence,
                    primary_distance, secondary_distance, face_quality
             FROM recognition_events
-            WHERE user_id = ?
+            WHERE user_id = %s
             ORDER BY COALESCE(captured_at, ingested_at) DESC, id DESC
             LIMIT 1
             """,
@@ -486,12 +486,12 @@ class UserRepository:
         c = conn.cursor()
 
         if self._supports_embedding_table(conn):
-            c.execute("SELECT COUNT(*) FROM user_embeddings WHERE user_id = ?", (user_id,))
+            c.execute("SELECT COUNT(*) FROM user_embeddings WHERE user_id = %s", (user_id,))
             count = int(c.fetchone()[0] or 0)
             conn.close()
             return count
 
-        c.execute("SELECT embeddings FROM users WHERE user_id = ?", (user_id,))
+        c.execute("SELECT embeddings FROM users WHERE user_id = %s", (user_id,))
         row = c.fetchone()
         conn.close()
         if not row or not row[0]:
@@ -506,7 +506,7 @@ class UserRepository:
         if not user_ids:
             return {}
 
-        placeholders = ",".join("?" for _ in user_ids)
+        placeholders = ",".join("%s" for _ in user_ids)
         try:
             cursor.execute(
                 f"""
@@ -533,7 +533,7 @@ class UserRepository:
         return out
 
     def _replace_user_embeddings(self, cursor, user_id: int, embeddings_by_model: dict[str, list[np.ndarray]]) -> None:
-        cursor.execute("DELETE FROM user_embeddings WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM user_embeddings WHERE user_id = %s", (user_id,))
 
         normalized = normalize_embeddings_by_model(embeddings_by_model)
         rows = []
@@ -548,7 +548,7 @@ class UserRepository:
             cursor.executemany(
                 """
                 INSERT INTO user_embeddings (user_id, model_name, embedding)
-                VALUES (?, ?, ?)
+                VALUES (%s, %s, %s)
                 """,
                 rows,
             )
@@ -684,7 +684,7 @@ def _upsert_program_record(
     cursor.execute(
         """
         INSERT INTO programs (program_name, program_code, department_name, is_active)
-        VALUES (?, ?, ?, 1)
+        VALUES (%s, %s, %s, 1)
         ON CONFLICT(program_name) DO UPDATE SET
             program_code = CASE
                 WHEN (programs.program_code IS NULL OR TRIM(programs.program_code) = '')
@@ -694,7 +694,7 @@ def _upsert_program_record(
                 ELSE programs.program_code
             END,
             department_name = CASE
-                WHEN programs.department_name IS NULL OR TRIM(programs.department_name) = '' OR programs.department_name = ?
+                WHEN programs.department_name IS NULL OR TRIM(programs.department_name) = '' OR programs.department_name = %s
                     THEN excluded.department_name
                 ELSE programs.department_name
             END,

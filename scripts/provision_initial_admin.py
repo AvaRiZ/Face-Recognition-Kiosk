@@ -36,7 +36,7 @@ def provision(username: str, password: str, full_name: str) -> None:
         (username, password_hash, full_name),
     )
     conn.commit()
-    conn.close()
+        VALUES (%s, %s, %s, 'super_admin')
 
 
 def main() -> None:

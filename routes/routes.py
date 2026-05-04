@@ -139,7 +139,7 @@ def create_routes_blueprint(deps):
             INSERT INTO user_registrations (
                 user_id, event_id, registration_type, flow_type, status, performed_by, notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 user_id,
@@ -181,7 +181,7 @@ def create_routes_blueprint(deps):
             INSERT INTO users (
                 name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type, flow_type
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING user_id
             """,
             params,
@@ -209,7 +209,7 @@ def create_routes_blueprint(deps):
             INSERT INTO recognition_events (
                 event_id, user_id, sr_code, decision, event_type, method, captured_at, payload_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT(event_id) DO NOTHING
             """,
             (
@@ -263,7 +263,7 @@ def create_routes_blueprint(deps):
             INSERT INTO recognition_events (
                 event_id, user_id, sr_code, decision, event_type, method, captured_at, payload_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT(event_id) DO NOTHING
             """,
             (
@@ -309,7 +309,7 @@ def create_routes_blueprint(deps):
                 SUM(CASE WHEN event_type = 'entry' THEN 1 ELSE 0 END) AS entries,
                 SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) AS exits
             FROM recognition_events
-            WHERE user_id = ?
+            WHERE user_id = %s
               AND DATE(COALESCE(captured_at, ingested_at)) = CURRENT_DATE
             """,
             (user_id,),
@@ -662,7 +662,7 @@ def create_routes_blueprint(deps):
         _ensure_settings_table(db_path)
         conn = db_connect(db_path)
         c = conn.cursor()
-        c.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        c.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
         row = c.fetchone()
         conn.close()
         return row[0] if row else default
@@ -674,7 +674,7 @@ def create_routes_blueprint(deps):
         c.execute(
             """
             INSERT INTO app_settings (key, value)
-            VALUES (?, ?)
+            VALUES (%s, %s)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
             (key, str(value)),
@@ -736,7 +736,7 @@ def create_routes_blueprint(deps):
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
-              AND SUBSTR(CAST(re.captured_at AS TEXT), 1, 4) = ?
+              AND SUBSTR(CAST(re.captured_at AS TEXT), 1, 4) = %s
             GROUP BY program, month_num
             ORDER BY program ASC, month_num ASC
             """,
@@ -824,7 +824,7 @@ def create_routes_blueprint(deps):
             SELECT COUNT(*)
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) BETWEEN ? AND ?
+                            AND DATE(captured_at) BETWEEN %s AND %s
         """, range_params)
         total_logs = c.fetchone()[0]
 
@@ -839,7 +839,7 @@ def create_routes_blueprint(deps):
             SELECT COUNT(DISTINCT user_id)
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) BETWEEN ? AND ?
+                            AND DATE(captured_at) BETWEEN %s AND %s
         """, range_params)
         unique_visitors = c.fetchone()[0]
 
@@ -847,7 +847,7 @@ def create_routes_blueprint(deps):
             SELECT confidence
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) BETWEEN ? AND ?
+                            AND DATE(captured_at) BETWEEN %s AND %s
         """, range_params)
         conf_values = []
         for (confidence,) in c.fetchall():
@@ -885,7 +885,7 @@ def create_routes_blueprint(deps):
                         SELECT DATE(captured_at) as day, COUNT(*) as count
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) BETWEEN ? AND ?
+                            AND DATE(captured_at) BETWEEN %s AND %s
             GROUP BY day
             ORDER BY day ASC
         """, range_params)
@@ -914,7 +914,7 @@ def create_routes_blueprint(deps):
             WHERE re.captured_at IS NOT NULL
               AND u.course IS NOT NULL
               AND u.course != ''
-              AND DATE(re.captured_at) BETWEEN ? AND ?
+              AND DATE(re.captured_at) BETWEEN %s AND %s
             GROUP BY u.course
             ORDER BY count DESC
             LIMIT 8
@@ -931,7 +931,7 @@ def create_routes_blueprint(deps):
                    COUNT(*) as count
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) BETWEEN ? AND ?
+                            AND DATE(captured_at) BETWEEN %s AND %s
             GROUP BY hour
         """, range_params)
         hour_map = {row[0]: row[1] for row in c.fetchall()}
@@ -944,7 +944,7 @@ def create_routes_blueprint(deps):
                         FROM recognition_events re
                         LEFT JOIN users u ON re.user_id = u.user_id
                         WHERE re.captured_at IS NOT NULL
-                            AND DATE(re.captured_at) BETWEEN ? AND ?
+                            AND DATE(re.captured_at) BETWEEN %s AND %s
                         GROUP BY re.user_id, u.name, u.sr_code
             ORDER BY visits DESC
             LIMIT 10
@@ -968,7 +968,7 @@ def create_routes_blueprint(deps):
             FROM recognition_events
             WHERE captured_at IS NOT NULL
               AND EXTRACT(HOUR FROM captured_at)::int BETWEEN 7 AND 19
-              AND DATE(captured_at) BETWEEN ? AND ?
+              AND DATE(captured_at) BETWEEN %s AND %s
             GROUP BY day_of_week, hour
             ORDER BY day_of_week, hour
         """, range_params)
@@ -994,7 +994,7 @@ def create_routes_blueprint(deps):
                 COUNT(*) as count
             FROM recognition_events
             WHERE captured_at IS NOT NULL
-              AND DATE(captured_at) BETWEEN ? AND ?
+              AND DATE(captured_at) BETWEEN %s AND %s
             GROUP BY month
             ORDER BY month ASC
         """, range_params)
@@ -1218,7 +1218,7 @@ def create_routes_blueprint(deps):
             f"""
             UPDATE users
             SET archived_at = CURRENT_TIMESTAMP
-            WHERE user_id IN ({",".join("?" * len(user_ids))})
+            WHERE user_id IN ({",".join("%s" for _ in user_ids)})
             """,
             user_ids,
         )
@@ -1250,7 +1250,7 @@ def create_routes_blueprint(deps):
             f"""
             UPDATE users
             SET archived_at = NULL, last_updated = CURRENT_TIMESTAMP
-            WHERE user_id IN ({",".join("?" * len(user_ids))})
+            WHERE user_id IN ({",".join("%s" for _ in user_ids)})
             """,
             user_ids,
         )
@@ -1334,7 +1334,7 @@ def create_routes_blueprint(deps):
                    confidence
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
-                            AND DATE(captured_at) >= ?
+                            AND DATE(captured_at) >= %s
             """,
             (start_date.isoformat(),),
         )
@@ -1885,7 +1885,7 @@ def create_routes_blueprint(deps):
             c = conn.cursor()
  
             # Get student info before deleting
-            c.execute("SELECT name, sr_code FROM users WHERE user_id = ?", (user_id,))
+            c.execute("SELECT name, sr_code FROM users WHERE user_id = %s", (user_id,))
             student = c.fetchone()
  
             if not student:
@@ -1896,7 +1896,7 @@ def create_routes_blueprint(deps):
             name, sr_code = student
  
             # Delete the student
-            c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            c.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
             conn.commit()
             conn.close()
             bump_profiles_version(deps["db_path"])
@@ -1982,7 +1982,7 @@ def create_routes_blueprint(deps):
         """
         params = []
         if selected_date:
-            query += " WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = ?"
+            query += " WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s"
             params.append(selected_date)
         query += " ORDER BY COALESCE(re.captured_at, re.ingested_at) DESC"
 
@@ -2196,7 +2196,7 @@ def create_routes_blueprint(deps):
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
-        c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+            c.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
         row = c.fetchone()
         if not row:
             conn.close()
@@ -2210,8 +2210,8 @@ def create_routes_blueprint(deps):
         c.execute(
             """
             UPDATE users
-            SET name = ?, sr_code = ?, gender = ?, course = ?, last_updated = CURRENT_TIMESTAMP
-            WHERE user_id = ?
+            SET name = %s, sr_code = %s, gender = %s, course = %s, last_updated = CURRENT_TIMESTAMP
+            WHERE user_id = %s
             """,
             (name, sr_code, gender, program, user_id),
         )
@@ -2274,7 +2274,7 @@ def create_routes_blueprint(deps):
             f"""
             UPDATE users
             SET archived_at = CURRENT_TIMESTAMP
-            WHERE user_id IN ({",".join("?" * len(user_ids))})
+            WHERE user_id IN ({",".join("%s" for _ in user_ids)})
             """,
             user_ids,
         )
@@ -2330,7 +2330,7 @@ def create_routes_blueprint(deps):
             f"""
             UPDATE users
             SET archived_at = NULL, last_updated = CURRENT_TIMESTAMP
-            WHERE user_id IN ({",".join("?" * len(user_ids))})
+            WHERE user_id IN ({",".join("%s" for _ in user_ids)})
             """,
             user_ids,
         )
@@ -2521,7 +2521,7 @@ def create_routes_blueprint(deps):
             """
             INSERT INTO imported_logs
                 (sr_code, name, gender, program, year_level, timestamp, import_batch)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             batch_rows,
         )
@@ -2609,7 +2609,7 @@ def create_routes_blueprint(deps):
     def api_import_logs_delete(batch_id):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
-        c.execute("DELETE FROM imported_logs WHERE import_batch = ?", (batch_id,))
+            c.execute("DELETE FROM imported_logs WHERE import_batch = %s", (batch_id,))
         deleted = c.rowcount
         conn.commit()
         conn.close()
@@ -2886,7 +2886,7 @@ def create_routes_blueprint(deps):
             SELECT audit_id, staff_id, username, action, target, ip_address, timestamp
             FROM audit_log
             ORDER BY timestamp DESC, audit_id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         )

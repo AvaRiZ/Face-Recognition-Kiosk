@@ -1,7 +1,7 @@
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { fetchJson } from '../api.js';
-import { useSession } from '../App.jsx';
+import { useSession } from '../contexts.jsx';
 
 export default function LoginPage() {
   const navigate = useNavigate();

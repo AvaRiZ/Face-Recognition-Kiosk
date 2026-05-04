@@ -206,7 +206,7 @@ def create_internal_blueprint(deps):
 
         try:
             if user_id is None and sr_code:
-                c.execute("SELECT user_id FROM users WHERE sr_code = ?", (sr_code,))
+                c.execute("SELECT user_id FROM users WHERE sr_code = %s", (sr_code,))
                 row = c.fetchone()
                 if row:
                     user_id = int(row[0])
@@ -250,7 +250,7 @@ def create_internal_blueprint(deps):
                     audit_conn = db_connect(deps["db_path"])
                     audit_cursor = audit_conn.cursor()
                     audit_cursor.execute(
-                        "SELECT user_type FROM users WHERE user_id = ?",
+                        "SELECT user_type FROM users WHERE user_id = %s",
                         (user_id,),
                     )
                     user_row = audit_cursor.fetchone()

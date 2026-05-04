@@ -35,7 +35,7 @@ def _read_int_setting(db_path: str, key: str, default: int = 1) -> int:
     ensure_version_settings(db_path)
     conn = db_connect(db_path)
     c = conn.cursor()
-    c.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+    c.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
     row = c.fetchone()
     conn.close()
     if not row or row[0] is None:
@@ -53,7 +53,7 @@ def _write_int_setting(db_path: str, key: str, value: int) -> None:
     c.execute(
         """
         INSERT INTO app_settings (key, value)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
         """,
         (key, str(int(value))),

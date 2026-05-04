@@ -68,9 +68,9 @@ def _insert_logs(db_target, user_ids, days, avg_logs_per_day):
                 INSERT INTO recognition_events (
                     event_id, user_id, sr_code, decision, event_type, confidence, captured_at, method
                 )
-                SELECT ?, u.user_id, u.sr_code, 'allowed', ?, ?, ?, 'two-factor'
+                SELECT %s, u.user_id, u.sr_code, 'allowed', %s, %s, %s, 'two-factor'
                 FROM users u
-                WHERE u.user_id = ?
+                WHERE u.user_id = %s
                 """,
                 (
                     f"seed-{uuid.uuid4().hex}",

@@ -60,7 +60,7 @@ class OccupancyService:
         c.execute(
             """
             INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT(state_date) DO UPDATE SET
                 daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
                 daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
@@ -75,7 +75,7 @@ class OccupancyService:
             """
             SELECT state_date, daily_entries, daily_exits, updated_at
             FROM daily_occupancy_state
-            WHERE state_date = ?
+            WHERE state_date = %s
             """,
             (state_date,),
         )
@@ -113,7 +113,7 @@ class OccupancyService:
             """
             SELECT state_date, daily_entries, daily_exits, updated_at
             FROM daily_occupancy_state
-            WHERE state_date = ?
+            WHERE state_date = %s
             """,
             (target_date.isoformat(),),
         )
@@ -156,7 +156,7 @@ class OccupancyService:
             """
             SELECT COUNT(*) FROM recognition_events
             WHERE event_type = 'entry'
-              AND DATE(COALESCE(captured_at, ingested_at)) = ?
+              AND DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
             (date_str,),
         )
@@ -167,7 +167,7 @@ class OccupancyService:
             """
             SELECT COUNT(*) FROM recognition_events
             WHERE event_type = 'exit'
-              AND DATE(COALESCE(captured_at, ingested_at)) = ?
+              AND DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
             (date_str,),
         )
@@ -235,7 +235,7 @@ class OccupancyService:
             INSERT INTO occupancy_snapshots
             (snapshot_timestamp, occupancy_count, capacity_limit, capacity_warning,
              daily_entries, daily_exits, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 now_utc,
@@ -285,9 +285,9 @@ class OccupancyService:
                 daily_exits,
                 created_at
             FROM occupancy_snapshots
-            WHERE DATE(snapshot_timestamp) = ?
+            WHERE DATE(snapshot_timestamp) = %s
             ORDER BY snapshot_timestamp DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (date_str, limit),
         )
@@ -338,7 +338,7 @@ class OccupancyService:
                 SUM(CASE WHEN event_type = 'entry' THEN 1 ELSE 0 END) as entries,
                 SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) as exits
             FROM recognition_events
-            WHERE DATE(COALESCE(captured_at, ingested_at)) = ?
+            WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
             (date_str,),
         )
@@ -351,7 +351,7 @@ class OccupancyService:
             """
             SELECT MAX(occupancy_count)
             FROM occupancy_snapshots
-            WHERE DATE(snapshot_timestamp) = ?
+            WHERE DATE(snapshot_timestamp) = %s
             """,
             (date_str,),
         )
@@ -362,7 +362,7 @@ class OccupancyService:
             """
             SELECT COUNT(*)
             FROM occupancy_snapshots
-            WHERE DATE(snapshot_timestamp) = ? AND capacity_warning = 1
+            WHERE DATE(snapshot_timestamp) = %s AND capacity_warning = 1
             """,
             (date_str,),
         )
@@ -396,7 +396,7 @@ class OccupancyService:
                 SUM(CASE WHEN event_type = 'entry' THEN 1 ELSE 0 END) AS total_entries,
                 SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) AS total_exits
             FROM recognition_events
-            WHERE DATE(COALESCE(captured_at, ingested_at)) = ?
+            WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
             (date_str,),
         )
@@ -412,7 +412,7 @@ class OccupancyService:
                 SUM(CASE WHEN re.event_type = 'exit' THEN 1 ELSE 0 END) AS exits
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
-            WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = ?
+            WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s
             GROUP BY COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
             """,
             (date_str,),
@@ -436,7 +436,7 @@ class OccupancyService:
                 SUM(CASE WHEN re.event_type = 'exit' THEN 1 ELSE 0 END) AS exits
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
-            WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = ?
+            WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s
             GROUP BY COALESCE(NULLIF(TRIM(u.course), ''), 'Unknown')
             HAVING
                 SUM(CASE WHEN re.event_type = 'entry' THEN 1 ELSE 0 END) > 0
@@ -458,7 +458,7 @@ class OccupancyService:
             FROM (
                 SELECT EXTRACT(HOUR FROM COALESCE(captured_at, ingested_at))::int AS hour_slot
                 FROM recognition_events
-                WHERE DATE(COALESCE(captured_at, ingested_at)) = ?
+                WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
             ) hourly_events
             GROUP BY hour_slot
             ORDER BY event_count DESC, hour_slot ASC
@@ -478,7 +478,7 @@ class OccupancyService:
             """
             SELECT MAX(occupancy_count)
             FROM occupancy_snapshots
-            WHERE DATE(snapshot_timestamp) = ?
+            WHERE DATE(snapshot_timestamp) = %s
             """,
             (date_str,),
         )
@@ -521,7 +521,7 @@ class OccupancyService:
                 MAX(occupancy_count) AS peak_occupancy,
                 SUM(CASE WHEN capacity_warning = 1 THEN 1 ELSE 0 END) AS capacity_breaches
             FROM occupancy_snapshots
-            WHERE DATE(snapshot_timestamp) BETWEEN ? AND ?
+            WHERE DATE(snapshot_timestamp) BETWEEN %s AND %s
             GROUP BY DATE(snapshot_timestamp)
             ORDER BY snapshot_date ASC
             """,
@@ -533,7 +533,7 @@ class OccupancyService:
             """
             SELECT state_date, daily_entries, daily_exits
             FROM daily_occupancy_state
-            WHERE state_date BETWEEN ? AND ?
+            WHERE state_date BETWEEN %s AND %s
             """,
             (start_str, end_str),
         )
@@ -598,7 +598,7 @@ class OccupancyService:
         c.execute(
             """
             INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT(state_date) DO UPDATE SET
                 daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
                 daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
@@ -610,7 +610,7 @@ class OccupancyService:
             """
             SELECT daily_entries, daily_exits
             FROM daily_occupancy_state
-            WHERE state_date = ?
+            WHERE state_date = %s
             """,
             (state_date,),
         )
@@ -624,8 +624,8 @@ class OccupancyService:
             c.execute(
                 """
                 UPDATE daily_occupancy_state
-                SET daily_exits = ?, updated_at = ?
-                WHERE state_date = ?
+                SET daily_exits = %s, updated_at = %s
+                WHERE state_date = %s
                 """,
                 (daily_exits, now, state_date),
             )
@@ -640,7 +640,7 @@ class OccupancyService:
             INSERT INTO occupancy_alerts (
                 alert_type, level, message, occupancy_count, capacity_limit, occupancy_ratio,
                 is_active, state_date, dismissed_at, dismissed_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 "manual_adjustment",
@@ -698,7 +698,7 @@ class OccupancyService:
                 INSERT INTO occupancy_alerts (
                     alert_type, level, message, occupancy_count, capacity_limit, occupancy_ratio,
                     is_active, state_date, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     "occupancy_drift",

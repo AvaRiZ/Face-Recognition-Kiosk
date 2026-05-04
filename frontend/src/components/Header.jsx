@@ -1,6 +1,6 @@
 import React from 'react';
 import { useLocation } from 'react-router-dom';
-import { useSession, useTheme } from '../App.jsx';
+import { useSession, useTheme } from '../contexts.jsx';
 
 function getInitials(name) {
   if (!name) return 'a';
