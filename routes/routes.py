@@ -2196,7 +2196,7 @@ def create_routes_blueprint(deps):
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
-            c.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
+        c.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
         row = c.fetchone()
         if not row:
             conn.close()
@@ -2609,7 +2609,7 @@ def create_routes_blueprint(deps):
     def api_import_logs_delete(batch_id):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
-            c.execute("DELETE FROM imported_logs WHERE import_batch = %s", (batch_id,))
+        c.execute("DELETE FROM imported_logs WHERE import_batch = %s", (batch_id,))
         deleted = c.rowcount
         conn.commit()
         conn.close()
