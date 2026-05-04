@@ -1329,18 +1329,28 @@ export default function Dashboard() {
           <div className="card h-100">
             <div className="card-body">
               {/* Summary Section */}
-              <div className="d-flex justify-content-between align-items-start mb-3">
-                <div>
-                  <h5 className="card-title mb-3">Live Occupancy Monitor</h5>
-                  <div className="d-flex align-items-baseline gap-2 mb-2">
-                    <span className="display-6 fw-bold">{occupancyCount}</span>
+              <div className="mb-3">
+                <h5 className="card-title mb-3">Live Occupancy Monitor</h5>
+
+                <div className="d-flex justify-content-between align-items-center">
+                  
+                  {/* LEFT: Occupancy count + status */}
+                  <div className="d-flex align-items-baseline gap-2">
+                    <span className="display-6 fw-bold mb-0">{occupancyCount}</span>
                     <span className="text-muted fs-6">/ {capacityLimit}</span>
-                    <span className={`badge ${occupancyStatusClass} ms-2`}>{occupancyStatusLabel}</span>
+                    <span className={`badge ${occupancyStatusClass}`}>
+                      {occupancyStatusLabel}
+                    </span>
                   </div>
-                </div>
-                <div className="text-end">
-                  <div className="display-5 fw-bold text-primary">{occupancyPercent}%</div>
-                  <div className="text-muted small">capacity</div>
+
+                  {/* RIGHT: Percentage */}
+                  <div className="d-flex align-items-baseline gap-2">
+                    <span className="display-5 fw-bold text-primary mb-0">
+                      {occupancyPercent}%
+                    </span>
+                    <span className="text-muted small">capacity</span>
+                  </div>
+
                 </div>
               </div>
 
@@ -1431,83 +1441,110 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-        <div className="col-xl-4 d-flex flex-column gap-3">
-          <div className="card">
-            <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center mb-2">
-                <h5 className="card-title mb-0">Capacity Alerts</h5>
-                <span className="badge bg-secondary">{activeAlerts.length}</span>
-              </div>
-              {activeAlerts.length ? (
-                <div className="d-flex flex-column gap-2">
-                  {activeAlerts.slice(0, 5).map((alert) => (
-                    <div key={alert.id} className="border rounded p-2">
-                      <div className="d-flex justify-content-between align-items-start gap-2">
-                        <div>
-                          <div className="fw-semibold small">{alert.message || "Capacity alert"}</div>
-                          <div className="text-muted small">
-                            {alert.occupancy_count}/{alert.capacity_limit} · {Math.round((alert.occupancy_ratio || 0) * 100)}%
-                          </div>
-                          <div className="text-muted small">
-                            {formatSnapshotTime(alert.created_at)} · {String(alert.level || "").toUpperCase()}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-outline-secondary"
-                          onClick={() => handleDismissAlert(alert.id)}
-                          disabled={dismissInFlightId === alert.id}
-                        >
-                          {dismissInFlightId === alert.id ? "..." : "Acknowledge"}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+
+        
+        <div className="col-xl-4">
+        <div className="row g-3">
+          
+          {/* Capacity Alerts Card */}
+          <div className="col-12">
+            <div className="card h-100">
+              <div className="card-body">
+                <div className="d-flex justify-content-between align-items-center mb-2">
+                  <h5 className="card-title mb-0">Capacity Alerts</h5>
+                  <span className="badge bg-secondary">{activeAlerts.length}</span>
                 </div>
-              ) : (
-                <div className="text-muted small">No active capacity alerts.</div>
-              )}
+
+                {activeAlerts.length ? (
+                  <div className="d-flex flex-column gap-2">
+                    {activeAlerts.slice(0, 5).map((alert) => (
+                      <div key={alert.id} className="border rounded p-2">
+                        <div className="d-flex justify-content-between align-items-start gap-2">
+                          <div>
+                            <div className="fw-semibold small">
+                              {alert.message || "Capacity alert"}
+                            </div>
+                            <div className="text-muted small">
+                              {alert.occupancy_count}/{alert.capacity_limit} ·{" "}
+                              {Math.round((alert.occupancy_ratio || 0) * 100)}%
+                            </div>
+                            <div className="text-muted small">
+                              {formatSnapshotTime(alert.created_at)} ·{" "}
+                              {String(alert.level || "").toUpperCase()}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline-secondary"
+                            onClick={() => handleDismissAlert(alert.id)}
+                            disabled={dismissInFlightId === alert.id}
+                          >
+                            {dismissInFlightId === alert.id ? "..." : "Acknowledge"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-muted small">No active capacity alerts.</div>
+                )}
+              </div>
             </div>
           </div>
 
-          <div className="card">
-            <div className="card-body">
-              <h5 className="card-title mb-2">Manual Occupancy Override</h5>
-              <p className="text-muted small mb-3">
-                Apply a signed adjustment to reconcile occupancy drift.
-              </p>
-              <form onSubmit={handleManualOverrideSubmit}>
-                <div className="mb-2">
-                  <label className="form-label small mb-1" htmlFor="occupancy-adjustment">Adjustment</label>
-                  <input
-                    id="occupancy-adjustment"
-                    type="number"
-                    className="form-control form-control-sm"
-                    placeholder="e.g. +2 or -1"
-                    value={overrideAdjustment}
-                    onChange={(event) => setOverrideAdjustment(event.target.value)}
+          {/* Manual Override Card */}
+          <div className="col-12">
+            <div className="card h-100">
+              <div className="card-body">
+                <h5 className="card-title mb-2">Manual Occupancy Override</h5>
+                <p className="text-muted small mb-3">
+                  Apply a signed adjustment to reconcile occupancy drift.
+                </p>
+
+                <form onSubmit={handleManualOverrideSubmit}>
+                  <div className="mb-2">
+                    <label className="form-label small mb-1">
+                      Adjustment
+                    </label>
+                    <input
+                      type="number"
+                      className="form-control form-control-sm"
+                      placeholder="e.g. +2 or -1"
+                      value={overrideAdjustment}
+                      onChange={(e) => setOverrideAdjustment(e.target.value)}
+                      disabled={overrideSubmitting}
+                    />
+                  </div>
+
+                  <div className="mb-2">
+                    <label className="form-label small mb-1">
+                      Reason
+                    </label>
+                    <textarea
+                      className="form-control form-control-sm"
+                      rows={2}
+                      placeholder="Reason for this correction"
+                      value={overrideReason}
+                      onChange={(e) => setOverrideReason(e.target.value)}
+                      disabled={overrideSubmitting}
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="btn btn-sm btn-primary"
                     disabled={overrideSubmitting}
-                  />
-                </div>
-                <div className="mb-2">
-                  <label className="form-label small mb-1" htmlFor="occupancy-reason">Reason</label>
-                  <textarea
-                    id="occupancy-reason"
-                    className="form-control form-control-sm"
-                    rows={2}
-                    placeholder="Reason for this correction"
-                    value={overrideReason}
-                    onChange={(event) => setOverrideReason(event.target.value)}
-                    disabled={overrideSubmitting}
-                  />
-                </div>
-                <button type="submit" className="btn btn-sm btn-primary" disabled={overrideSubmitting}>
-                  {overrideSubmitting ? "Applying..." : "Apply Override"}
-                </button>
-              </form>
+                  >
+                    {overrideSubmitting ? "Applying..." : "Apply Override"}
+                  </button>
+                </form>
+              </div>
             </div>
           </div>
+
         </div>
+      </div>
       </div>
 
       {/* Daily Visitors + Program Distribution */}
