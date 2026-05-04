@@ -2,43 +2,55 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Start API",
+      "label": "Start Host Stack (API + Workers)",
       "type": "shell",
-      "command": "powershell",
+      "command": "python",
       "args": [
-        "-File",
-        "scripts/start_api.ps1"
+        "-m",
+        "app.host_stack"
       ]
     },
     {
-      "label": "Start Worker",
+      "label": "Start API Only",
       "type": "shell",
-      "command": "powershell",
+      "command": "python",
       "args": [
-        "-File",
-        "scripts/start_worker.ps1"
+        "app.py"
       ]
     },
     {
-      "label": "Start System (API + Worker)",
+      "label": "Start Entry Worker",
       "type": "shell",
-      "command": "powershell",
+      "command": "python",
       "args": [
-        "-File",
-        "scripts/start_system.ps1"
-      ]
+        "-m",
+        "workers.recognition_worker"
+      ],
+      "options": {
+        "env": {
+          "WORKER_ROLE": "entry",
+          "WORKER_STATION_ID": "entry-station-1",
+          "WORKER_CAMERA_ID": "1",
+          "WORKER_CCTV_STREAM_SOURCE": "0"
+        }
+      }
+    },
+    {
+      "label": "Start Exit Worker",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "workers.recognition_worker"
+      ],
+      "options": {
+        "env": {
+          "WORKER_ROLE": "exit",
+          "WORKER_STATION_ID": "exit-station-1",
+          "WORKER_CAMERA_ID": "2",
+          "WORKER_CCTV_STREAM_SOURCE": "1"
+        }
+      }
     }
   ]
-}
-{
-    // See https://go.microsoft.com/fwlink/?LinkId=733558
-    // for the documentation about the tasks.json format
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "echo",
-            "type": "shell",
-            "command": "echo Hello"
-        }
-    ]
 }

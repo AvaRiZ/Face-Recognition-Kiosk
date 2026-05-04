@@ -1,4 +1,4 @@
-# LAN Deployment Runbook (Host Stack: Web API + Dual Workers)
+# LAN Deployment Runbook (Python-First Host Stack)
 
 ## 1) Prerequisites
 - Python environment with `requirements.txt` installed.
@@ -16,26 +16,23 @@
    - `python scripts/ensure_postgres_db.py`
 3. Apply canonical schema with Alembic:
    - `alembic upgrade head`
-   - This applies all pending migrations, including timestamp standardization and FK policy fixes (see [database_schema_policy.md](database_schema_policy.md))
+   - This applies all pending migrations, including timestamp standardization and FK policy fixes (see [database_schema_policy.md](database_schema_policy.md)).
 
-
-## 3) Quick Start (Recommended: Unified Host Stack)
+## 3) Start Application (Canonical)
 1. Optional: create a persistent local env file:
    - `Copy-Item .env.local.example .env.local`
-   - Edit `.env.local` and set your real `DATABASE_URL` (the sample file already contains a local PostgreSQL example).
-2. If you do not use `.env.local`, set database URL for your shell (once per session):
-   - PowerShell: `$env:DATABASE_URL = "postgresql://<user>:<password>@127.0.0.1:5432/facerec_kiosk"`
-3. Start unified host stack in the current terminal (recommended for first launch/troubleshooting):
-   - PowerShell launcher: `pwsh -File scripts/start_system.ps1 -Foreground`
-   - Python wrapper: `python scripts/start_system.py -Foreground`
-   - This launches one host stack that serves the API and runs entry/exit workers.
-
-Start application: `python -m app.host_stack` or `python scripts/start_system.py -Foreground`
+   - Edit `.env.local` and set your real `DATABASE_URL`.
+2. Start unified host stack:
+   - `python -m app.host_stack`
+3. Host stack behavior:
+   - Serves web API and dashboard.
+   - Starts entry and exit worker processes.
+   - Auto-loads `.env.local` if present.
 
 Example:
 ```powershell
 $env:DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/facerec_kiosk"
-python scripts/start_system.py -Foreground
+python -m app.host_stack
 ```
 
 Initial admin provisioning:
@@ -43,44 +40,30 @@ Initial admin provisioning:
 - For first-time production setup, create the initial super admin explicitly:
   - `python scripts/provision_initial_admin.py --username "<admin-user>" --password "<strong-password>" --full-name "<name>"`
 
-Important:
-- Do not run `python scripts/start_system.ps1`; `.ps1` files must be launched by PowerShell.
-- When using `python scripts/start_system.py`, pass launcher switches with a single dash (for example `-Foreground`, not `--Foreground`).
+## 4) Debug Commands (Direct Python)
+API-only:
+- `python app.py`
 
-Optional flags:
-- `-EnvFile "C:\path\to\.env"` to load variables from a specific env file.
-- `-DatabaseUrl "postgresql://..."` to pass DB URL directly.
-- `-ApiPort 5050` to change API port.
-- `-Foreground` to run the unified host stack in the current terminal and show full errors.
-- `-SplitMode` to launch API and workers in separate terminal windows (advanced/debug only).
-- `-ApiOnly` or `-WorkerOnly` to launch a single service for troubleshooting.
+Worker-only:
+1. Set worker route env vars:
+   - Entry worker:
+     - PowerShell:
+       - `$env:WORKER_ROLE="entry"`
+       - `$env:WORKER_STATION_ID="entry-station-1"`
+       - `$env:WORKER_CAMERA_ID="1"`
+       - `$env:WORKER_CCTV_STREAM_SOURCE="0"`
+   - Exit worker:
+     - PowerShell:
+       - `$env:WORKER_ROLE="exit"`
+       - `$env:WORKER_STATION_ID="exit-station-1"`
+       - `$env:WORKER_CAMERA_ID="2"`
+       - `$env:WORKER_CCTV_STREAM_SOURCE="1"`
+2. Run worker:
+   - `python -m workers.recognition_worker`
 
-VS Code task shortcut:
-- Run task: `Start System (API + Worker)`
-
-## 4) Start Services Individually (if needed)
-Only use this section for debugging. Registration capture requires the unified host stack.
-For split launch via one command, use: `pwsh -File scripts/start_system.ps1 -SplitMode`.
-
-Start API service (LAN-exposed):
-- `pwsh -File scripts/start_api.ps1`
-- Defaults:
-   - `FLASK_RUN_HOST=0.0.0.0`
-   - `FLASK_RUN_PORT=5000`
-
-Other LAN devices can now access: `http://<host-ip>:5000`.
-
-Start entry worker (same host):
-- `pwsh -File scripts/start_entry_worker.ps1`
-- Defaults:
-   - `WORKER_API_BASE_URL=http://127.0.0.1:5000`
-   - `WORKER_QUEUE_DIR=data/worker_queue`
-
-Start exit worker (same host):
-- `pwsh -File scripts/start_exit_worker.ps1`
-
-Legacy single-worker launcher (debug only):
-- `pwsh -File scripts/start_worker.ps1`
+Notes:
+- Worker defaults are entry-oriented if role env vars are omitted.
+- Set `WORKER_API_BASE_URL` when API is not running at `http://127.0.0.1:5000`.
 
 ## 5) Backup/Restore Verification
 1. Backup:

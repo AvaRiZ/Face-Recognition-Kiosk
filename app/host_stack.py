@@ -37,6 +37,33 @@ class HostRuntime:
     cli: CLIApplication
 
 
+def _load_env_file_if_present(file_path: Path) -> None:
+    if not file_path.exists():
+        return
+
+    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if (
+            (value.startswith('"') and value.endswith('"'))
+            or (value.startswith("'") and value.endswith("'"))
+        ):
+            value = value[1:-1]
+
+        os.environ.setdefault(key, value)
+
+
+def _load_default_local_env(repo_root: Path) -> None:
+    _load_env_file_if_present(repo_root / ".env.local")
+
+
 def build_runtime() -> HostRuntime:
     config = AppConfig()
     os.makedirs(config.base_save_dir, exist_ok=True)
@@ -102,16 +129,25 @@ def _resolve_worker_stream_source(env_name: str, fallback: str) -> str:
     return value or fallback
 
 
-def _start_worker_process(repo_root: Path, worker_module: str, worker_role: str, station_id: str, camera_id: int, stream_source: str) -> subprocess.Popen:
+def _start_worker_process(
+    repo_root: Path,
+    worker_role: str,
+    station_id: str,
+    camera_id: int,
+    stream_source: str,
+) -> subprocess.Popen:
     env = os.environ.copy()
     env["WORKER_ROLE"] = worker_role
     env["WORKER_STATION_ID"] = station_id
     env["WORKER_CAMERA_ID"] = str(camera_id)
     env["WORKER_CCTV_STREAM_SOURCE"] = stream_source
-    return subprocess.Popen([sys.executable, "-m", worker_module], cwd=str(repo_root), env=env)
+    return subprocess.Popen([sys.executable, "-m", "workers.recognition_worker"], cwd=str(repo_root), env=env)
 
 
 def main() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    _load_default_local_env(repo_root)
+
     db_target = resolve_database_target(AppConfig().db_path)
     if not is_postgres_target(db_target):
         raise RuntimeError(
@@ -123,7 +159,6 @@ def main() -> None:
     host = os.environ.get("FLASK_RUN_HOST", "0.0.0.0")
     port = int(os.environ.get("FLASK_RUN_PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-    repo_root = Path(__file__).resolve().parent.parent
     # Use config values for stream sources, but allow environment variable overrides.
     entry_stream_source = _resolve_worker_stream_source("ENTRY_CCTV_STREAM_SOURCE", str(runtime.config.resolved_entry_stream_source()))
     exit_stream_source = _resolve_worker_stream_source("EXIT_CCTV_STREAM_SOURCE", str(runtime.config.resolved_exit_stream_source()))
@@ -164,8 +199,8 @@ def main() -> None:
     runtime.cli._set_stream_status("live", "Dual camera workers are running in separate processes.")
 
     worker_processes = [
-        _start_worker_process(repo_root, "workers.entry_worker", "entry", "entry-station-1", 1, entry_stream_source),
-        _start_worker_process(repo_root, "workers.exit_worker", "exit", "exit-station-1", 2, exit_stream_source),
+        _start_worker_process(repo_root, "entry", "entry-station-1", 1, entry_stream_source),
+        _start_worker_process(repo_root, "exit", "exit-station-1", 2, exit_stream_source),
     ]
 
     try:

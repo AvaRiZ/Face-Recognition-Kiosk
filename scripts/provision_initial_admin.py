@@ -31,12 +31,12 @@ def provision(username: str, password: str, full_name: str) -> None:
     c.execute(
         """
         INSERT INTO staff_accounts (username, password_hash, full_name, role)
-        VALUES (?, ?, ?, 'super_admin')
+        VALUES (%s, %s, %s, 'super_admin')
         """,
         (username, password_hash, full_name),
     )
     conn.commit()
-        VALUES (%s, %s, %s, 'super_admin')
+    conn.close()
 
 
 def main() -> None:

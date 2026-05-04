@@ -1319,7 +1319,7 @@ USB 3.0      USB 3.0
    - Adjust camera angles for optimal face detection
 
 4. **Start Application Stack**:
-   - Run: `python scripts/start_system.py --foreground`
+   - Run: `python -m app.host_stack`
    - Verify entry-worker and exit-worker processes started
    - Verify Web API listening on port 5000
 
