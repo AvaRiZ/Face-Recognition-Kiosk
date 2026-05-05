@@ -34,7 +34,7 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Paths and dataset locations
     # ------------------------------------------------------------------
-    model_path: str = "model-training/runs/training/yolov8n-mobile-sam/weights/best.pt"
+    model_path: str = "model-training\Yolo-model\yolov8n-face.pt"
     db_path: str = ""
     base_save_dir: str = "faces_improved"
     detector_dataset_dir: str = "detector_dataset"
@@ -44,7 +44,7 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Dataset capture / validation collection
     # ------------------------------------------------------------------
-    real_val_capture_enabled: bool = True
+    real_val_capture_enabled: bool = False
     real_val_capture_every_n_frames: int = 90
     real_val_capture_max_frames: int = 300
 
@@ -78,7 +78,7 @@ class AppConfig:
     #   reason a face was marked poor.
     # - Enable `quality_debug_show_all_scores` while tuning thresholds so you
     #   can inspect every component score and raw metric value.
-    quality_debug_enabled: bool = True
+    quality_debug_enabled: bool = False
     quality_debug_show_primary_issue: bool = True
     quality_debug_show_all_scores: bool = True
 
@@ -96,11 +96,18 @@ class AppConfig:
     registration_samples_per_pose_target: int = 5
     registration_retained_samples_per_pose: int = 5
     registration_session_timeout_seconds: int = 180
+    registration_worker_heartbeat_ttl_seconds: int = 10
 
     confidence_smoothing_window: int = 3
     detection_every_n_frames: int = 1
     recognition_cooldown_seconds: int = 1
+    recognition_event_lock_seconds: int = 8
     recognition_confidence_threshold: float = 0.72
+
+    registration_recognition_confirm_frames: int = 5
+    registration_recognition_confidence_margin: float = 0.08
+    registration_recognition_uncertain_margin: float = 0.04
+
     unknown_person_attempt_threshold: int = 3
     stability_time_required: float = 0.3
     position_tolerance: int = 200
@@ -122,7 +129,7 @@ class AppConfig:
     exit_cctv_stream_source: str = "0"
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
-    cli_top_bar_enabled: bool = True
+    cli_top_bar_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Occupancy and capacity management

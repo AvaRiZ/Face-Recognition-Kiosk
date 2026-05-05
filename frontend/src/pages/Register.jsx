@@ -111,6 +111,7 @@ const INITIAL_INFO = {
   has_pending_registration: false,
   is_in_progress: false,
   web_session_active: false,
+  allow_unknown_override: false,
   session_expired: false,
   ready_to_submit: false,
   status_reason_code: null,
@@ -149,8 +150,8 @@ const EXPIRING_SOON_THRESHOLD_SECONDS = 120;
 const STATUS_REASON_VIEWS = {
   worker_unattached: {
     title: 'Worker runtime unavailable',
-    message: 'The capture worker is not attached to this API process.',
-    action: 'Start the host stack (API + worker) on the host PC, then start a new session.'
+    message: 'The entry recognition worker is offline.',
+    action: 'Start the entry worker, wait for heartbeat sync, then start a new session.'
   },
   session_already_active: {
     title: 'Session already active',
@@ -201,6 +202,21 @@ const STATUS_REASON_VIEWS = {
     title: 'Camera offline',
     message: 'Camera stream is unavailable.',
     action: 'Check the CCTV source or camera index, then retry.'
+  },
+  possible_existing_match: {
+    title: 'Possible existing profile match',
+    message: 'A likely match to an existing user was detected, but not yet hard-confirmed.',
+    action: 'Hold still for confirmation, or choose Continue as New Student if this person is truly unregistered.'
+  },
+  override_forced_unknown: {
+    title: 'Manual override active',
+    message: 'Registration is continuing as a new student by operator override.',
+    action: 'Continue capture and submit details when sample collection is complete.'
+  },
+  registration_entry_camera_only: {
+    title: 'Entry camera required',
+    message: 'Registration capture is restricted to the entry camera worker.',
+    action: 'Switch to the entry camera worker route and start a new registration session.'
   }
 };
 
@@ -704,6 +720,32 @@ export default function RegisterPage() {
     }
   }, []);
 
+  const handleContinueUnknown = React.useCallback(async () => {
+    setCaptureError('');
+    setResult(null);
+    setSessionAction('override');
+    try {
+      const response = await fetch('/api/register-session/continue-unknown', {
+        method: 'POST',
+        credentials: 'include'
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.success === false) {
+        setCaptureError(payload.message || 'Unable to continue as unknown student.');
+        await showError('Override Failed', payload.message || 'Unable to continue as unknown student.');
+        return;
+      }
+      setInfo((prev) => ({ ...prev, ...payload }));
+      await showSuccess('Override Enabled', payload.message || 'Capture will continue as a new student.');
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to continue as unknown student.');
+      setCaptureError(message);
+      await showError('Override Failed', message);
+    } finally {
+      setSessionAction('');
+    }
+  }, []);
+
   async function handleSubmit(ev) {
     ev.preventDefault();
     setCaptureError('');
@@ -808,7 +850,7 @@ export default function RegisterPage() {
   const readyToSubmit = Boolean(info.ready_to_submit && info.has_pending_registration);
   const webSessionActive = Boolean(info.web_session_active);
   const captureInProgress = !readyToSubmit && Boolean(info.capture_count > 0 || info.is_in_progress);
-  const sessionControlBusy = sessionAction === 'start' || sessionAction === 'cancel';
+  const sessionControlBusy = sessionAction === 'start' || sessionAction === 'cancel' || sessionAction === 'override';
   const canStartSession = !readyToSubmit && !webSessionActive && !captureInProgress && !submitting && !sessionControlBusy;
   const canCancelSession = (webSessionActive || captureInProgress) && !submitting && !sessionControlBusy;
   const sampleCount = info.sample_previews?.length || 0;
@@ -847,6 +889,11 @@ export default function RegisterPage() {
   const reasonTitle = reasonView?.title || (statusReasonMessage ? 'Capture status' : '');
   const reasonMessage = reasonView?.message || statusReasonMessage;
   const reasonAction = reasonView?.action || '';
+  const canContinueUnknown = statusReasonCode === 'possible_existing_match'
+    && !info.allow_unknown_override
+    && !submitting
+    && !sessionControlBusy
+    && (webSessionActive || captureInProgress);
 
   const cameraState = (info.camera_stream?.state || 'unknown').toLowerCase();
   const cameraMessage = info.camera_stream?.message || '';
@@ -1017,6 +1064,28 @@ export default function RegisterPage() {
                             <div className="mt-2" style={{ fontSize: '14px' }}>
                               <span className="fw-semibold">Next action: </span>
                               {reasonAction}
+                            </div>
+                          ) : null}
+                          {canContinueUnknown ? (
+                            <div className="mt-3">
+                              <button
+                                className="btn btn-outline-primary btn-sm"
+                                type="button"
+                                onClick={handleContinueUnknown}
+                                disabled={sessionAction === 'override'}
+                              >
+                                {sessionAction === 'override' ? (
+                                  <>
+                                    <span className="spinner-border spinner-border-sm me-2" role="status" />
+                                    Applying Override...
+                                  </>
+                                ) : (
+                                  <>
+                                    <i className="bi bi-person-plus me-2"></i>
+                                    Continue as New Student
+                                  </>
+                                )}
+                              </button>
                             </div>
                           ) : null}
                         </div>

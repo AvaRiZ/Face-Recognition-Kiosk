@@ -103,6 +103,15 @@ Apply timing:
 - `GET /api/internal/runtime-config`
 - `GET /api/internal/capacity-gate`
 - `POST /api/internal/embedding-updates`
+- `POST /api/internal/registration-samples`
+- `POST /api/internal/worker-heartbeat`
+
+`/api/internal/capacity-gate` is advisory-only (warning/monitoring). It does not block recognition or admission decisions.
+
+Registration session start behavior:
+- `/api/register-session/start` now requires a recent **entry worker heartbeat**.
+- Default heartbeat TTL is `registration_worker_heartbeat_ttl_seconds` (10s).
+- Worker sync loop sends heartbeat approximately every 3 seconds.
 
 If `WORKER_INTERNAL_TOKEN` is set, worker requests must include:
 - `Authorization: Bearer <token>`

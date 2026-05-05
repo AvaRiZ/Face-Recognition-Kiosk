@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import os
-import statistics
 import time
-from collections import deque
 from typing import Any
 
 import cv2
@@ -30,10 +28,28 @@ class FaceRecognitionService:
         self.repository = repository
         self.embedding_service = embedding_service
         self.detector_dataset_service = DetectorDatasetService(config)
-        self.recognition_history: dict[int, deque[float]] = {}
-        self.confidence_smoothing: dict[int, deque[float]] = {}
         self._vector_indexes: dict[str, dict[str, Any]] = {}
         self._index_signature: tuple[tuple[int, int, int], ...] | None = None
+        self._recognition_event_locks: dict[tuple[int, str], float] = {}
+
+    def _event_type_for_current_repository(self) -> str:
+        camera_id = int(getattr(self.repository, "camera_id", 1) or 1)
+        return "exit" if camera_id == 2 else "entry"
+
+    def _should_emit_recognition_event(self, user_id: int) -> bool:
+        now = time.time()
+        event_type = self._event_type_for_current_repository()
+        lock_seconds = max(0.0, float(getattr(self.config, "recognition_event_lock_seconds", 8) or 8.0))
+        if lock_seconds <= 0:
+            return True
+
+        lock_key = (int(user_id), event_type)
+        last_emitted_at = self._recognition_event_locks.get(lock_key)
+        if last_emitted_at is not None and (now - float(last_emitted_at)) < lock_seconds:
+            return False
+
+        self._recognition_event_locks[lock_key] = now
+        return True
 
     def _compute_index_signature(self) -> tuple[tuple[int, int, int], ...]:
         signature: list[tuple[int, int, int]] = []
@@ -116,13 +132,7 @@ class FaceRecognitionService:
 
         return {int(user_ids[int(idx)]) for idx in indices if 0 <= int(idx) < len(user_ids)}
 
-    def smooth_confidence(self, user_id: int, confidence: float) -> float:
-        if user_id not in self.confidence_smoothing:
-            self.confidence_smoothing[user_id] = deque(maxlen=self.config.confidence_smoothing_window)
-        self.confidence_smoothing[user_id].append(confidence)
-        return statistics.mean(self.confidence_smoothing[user_id])
-
-    def find_best_match(self, query_embeddings, face_quality: float) -> RecognitionResult | None:
+    def find_best_match(self, query_embeddings) -> RecognitionResult | None:
         if self.config.primary_model not in query_embeddings or self.config.secondary_model not in query_embeddings:
             print("  [WARN] Need embeddings from both models for two-factor verification")
             return None
@@ -209,10 +219,6 @@ class FaceRecognitionService:
                 )
 
         if best_match:
-            if best_match.user_id not in self.recognition_history:
-                self.recognition_history[best_match.user_id] = deque(maxlen=50)
-            self.recognition_history[best_match.user_id].append(best_match.confidence)
-            self.repository.log_recognition(best_match, face_quality=face_quality, method="two-factor")
             print(
                 f"  [OK] 2-Factor Verified: {best_match.user.name} "
                 f"(ArcFace={best_match.primary_confidence:.2%}, Facenet={best_match.secondary_confidence:.2%})"
@@ -220,11 +226,11 @@ class FaceRecognitionService:
 
         return best_match
 
-    def recognize(self, face_crop, quality_score: float):
+    def recognize(self, face_crop):
         embeddings = self.embedding_service.extract_embedding_ensemble(face_crop)
         if not embeddings:
             return None, {}
-        return self.find_best_match(embeddings, quality_score), embeddings
+        return self.find_best_match(embeddings), embeddings
 
     def is_confident_recognition(self, match: RecognitionResult) -> bool:
         return float(match.confidence) >= float(self.config.recognition_confidence_threshold)
@@ -233,7 +239,6 @@ class FaceRecognitionService:
         self,
         face_crop,
         quality_service,
-        face_id=None,
         allow_registration: bool = False,
         detection_confidence=None,
         landmarks=None,
@@ -287,7 +292,7 @@ class FaceRecognitionService:
             message += f" | {quality_service.quality_debug_summary(quality_debug)}"
         print(message)
 
-        best_match, embeddings = self.recognize(face_crop, quality_score)
+        best_match, embeddings = self.recognize(face_crop)
         if not embeddings:
             print("  Failed to extract embeddings")
             return {
@@ -316,31 +321,13 @@ class FaceRecognitionService:
                     "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
                 }
 
-            if int(getattr(self.repository, "camera_id", 1)) == 1:
-                gate = self.repository.check_entry_capacity_gate()
-                if not bool(gate.get("allow_entry", True)):
-                    self.repository.log_decision(
-                        user_id=int(best_match.user_id),
-                        sr_code=best_match.user.sr_code,
-                        decision="denied",
-                        confidence=float(best_match.confidence),
-                        primary_confidence=float(best_match.primary_confidence),
-                        secondary_confidence=float(best_match.secondary_confidence),
-                        primary_distance=float(best_match.primary_distance),
-                        secondary_distance=float(best_match.secondary_distance),
-                        face_quality=quality_score,
-                        method="two-factor",
-                        rejection_reason="capacity_reached",
-                    )
-                    return {
-                        "status": "capacity_rejected",
-                        "reason_code": "capacity_reached",
-                        "quality_score": quality_score,
-                        "quality_status": quality_status,
-                        "quality_debug": quality_debug,
-                        "match_confidence": best_match.confidence,
-                        "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
-                    }
+            if self._should_emit_recognition_event(int(best_match.user_id)):
+                self.repository.log_recognition(best_match, face_quality=quality_score, method="two-factor")
+            else:
+                print(
+                    f"  Skipped duplicate recognition event for {best_match.user.name} "
+                    f"(lock={float(getattr(self.config, 'recognition_event_lock_seconds', 8)):.1f}s)"
+                )
 
             timestamp = int(time.time() * 1000)
             user_folder = os.path.join(self.config.base_save_dir, best_match.user.sr_code)
@@ -446,6 +433,7 @@ class FaceRecognitionService:
                 "match_threshold": None,
                 "expected_pose": current_pose,
                 "detected_pose": detected_pose,
+                "registration_sample": sample,
             }
 
         return {

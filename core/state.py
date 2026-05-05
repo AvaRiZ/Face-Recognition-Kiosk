@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -13,6 +14,8 @@ from core.models import (
     TrackingState,
     User,
 )
+
+_REGISTRATION_FLAG_UNSET = object()
 
 
 class AppStateManager:
@@ -29,6 +32,8 @@ class AppStateManager:
 
         self._base_threshold = float(config.base_threshold)
         self._face_quality_threshold = float(config.face_quality_threshold)
+        self._worker_heartbeats: dict[str, dict[str, object]] = {}
+        self._registration_ingested_sample_ids_by_session: dict[str, set[str]] = {}
         self._reset_registration_collections()
 
     @staticmethod
@@ -67,6 +72,16 @@ class AppStateManager:
         state.captured_samples = []
         self._refresh_registration_limits()
 
+    def _begin_registration_session(self) -> str:
+        session_id = uuid.uuid4().hex
+        self._registration_state.session_id = session_id
+        self._registration_ingested_sample_ids_by_session = {session_id: set()}
+        return session_id
+
+    def _clear_registration_session(self) -> None:
+        self._registration_state.session_id = None
+        self._registration_ingested_sample_ids_by_session = {}
+
     def _mark_registration_session_started(self) -> None:
         now = time.time()
         state = self._registration_state
@@ -81,6 +96,44 @@ class AppStateManager:
         state = self._registration_state
         state.session_started_at = None
         state.last_activity_at = None
+
+    def _set_registration_flags(
+        self,
+        *,
+        capture_requested: bool | None = None,
+        capture_active: bool | None = None,
+        capture_track_id: Optional[int] | object = _REGISTRATION_FLAG_UNSET,
+        selected_track_id: Optional[int] | object = _REGISTRATION_FLAG_UNSET,
+        session_active: bool | None = None,
+        session_expired: bool | None = None,
+        allow_unknown_override: bool | None = None,
+    ) -> None:
+        state = self._registration_state
+        if capture_requested is not None:
+            state.capture_requested = capture_requested
+        if capture_active is not None:
+            state.capture_active = capture_active
+        if capture_track_id is not _REGISTRATION_FLAG_UNSET:
+            state.capture_track_id = capture_track_id  # type: ignore[assignment]
+        if selected_track_id is not _REGISTRATION_FLAG_UNSET:
+            state.selected_track_id = selected_track_id  # type: ignore[assignment]
+        if session_active is not None:
+            state.session_active = session_active
+        if session_expired is not None:
+            state.session_expired = session_expired
+        if allow_unknown_override is not None:
+            state.allow_unknown_override = allow_unknown_override
+
+    def _reset_registration_session_state(self) -> None:
+        self._clear_registration_session()
+        self._clear_registration_session_timestamps()
+
+    def _restart_registration_session(self, *, create_session_id: bool) -> None:
+        if create_session_id:
+            self._begin_registration_session()
+        else:
+            self._clear_registration_session()
+        self._mark_registration_session_started()
 
     def expire_registration_session_if_needed(self) -> bool:
         timeout_seconds = int(getattr(self._config, "registration_session_timeout_seconds", 0))
@@ -107,14 +160,17 @@ class AppStateManager:
         if (time.time() - float(last_activity)) <= timeout_seconds:
             return False
 
-        state.session_active = False
-        state.capture_requested = False
-        state.capture_active = False
-        state.capture_track_id = None
-        state.selected_track_id = None
-        state.session_expired = True
+        self._set_registration_flags(
+            capture_requested=False,
+            capture_active=False,
+            capture_track_id=None,
+            selected_track_id=None,
+            session_active=False,
+            session_expired=True,
+            allow_unknown_override=False,
+        )
         self._reset_registration_collections()
-        self._clear_registration_session_timestamps()
+        self._reset_registration_session_state()
         self.set_registration_status_reason(
             "session_expired",
             "Registration session expired due to inactivity. Start a new session to continue.",
@@ -270,13 +326,16 @@ class AppStateManager:
     def reset_registration_state(self) -> None:
         self._recognized_user = None
         self._reset_registration_collections()
-        self._registration_state.capture_requested = False
-        self._registration_state.capture_active = False
-        self._registration_state.capture_track_id = None
-        self._registration_state.selected_track_id = None
-        self._registration_state.session_active = False
-        self._registration_state.session_expired = False
-        self._clear_registration_session_timestamps()
+        self._set_registration_flags(
+            capture_requested=False,
+            capture_active=False,
+            capture_track_id=None,
+            selected_track_id=None,
+            session_active=False,
+            session_expired=False,
+            allow_unknown_override=False,
+        )
+        self._reset_registration_session_state()
         self.set_registration_status_reason(
             "session_reset",
             "Registration session was reset.",
@@ -319,69 +378,84 @@ class AppStateManager:
 
     def complete_registration(self) -> None:
         self._reset_registration_collections()
-        self._registration_state.capture_requested = False
-        self._registration_state.capture_active = False
-        self._registration_state.capture_track_id = None
-        self._registration_state.selected_track_id = None
-        self._registration_state.session_active = False
-        self._registration_state.session_expired = False
-        self._clear_registration_session_timestamps()
+        self._set_registration_flags(
+            capture_requested=False,
+            capture_active=False,
+            capture_track_id=None,
+            selected_track_id=None,
+            session_active=False,
+            session_expired=False,
+            allow_unknown_override=False,
+        )
+        self._reset_registration_session_state()
         self.set_registration_status_reason(
             "registration_submitted",
             "Registration submitted successfully.",
         )
 
     def request_manual_registration(self) -> None:
-        self._registration_state.capture_requested = True
-        self._registration_state.capture_active = False
-        self._registration_state.capture_track_id = None
-        self._registration_state.selected_track_id = None
-        self._registration_state.session_active = False
-        self._registration_state.session_expired = False
+        self._set_registration_flags(
+            capture_requested=True,
+            capture_active=False,
+            capture_track_id=None,
+            selected_track_id=None,
+            session_active=False,
+            session_expired=False,
+            allow_unknown_override=False,
+        )
         self._reset_registration_collections()
-        self._mark_registration_session_started()
+        self._restart_registration_session(create_session_id=False)
         self.set_registration_status_reason(
             "session_requested",
             "Registration session requested. Waiting to lock onto an unregistered student.",
         )
 
     def start_manual_registration(self, track_id: int) -> None:
-        self._registration_state.capture_requested = False
-        self._registration_state.capture_active = True
-        self._registration_state.capture_track_id = track_id
-        self._registration_state.selected_track_id = track_id
-        self._registration_state.session_active = False
-        self._registration_state.session_expired = False
+        self._set_registration_flags(
+            capture_requested=False,
+            capture_active=True,
+            capture_track_id=track_id,
+            selected_track_id=track_id,
+            session_active=False,
+            session_expired=False,
+            allow_unknown_override=False,
+        )
         self._reset_registration_collections()
-        self._mark_registration_session_started()
+        self._restart_registration_session(create_session_id=False)
         self.set_registration_status_reason(
             "capture_locked",
             "Student face locked. Capturing required pose samples.",
         )
 
     def stop_manual_registration(self) -> None:
-        self._registration_state.capture_requested = False
-        self._registration_state.capture_active = False
-        self._registration_state.capture_track_id = None
-        self._registration_state.selected_track_id = None
-        self._registration_state.session_active = False
+        self._set_registration_flags(
+            capture_requested=False,
+            capture_active=False,
+            capture_track_id=None,
+            selected_track_id=None,
+            session_active=False,
+            allow_unknown_override=False,
+        )
         # Keep finalized pending samples intact so web registration can continue.
         if not self.is_registration_ready():
             self._reset_registration_collections()
-            self._clear_registration_session_timestamps()
+            self._reset_registration_session_state()
 
     def start_web_registration_session(self) -> bool:
         state = self._registration_state
         if state.in_progress or state.capture_active or state.capture_requested or state.session_active:
             return False
-        state.capture_requested = True
-        state.capture_active = False
-        state.capture_track_id = None
-        state.selected_track_id = None
-        state.session_active = True
-        state.session_expired = False
+        self._set_registration_flags(
+            capture_requested=True,
+            capture_active=False,
+            capture_track_id=None,
+            selected_track_id=None,
+            session_active=True,
+            session_expired=False,
+            allow_unknown_override=False,
+        )
         self._reset_registration_collections()
-        self._mark_registration_session_started()
+        self._restart_registration_session(create_session_id=True)
         self.set_registration_status_reason(
             "session_started",
             "Registration session started. Keep one unregistered student in frame.",
@@ -389,19 +463,68 @@ class AppStateManager:
         return True
 
     def cancel_web_registration_session(self) -> None:
-        state = self._registration_state
-        state.session_active = False
-        state.capture_requested = False
-        state.capture_active = False
-        state.capture_track_id = None
-        state.selected_track_id = None
-        state.session_expired = False
+        self._set_registration_flags(
+            capture_requested=False,
+            capture_active=False,
+            capture_track_id=None,
+            selected_track_id=None,
+            session_active=False,
+            session_expired=False,
+            allow_unknown_override=False,
+        )
         self._reset_registration_collections()
-        self._clear_registration_session_timestamps()
+        self._reset_registration_session_state()
         self.set_registration_status_reason(
             "session_canceled",
             "Registration session canceled.",
         )
+
+    def claim_registration_sample_id(self, session_id: str, sample_id: str) -> bool:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_sample_id = str(sample_id or "").strip()
+        if not normalized_session_id or not normalized_sample_id:
+            return False
+        seen = self._registration_ingested_sample_ids_by_session.setdefault(normalized_session_id, set())
+        if normalized_sample_id in seen:
+            return False
+        seen.add(normalized_sample_id)
+        return True
+
+    def record_worker_heartbeat(
+        self,
+        *,
+        worker_role: str,
+        station_id: str | None = None,
+        camera_id: int | None = None,
+        observed_at: float | None = None,
+    ) -> float:
+        normalized_role = str(worker_role or "").strip().lower()
+        if normalized_role not in {"entry", "exit"}:
+            normalized_role = "entry"
+        timestamp = float(observed_at if observed_at is not None else time.time())
+        self._worker_heartbeats[normalized_role] = {
+            "last_seen_at": timestamp,
+            "station_id": str(station_id or "").strip() or None,
+            "camera_id": int(camera_id) if camera_id is not None else None,
+        }
+        return timestamp
+
+    def get_worker_last_seen_at(self, worker_role: str) -> float | None:
+        normalized_role = str(worker_role or "").strip().lower()
+        payload = self._worker_heartbeats.get(normalized_role) or {}
+        value = payload.get("last_seen_at")
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    def is_worker_online(self, worker_role: str, ttl_seconds: int) -> bool:
+        ttl = int(ttl_seconds or 0)
+        if ttl <= 0:
+            return False
+        last_seen = self.get_worker_last_seen_at(worker_role)
+        if last_seen is None:
+            return False
+        return (time.time() - last_seen) <= ttl
 
     def initialize_track_state(self, track_id: int, current_time: float) -> TrackingState:
         if track_id not in self._tracked_faces:
@@ -423,8 +546,14 @@ class AppStateManager:
         track_state.last_label = "Tracking"
         track_state.last_label_color = (180, 180, 180)
         track_state.selected_for_registration = False
+        track_state.registration_recognized_streak = 0
+        track_state.registration_recognized_name = ""
         self._face_stability.pop(track_id, None)
         return track_state
+
+    def enable_unknown_registration_override(self) -> None:
+        self._registration_state.allow_unknown_override = True
+        self._touch_registration_session()
 
     def get_track_state(self, track_id: int) -> Optional[TrackingState]:
         return self._tracked_faces.get(track_id)

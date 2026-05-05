@@ -17,7 +17,7 @@ class AlertService:
         state_date = now.date().isoformat()
         message = (
             f"Capacity reached: occupancy {int(occupancy_count)}/{int(capacity_limit)}. "
-            "New entries are blocked until occupancy decreases."
+            "Capacity monitoring is active; review traffic and staffing."
         )
 
         conn = db_connect(self.db_path)

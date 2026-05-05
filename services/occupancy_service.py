@@ -191,22 +191,24 @@ class OccupancyService:
 
         date_str = target_date.isoformat()
 
-        # Count entry events for the target date
+        # Count allowed entry events for the target date.
         c.execute(
             """
             SELECT COUNT(*) FROM recognition_events
             WHERE event_type = 'entry'
+              AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
               AND DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
             (date_str,),
         )
         daily_entries = c.fetchone()[0] or 0
 
-        # Count exit events for the target date
+        # Count allowed exit events for the target date.
         c.execute(
             """
             SELECT COUNT(*) FROM recognition_events
             WHERE event_type = 'exit'
+              AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
               AND DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
             (date_str,),
@@ -379,6 +381,7 @@ class OccupancyService:
                 SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) as exits
             FROM recognition_events
             WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
+              AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
             """,
             (date_str,),
         )
@@ -437,6 +440,7 @@ class OccupancyService:
                 SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) AS total_exits
             FROM recognition_events
             WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
+              AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
             """,
             (date_str,),
         )
@@ -453,6 +457,7 @@ class OccupancyService:
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s
+              AND LOWER(COALESCE(NULLIF(TRIM(re.decision), ''), 'allowed')) = 'allowed'
             GROUP BY COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
             """,
             (date_str,),
@@ -477,6 +482,7 @@ class OccupancyService:
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s
+              AND LOWER(COALESCE(NULLIF(TRIM(re.decision), ''), 'allowed')) = 'allowed'
             GROUP BY COALESCE(NULLIF(TRIM(u.course), ''), 'Unknown')
             HAVING
                 SUM(CASE WHEN re.event_type = 'entry' THEN 1 ELSE 0 END) > 0
@@ -499,6 +505,7 @@ class OccupancyService:
                 SELECT EXTRACT(HOUR FROM COALESCE(captured_at, ingested_at))::int AS hour_slot
                 FROM recognition_events
                 WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
+                  AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
             ) hourly_events
             GROUP BY hour_slot
             ORDER BY event_count DESC, hour_slot ASC

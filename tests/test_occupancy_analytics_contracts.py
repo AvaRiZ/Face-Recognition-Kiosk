@@ -183,7 +183,7 @@ class OccupancyAnalyticsContractTests(unittest.TestCase):
         report = service.get_daily_report(report_date)
 
         self.assertEqual(report["date"], date_str)
-        self.assertEqual(report["total_entries"], 3)
+        self.assertEqual(report["total_entries"], 2)
         self.assertEqual(report["total_exits"], 1)
         self.assertEqual(report["peak_occupancy"], 6)
         self.assertIn("peak_hour", report)
@@ -191,8 +191,59 @@ class OccupancyAnalyticsContractTests(unittest.TestCase):
         self.assertEqual(report["by_user_type"]["enrolled"]["entries"], 1)
         self.assertEqual(report["by_user_type"]["enrolled"]["exits"], 1)
         self.assertEqual(report["by_user_type"]["visitor"]["entries"], 1)
-        self.assertEqual(report["by_user_type"]["unrecognized"]["entries"], 1)
+        self.assertEqual(report["by_user_type"]["unrecognized"]["entries"], 0)
         self.assertEqual(report["by_program"]["Computer Science"]["entries"], 1)
+
+    def test_calculate_occupancy_counts_allowed_decisions_only(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        db_path = str(Path(temp_dir.name) / "occupancy_allowed_only.db")
+        _create_tables(db_path)
+
+        report_date = date(2026, 5, 2)
+        date_str = report_date.isoformat()
+        conn = db_connect(db_path)
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence, captured_at, ingested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("evt-allow-entry", 1, "SR001", "allowed", "entry", 0.91, f"{date_str} 08:00:00", f"{date_str} 08:00:01"),
+        )
+        c.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence, captured_at, ingested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("evt-denied-entry", 1, "SR001", "denied", "entry", 0.31, f"{date_str} 08:10:00", f"{date_str} 08:10:01"),
+        )
+        c.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence, captured_at, ingested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("evt-unknown-exit", 1, "SR001", "unknown", "exit", 0.22, f"{date_str} 08:20:00", f"{date_str} 08:20:01"),
+        )
+        c.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence, captured_at, ingested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("evt-allow-exit", 1, "SR001", "allowed", "exit", 0.93, f"{date_str} 08:30:00", f"{date_str} 08:30:01"),
+        )
+        conn.commit()
+        conn.close()
+
+        service = OccupancyService(db_path)
+        occ = service.calculate_occupancy(report_date)
+        self.assertEqual(int(occ["daily_entries"]), 1)
+        self.assertEqual(int(occ["daily_exits"]), 1)
+        self.assertEqual(int(occ["occupancy_count"]), 0)
 
     def test_occupancy_trends_falls_back_to_daily_state_when_snapshots_missing(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()

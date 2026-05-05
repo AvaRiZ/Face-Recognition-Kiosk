@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import time
 from datetime import datetime, timezone
 
+import cv2
 import numpy as np
 from flask import Blueprint, jsonify, request
 
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert, emit_unrecognized_detection
-from core.models import User
+from core.models import RegistrationSample, User
 from db import connect as db_connect
 from db import get_app_setting
 from services.occupancy_service import OccupancyService, resolve_capacity_limit
@@ -115,6 +118,39 @@ def _deserialize_embeddings(payload_embeddings: dict) -> dict[str, list[np.ndarr
     return normalized
 
 
+def _decode_face_jpeg_base64(encoded_image: str) -> np.ndarray | None:
+    text = str(encoded_image or "").strip()
+    if not text:
+        return None
+    if "," in text and text.lower().startswith("data:"):
+        _, text = text.split(",", 1)
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    buffer = np.frombuffer(raw, dtype=np.uint8)
+    if buffer.size == 0:
+        return None
+    return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+
+def _parse_observed_timestamp(value) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return time.time()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return float(parsed.timestamp())
+    except Exception:
+        return time.time()
+
+
 def create_internal_blueprint(deps):
     bp = Blueprint("internal_routes", __name__, url_prefix="/api/internal")
 
@@ -128,6 +164,23 @@ def create_internal_blueprint(deps):
             deps["db_path"],
             default=int(config.max_library_capacity),
         )
+
+    def _registration_worker_heartbeat_ttl_seconds() -> int:
+        return int(getattr(deps["config"], "registration_worker_heartbeat_ttl_seconds", 10) or 10)
+
+    def _entry_worker_online() -> bool:
+        checker = deps.get("is_worker_online")
+        if callable(checker):
+            return bool(checker("entry", _registration_worker_heartbeat_ttl_seconds()))
+        return bool(deps.get("worker_runtime_attached"))
+
+    def _entry_worker_last_seen_at() -> float | None:
+        getter = deps.get("get_worker_last_seen_at")
+        if callable(getter):
+            value = getter("entry")
+            if isinstance(value, (int, float)):
+                return float(value)
+        return None
 
     @bp.route("/profiles/version", methods=["GET"], endpoint="profiles_version")
     def profiles_version():
@@ -149,6 +202,17 @@ def create_internal_blueprint(deps):
     def runtime_config():
         threshold, quality_threshold = deps["get_thresholds"]()
         config = deps["config"]
+        reg_state = deps["get_registration_state"]() if deps.get("get_registration_state") else None
+        registration_session = {
+            "web_session_active": bool(getattr(reg_state, "web_session_active", False)),
+            "manual_requested": bool(getattr(reg_state, "manual_requested", False)),
+            "manual_active": bool(getattr(reg_state, "manual_active", False)),
+            "in_progress": bool(getattr(reg_state, "in_progress", False)),
+            "session_id": str(getattr(reg_state, "session_id", "") or "") or None,
+            "capture_count": int(getattr(reg_state, "capture_count", 0)),
+            "status_reason_code": str(getattr(reg_state, "status_reason_code", "") or ""),
+            "status_reason_message": str(getattr(reg_state, "status_reason_message", "") or ""),
+        }
         return jsonify(
             {
                 "settings_version": get_settings_version(deps["db_path"]),
@@ -158,6 +222,116 @@ def create_internal_blueprint(deps):
                 "recognition_confidence_threshold": float(config.recognition_confidence_threshold),
                 "entry_cctv_stream_source": str(config.entry_cctv_stream_source),
                 "exit_cctv_stream_source": str(config.exit_cctv_stream_source),
+                "registration_session": registration_session,
+                "entry_worker_online": _entry_worker_online(),
+                "entry_worker_last_seen_at": _entry_worker_last_seen_at(),
+            }
+        )
+
+    @bp.route("/worker-heartbeat", methods=["POST"], endpoint="worker_heartbeat")
+    def worker_heartbeat():
+        payload = request.get_json(silent=True) or {}
+        worker_role = str(payload.get("worker_role") or "").strip().lower() or "entry"
+        if worker_role not in {"entry", "exit"}:
+            return _json_error("`worker_role` must be 'entry' or 'exit'.", 400)
+
+        camera_id = _optional_int(payload.get("camera_id"))
+        station_id = str(payload.get("station_id") or "").strip() or None
+        observed_at = _parse_observed_timestamp(payload.get("observed_at"))
+        recorder = deps.get("record_worker_heartbeat")
+        if not callable(recorder):
+            return _json_error("Worker heartbeat storage is unavailable.", 503)
+        recorded_at = recorder(
+            worker_role=worker_role,
+            station_id=station_id,
+            camera_id=camera_id,
+            observed_at=observed_at,
+        )
+        return jsonify(
+            {
+                "success": True,
+                "worker_role": worker_role,
+                "recorded_at": float(recorded_at),
+                "entry_worker_online": _entry_worker_online(),
+                "entry_worker_last_seen_at": _entry_worker_last_seen_at(),
+            }
+        )
+
+    @bp.route("/registration-samples", methods=["POST"], endpoint="registration_samples_ingest")
+    def registration_samples_ingest():
+        payload = request.get_json(silent=True) or {}
+        sample_id = str(payload.get("sample_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        worker_role = str(payload.get("worker_role") or "").strip().lower() or "entry"
+        station_id = str(payload.get("station_id") or "").strip() or None
+        camera_id = _optional_int(payload.get("camera_id"))
+        pose = str(payload.get("pose") or "").strip().lower()
+        quality = _optional_float(payload.get("quality"))
+        face_jpeg_base64 = payload.get("face_jpeg_base64")
+        embeddings = _deserialize_embeddings(payload.get("embeddings") or {})
+
+        if not sample_id:
+            return _json_error("`sample_id` is required.", 400)
+        if not session_id:
+            return _json_error("`session_id` is required.", 400)
+        if worker_role != "entry":
+            return _json_error("Registration sample ingestion only accepts entry worker payloads.", 403)
+        if pose not in {"front", "left", "right"}:
+            return _json_error("`pose` must be one of: front, left, right.", 400)
+        if quality is None:
+            return _json_error("`quality` is required and must be numeric.", 400)
+        if not embeddings:
+            return _json_error("`embeddings` is required and must contain valid vectors.", 400)
+
+        reg_state_getter = deps.get("get_registration_state")
+        capture_sample = deps.get("capture_registration_sample")
+        claim_sample = deps.get("claim_registration_sample_id")
+        if not callable(reg_state_getter) or not callable(capture_sample) or not callable(claim_sample):
+            return _json_error("Registration sample ingestion dependencies are unavailable.", 503)
+
+        reg_state = reg_state_getter()
+        active_session_id = str(getattr(reg_state, "session_id", "") or "").strip()
+        if not active_session_id:
+            return _json_error("No active registration session is available for sample ingestion.", 409)
+        if session_id != active_session_id:
+            return _json_error("Registration session is stale. Start a new session and retry capture.", 409)
+
+        face_crop = _decode_face_jpeg_base64(face_jpeg_base64)
+        if face_crop is None or getattr(face_crop, "size", 0) == 0:
+            return _json_error("`face_jpeg_base64` must contain a valid JPEG image.", 400)
+
+        accepted = bool(claim_sample(session_id, sample_id))
+        if not accepted:
+            return jsonify(
+                {
+                    "success": True,
+                    "duplicate": True,
+                    "sample_id": sample_id,
+                    "session_id": session_id,
+                }
+            )
+
+        sample = RegistrationSample(
+            face_crop=face_crop,
+            embeddings=embeddings,
+            quality=float(quality),
+            pose=pose,
+        )
+        capture_count = int(capture_sample(sample))
+        reg_state = reg_state_getter()
+        return jsonify(
+            {
+                "success": True,
+                "duplicate": False,
+                "sample_id": sample_id,
+                "session_id": session_id,
+                "capture_count": capture_count,
+                "max_captures": int(getattr(reg_state, "max_captures", 0)),
+                "in_progress": bool(getattr(reg_state, "in_progress", False)),
+                "has_pending_registration": bool(getattr(reg_state, "pending_registration", None)),
+                "worker_role": worker_role,
+                "station_id": station_id,
+                "camera_id": camera_id,
             }
         )
 
@@ -222,6 +396,7 @@ def create_internal_blueprint(deps):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         inserted = False
+        occupancy_state = None
 
         try:
             if user_id is None and sr_code:
@@ -237,7 +412,7 @@ def create_internal_blueprint(deps):
                     primary_confidence, secondary_confidence, primary_distance, secondary_distance,
                     face_quality, method, captured_at, payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(event_id) DO NOTHING
                 """,
                 (
@@ -259,7 +434,48 @@ def create_internal_blueprint(deps):
             )
             inserted = (c.rowcount or 0) > 0
 
+            if inserted and decision == "allowed":
+                daily_entries = 1 if event_type == "entry" else 0
+                daily_exits = 1 if event_type == "exit" else 0
+                state_date = captured_at.date().isoformat()
+                c.execute(
+                    """
+                    INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT(state_date) DO UPDATE SET
+                        daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
+                        daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
+                        updated_at = excluded.updated_at
+                    """,
+                    (state_date, daily_entries, daily_exits, captured_at),
+                )
+                c.execute(
+                    """
+                    SELECT state_date, daily_entries, daily_exits, updated_at
+                    FROM daily_occupancy_state
+                    WHERE state_date = %s
+                    """,
+                    (state_date,),
+                )
+                row = c.fetchone()
+                if row:
+                    tracked_entries = int(row[1] or 0)
+                    tracked_exits = int(row[2] or 0)
+                    occupancy_state = {
+                        "state_date": row[0],
+                        "daily_entries": tracked_entries,
+                        "daily_exits": tracked_exits,
+                        "occupancy_count": max(0, tracked_entries - tracked_exits),
+                        "updated_at": row[3],
+                    }
+
             conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             conn.close()
 
@@ -279,7 +495,7 @@ def create_internal_blueprint(deps):
                             INSERT INTO user_registrations (
                                 user_id, event_id, registration_type, flow_type, status, performed_by, notes
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 user_id,
@@ -302,7 +518,12 @@ def create_internal_blueprint(deps):
             occupancy_service = OccupancyService(deps["db_path"])
             config = deps["config"]
             warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
-            occupancy_state = occupancy_service.record_event(event_type, captured_at)
+            if occupancy_state is None:
+                occupancy_state = {
+                    "daily_entries": 0,
+                    "daily_exits": 0,
+                    "occupancy_count": 0,
+                }
             occupancy_view = occupancy_service.get_current_occupancy(
                 _runtime_capacity_limit(),
                 warning_threshold=warning_threshold,
@@ -352,7 +573,7 @@ def create_internal_blueprint(deps):
                     INSERT INTO user_registrations (
                         user_id, event_id, registration_type, flow_type, status, performed_by, notes
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
@@ -422,9 +643,10 @@ def create_internal_blueprint(deps):
             _runtime_capacity_limit(),
             warning_threshold=warning_threshold,
         )
-        allow_entry = not bool(occ["is_full"])
+        allow_entry = True
+        monitoring_reason = "capacity_reached_monitoring_only" if bool(occ["is_full"]) else "ok"
         alert = None
-        if not allow_entry:
+        if bool(occ["is_full"]):
             alert = AlertService(deps["db_path"]).create_capacity_reached_alert(
                 occupancy_count=int(occ["occupancy_count"]),
                 capacity_limit=int(occ["capacity_limit"]),
@@ -439,7 +661,7 @@ def create_internal_blueprint(deps):
             moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
             state_is_stale=False,
         )
-        if alert_changed or not allow_entry:
+        if alert_changed or alert is not None:
             emit_capacity_threshold_alert(
                 {
                     "reason": "capacity_gate_check",
@@ -452,7 +674,7 @@ def create_internal_blueprint(deps):
             "capacity_gate_checked",
             {
                 "allow_entry": allow_entry,
-                "reason": "capacity_reached" if not allow_entry else "ok",
+                "reason": monitoring_reason,
                 "occupancy_count": int(occ["occupancy_count"]),
                 "capacity_limit": int(occ["capacity_limit"]),
                 "occupancy_ratio": float(occ["occupancy_ratio"]),
@@ -464,7 +686,7 @@ def create_internal_blueprint(deps):
             {
                 "success": True,
                 "allow_entry": allow_entry,
-                "reason": "capacity_reached" if not allow_entry else "ok",
+                "reason": monitoring_reason,
                 "occupancy_count": int(occ["occupancy_count"]),
                 "capacity_limit": int(occ["capacity_limit"]),
                 "occupancy_ratio": float(occ["occupancy_ratio"]),

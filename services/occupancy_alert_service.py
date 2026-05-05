@@ -44,7 +44,7 @@ class OccupancyAlertService:
     ) -> tuple[dict, bool]:
         if state_is_stale:
             level = "conservative"
-            should_block = True
+            should_block = False
         else:
             level = self._level_from_ratio(
                 occupancy_ratio,
@@ -52,7 +52,7 @@ class OccupancyAlertService:
                 warning_threshold,
                 moderate_threshold,
             )
-            should_block = is_full
+            should_block = False
 
         payload = {
             "level": level,

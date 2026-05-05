@@ -21,6 +21,8 @@ class ApiContractRouteTests(unittest.TestCase):
         self.assertIn('/profiles/snapshot', source)
         self.assertIn('/runtime-config', source)
         self.assertIn('/embedding-updates', source)
+        self.assertIn('/registration-samples', source)
+        self.assertIn('/worker-heartbeat', source)
 
     def test_dashboard_contract_paths_exist(self) -> None:
         source = Path("routes/routes.py").read_text(encoding="utf-8")
