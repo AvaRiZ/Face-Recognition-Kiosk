@@ -1023,7 +1023,7 @@ def create_routes_blueprint(deps):
             """
             SELECT program_name
             FROM programs
-            WHERE COALESCE(is_active, 1) = 1
+            WHERE program_name IS NOT NULL AND TRIM(program_name) <> ''
             ORDER BY program_name ASC
             """
         )
@@ -1031,7 +1031,7 @@ def create_routes_blueprint(deps):
 
         c.execute(
             """
-            SELECT DISTINCT SUBSTR(CAST(timestamp AS TEXT), 1, 4) AS year
+            SELECT DISTINCT SUBSTR(CAST(captured_at AS TEXT), 1, 4) AS year
             FROM recognition_events
             WHERE captured_at IS NOT NULL AND TRIM(CAST(captured_at AS TEXT)) != ''
             ORDER BY year DESC

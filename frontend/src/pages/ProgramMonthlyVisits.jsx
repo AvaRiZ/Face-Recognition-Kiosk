@@ -1,7 +1,6 @@
 import React from 'react';
 import { getErrorMessage, showError, showSuccess } from '../alerts.js';
 import { fetchJson } from '../api.js';
-import { ALL_PROGRAM_NAMES } from '../data/programCatalog.js';
 import { downloadFile } from '../downloads.js';
 
 function currentYear() {
@@ -17,7 +16,7 @@ export default function ProgramMonthlyVisitsPage() {
   const [currentPage, setCurrentPage] = React.useState(1);
   const [selectedYear, setSelectedYear] = React.useState(String(currentYear()));
   const [sortOrder, setSortOrder] = React.useState('most');
-  const [showZeroVisits, setShowZeroVisits] = React.useState(false);
+  const [showZeroVisits, setShowZeroVisits] = React.useState(true);
 
   const loadData = React.useCallback((year) => {
     setLoading(true);
@@ -38,27 +37,11 @@ export default function ProgramMonthlyVisitsPage() {
 
   const mergedRows = React.useMemo(() => {
     const sourceRows = Array.isArray(data.rows) ? data.rows : [];
-    const rowMap = {};
-
-    sourceRows.forEach((row) => {
-      rowMap[row.program] = {
-        program: row.program,
-        months: Array.isArray(row.months) ? row.months : Array(12).fill(0),
-        overall_total: Number(row.overall_total || 0)
-      };
-    });
-
-    ALL_PROGRAM_NAMES.forEach((program) => {
-      if (!rowMap[program]) {
-        rowMap[program] = {
-          program,
-          months: Array(12).fill(0),
-          overall_total: 0
-        };
-      }
-    });
-
-    return Object.values(rowMap);
+    return sourceRows.map((row) => ({
+      program: row.program,
+      months: Array.isArray(row.months) ? row.months : Array(12).fill(0),
+      overall_total: Number(row.overall_total || 0)
+    }));
   }, [data.rows]);
 
   const filtered = React.useMemo(() => {
@@ -79,6 +62,13 @@ export default function ProgramMonthlyVisitsPage() {
 
     return rows;
   }, [mergedRows, search, showZeroVisits, sortOrder]);
+
+  const monthLabels = React.useMemo(() => {
+    if (Array.isArray(data.months) && data.months.length === 12) {
+      return data.months;
+    }
+    return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  }, [data.months]);
 
   const pageLimit = parseInt(pageSize, 10) || 10;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageLimit));
@@ -250,7 +240,7 @@ export default function ProgramMonthlyVisitsPage() {
               <thead>
                 <tr>
                   <th>Program</th>
-                  {(data.months || []).map((month) => (
+                  {monthLabels.map((month) => (
                     <th key={month} className="text-center">
                       {month}
                     </th>
@@ -286,7 +276,7 @@ export default function ProgramMonthlyVisitsPage() {
                   </>
                 ) : (
                   <tr>
-                    <td colSpan={(data.months?.length || 12) + 2} className="text-center text-muted py-4">
+                    <td colSpan={monthLabels.length + 2} className="text-center text-muted py-4">
                       <i className="bi bi-table fs-3 d-block mb-2"></i>
                       No visit summary found for the selected year.
                     </td>
