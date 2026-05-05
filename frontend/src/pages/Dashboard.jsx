@@ -6,6 +6,9 @@ import { socket } from "../socket.js";
 const PEAK_HOUR_START = 7;
 const PEAK_HOUR_END = 19;
 const PEAK_HOUR_COUNT = PEAK_HOUR_END - PEAK_HOUR_START + 1;
+const FULL_DAY_START = 0;
+const FULL_DAY_END = 23;
+const FULL_DAY_COUNT = FULL_DAY_END - FULL_DAY_START + 1;
 const DAYS_OF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const CAPACITY_ALERT_POPUP_COOLDOWN_MS = 45000;
 
@@ -42,6 +45,17 @@ function normalizePeakHours(rawData) {
   return normalizeCountList(rawData, PEAK_HOUR_COUNT);
 }
 
+function normalizeHourWindow(rawData, startHour, endHour) {
+  const count = endHour - startHour + 1;
+  if (!Array.isArray(rawData)) {
+    return normalizeCountList([], count);
+  }
+  if (rawData.length >= FULL_DAY_COUNT) {
+    return normalizeCountList(rawData.slice(startHour, endHour + 1), count);
+  }
+  return normalizeCountList(rawData, count);
+}
+
 function formatHourLabel(hour) {
   if (hour === 0) return "12 AM";
   if (hour < 12) return `${hour} AM`;
@@ -53,6 +67,13 @@ const PEAK_HOUR_LABELS = Array.from(
   { length: PEAK_HOUR_COUNT },
   (_, idx) => formatHourLabel(PEAK_HOUR_START + idx),
 );
+
+function buildHourLabels(startHour, endHour) {
+  return Array.from(
+    { length: endHour - startHour + 1 },
+    (_, idx) => formatHourLabel(startHour + idx),
+  );
+}
 
 // Stat Card
 const DASHBOARD_FILTER_OPTIONS = [
@@ -315,8 +336,14 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
 
   const hourRows = [
     ["Hour", "Visits"],
-    ...(data?.peak_hours ?? []).map((count, hourIndex) => [
-      formatDashboardHourLabel(hourIndex),
+    ...(
+      viewMode === "today"
+        ? normalizeHourWindow(data?.peak_hours ?? [], FULL_DAY_START, FULL_DAY_END)
+        : normalizeHourWindow(data?.peak_hours ?? [], PEAK_HOUR_START, PEAK_HOUR_END)
+    ).map((count, hourIndex) => [
+      formatHourLabel(
+        (viewMode === "today" ? FULL_DAY_START : PEAK_HOUR_START) + hourIndex
+      ),
       count,
     ]),
   ];
@@ -568,10 +595,17 @@ function ProgramDistributionChart({ data }) {
 }
 
 // Peak Hours Heatmap
-function PeakHoursChart({ data }) {
+function PeakHoursChart({ data, startHour = PEAK_HOUR_START, endHour = PEAK_HOUR_END, height = 470 }) {
   const canvasRef = React.useRef(null);
   const chartRef = React.useRef(null);
-  const normalizedData = React.useMemo(() => normalizePeakHours(data), [data]);
+  const labels = React.useMemo(
+    () => buildHourLabels(startHour, endHour),
+    [startHour, endHour]
+  );
+  const normalizedData = React.useMemo(
+    () => normalizeHourWindow(data, startHour, endHour),
+    [data, startHour, endHour]
+  );
 
   React.useEffect(() => {
     if (!canvasRef.current || !window.Chart || !normalizedData.length) return;
@@ -582,7 +616,7 @@ function PeakHoursChart({ data }) {
     chartRef.current = new window.Chart(canvasRef.current, {
       type: "bar",
       data: {
-        labels: PEAK_HOUR_LABELS,
+        labels,
         datasets: [
           {
             label: "Visits",
@@ -631,7 +665,7 @@ function PeakHoursChart({ data }) {
       },
     });
     return () => chartRef.current?.destroy();
-  }, [normalizedData]);
+  }, [normalizedData, labels]);
 
   if (!Array.isArray(data) || !data.length)
     return (
@@ -640,7 +674,7 @@ function PeakHoursChart({ data }) {
   return (
     <div
       className="chart-container"
-      style={{ height: "470px", position: "relative" }}
+      style={{ height, position: "relative" }}
     >
       <canvas ref={canvasRef}></canvas>
     </div>
@@ -1184,6 +1218,7 @@ export default function Dashboard() {
   const programDistrib = data?.program_distribution ?? [];
   const peakHoursRaw = data?.peak_hours ?? [];
   const peakHours = normalizePeakHours(peakHoursRaw);
+  const hourlyToday = normalizeHourWindow(peakHoursRaw, FULL_DAY_START, FULL_DAY_END);
   const topVisitors = data?.top_visitors ?? [];
   const weeklyHeatmap = data?.weekly_heatmap ?? [];
   const monthlyVisitors = data?.monthly_visitors ?? [];
@@ -1617,7 +1652,12 @@ export default function Dashboard() {
                   : filterDateRange}
               </div>
               {isTodayView ? (
-                <PeakHoursChart data={peakHours} />
+                <PeakHoursChart
+                  data={hourlyToday}
+                  startHour={FULL_DAY_START}
+                  endHour={FULL_DAY_END}
+                  height={360}
+                />
               ) : (
                 <DailyVisitorsChart data={dailyVisitors} />
               )}

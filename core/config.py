@@ -104,7 +104,7 @@ class AppConfig:
     recognition_event_lock_seconds: int = 8
     recognition_confidence_threshold: float = 0.72
 
-    registration_recognition_confirm_frames: int = 5
+    registration_recognition_confirm_frames: int = 3
     registration_recognition_confidence_margin: float = 0.08
     registration_recognition_uncertain_margin: float = 0.04
 
