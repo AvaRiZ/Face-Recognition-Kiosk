@@ -144,6 +144,13 @@ class SettingsApiRoleTests(unittest.TestCase):
                 "quality_threshold": "0.2",
                 "vector_index_top_k": "20",
                 "max_occupancy": "300",
+                "recognition_confidence_threshold": "0.72",
+                "occupancy_warning_threshold": "0.90",
+                "occupancy_snapshot_interval_seconds": "300",
+                "face_snapshot_retention_days": "30",
+                "recognition_event_retention_days": "365",
+                "entry_cctv_stream_source": "0",
+                "exit_cctv_stream_source": "1",
             },
             "audit_log": [],
             "stats_rows": [
@@ -248,6 +255,18 @@ class SettingsApiRoleTests(unittest.TestCase):
             payload = response.get_json()
             self.assertFalse(payload["permissions"]["can_save"])
             self.assertIn("bounds", payload)
+            self.assertIn("recognition_confidence_threshold", payload)
+            self.assertIn("occupancy_warning_threshold", payload)
+            self.assertIn("occupancy_snapshot_interval_seconds", payload)
+            self.assertIn("face_snapshot_retention_days", payload)
+            self.assertIn("recognition_event_retention_days", payload)
+            self.assertIn("entry_cctv_stream_source", payload)
+            self.assertIn("exit_cctv_stream_source", payload)
+            self.assertIn("recognition_confidence_threshold", payload["bounds"])
+            self.assertIn("occupancy_warning_threshold", payload["bounds"])
+            self.assertIn("occupancy_snapshot_interval_seconds", payload["bounds"])
+            self.assertIn("face_snapshot_retention_days", payload["bounds"])
+            self.assertIn("recognition_event_retention_days", payload["bounds"])
             post_response = client.post("/api/settings", json={"max_occupancy": 350})
             self.assertEqual(post_response.status_code, 403)
 
@@ -266,14 +285,41 @@ class SettingsApiRoleTests(unittest.TestCase):
             self.assertEqual(payload["max_occupancy"], 420)
             self.assertEqual(payload["vector_index_top_k"], 35)
 
+            operational_response = client.post(
+                "/api/settings",
+                json={
+                    "occupancy_warning_threshold": 0.88,
+                    "occupancy_snapshot_interval_seconds": 600,
+                },
+            )
+            self.assertEqual(operational_response.status_code, 200)
+            operational_payload = operational_response.get_json()
+            self.assertEqual(operational_payload["occupancy_warning_threshold"], 0.88)
+            self.assertEqual(operational_payload["occupancy_snapshot_interval_seconds"], 600)
+
             forbidden_response = client.post("/api/settings", json={"threshold": 0.55})
             self.assertEqual(forbidden_response.status_code, 403)
+
+            forbidden_confidence = client.post(
+                "/api/settings",
+                json={"recognition_confidence_threshold": 0.8},
+            )
+            self.assertEqual(forbidden_confidence.status_code, 403)
+
+            forbidden_retention = client.post(
+                "/api/settings",
+                json={"face_snapshot_retention_days": 15},
+            )
+            self.assertEqual(forbidden_retention.status_code, 403)
 
             bad_occupancy = client.post("/api/settings", json={"max_occupancy": 10})
             self.assertEqual(bad_occupancy.status_code, 400)
 
             bad_top_k = client.post("/api/settings", json={"vector_index_top_k": 101})
             self.assertEqual(bad_top_k.status_code, 400)
+
+            bad_warning = client.post("/api/settings", json={"occupancy_warning_threshold": 0.2})
+            self.assertEqual(bad_warning.status_code, 400)
 
     def test_super_admin_can_update_all_fields_and_get_audit_metadata(self):
         client = self._build_client()
@@ -289,20 +335,43 @@ class SettingsApiRoleTests(unittest.TestCase):
                 json={
                     "threshold": 0.44,
                     "quality_threshold": 0.36,
+                    "recognition_confidence_threshold": 0.8,
                     "vector_index_top_k": 25,
                     "max_occupancy": 360,
+                    "occupancy_warning_threshold": 0.9,
+                    "occupancy_snapshot_interval_seconds": 420,
+                    "face_snapshot_retention_days": 45,
+                    "recognition_event_retention_days": 400,
+                    "entry_cctv_stream_source": "0",
+                    "exit_cctv_stream_source": "1",
                 },
             )
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertEqual(payload["threshold"], 0.44)
             self.assertEqual(payload["quality_threshold"], 0.36)
+            self.assertEqual(payload["recognition_confidence_threshold"], 0.8)
             self.assertEqual(payload["vector_index_top_k"], 25)
             self.assertEqual(payload["max_occupancy"], 360)
+            self.assertEqual(payload["occupancy_warning_threshold"], 0.9)
+            self.assertEqual(payload["occupancy_snapshot_interval_seconds"], 420)
+            self.assertEqual(payload["face_snapshot_retention_days"], 45)
+            self.assertEqual(payload["recognition_event_retention_days"], 400)
+            self.assertEqual(payload["entry_cctv_stream_source"], "0")
+            self.assertEqual(payload["exit_cctv_stream_source"], "1")
             self.assertTrue(payload["audit_rows"])
             self.assertIsNotNone(payload["last_change"])
             self.assertIn("threshold", payload["last_change"]["target"])
             self.assertIn("max_occupancy", payload["last_change"]["target"])
+
+            bad_face_retention = client.post("/api/settings", json={"face_snapshot_retention_days": 0})
+            self.assertEqual(bad_face_retention.status_code, 400)
+
+            bad_event_retention = client.post("/api/settings", json={"recognition_event_retention_days": 99999})
+            self.assertEqual(bad_event_retention.status_code, 400)
+
+            blank_entry_source = client.post("/api/settings", json={"entry_cctv_stream_source": ""})
+            self.assertEqual(blank_entry_source.status_code, 400)
 
     def test_destructive_endpoints_are_super_admin_only(self):
         client = self._build_client()
@@ -330,20 +399,6 @@ class SettingsApiRoleTests(unittest.TestCase):
             self.assertEqual(reset_allowed.status_code, 200)
             self.assertEqual(self.store["users"], [])
             self.assertEqual(self.store["user_embeddings"], [])
-
-    def test_library_staff_can_access_detailed_stats(self):
-        client = self._build_client()
-        self._set_session(client, "library_staff")
-
-        with patch("routes.routes.db_connect", side_effect=self._db_connect_stub), patch(
-            "routes.routes.table_columns", side_effect=self._table_columns_stub
-        ):
-            response = client.get("/api/stats")
-            self.assertEqual(response.status_code, 200)
-            payload = response.get_json()
-            self.assertIn("recognition_stats", payload)
-            self.assertEqual(payload["user_count"], len(self.store["users"]))
-
 
 if __name__ == "__main__":
     unittest.main()

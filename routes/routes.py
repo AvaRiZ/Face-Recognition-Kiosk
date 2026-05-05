@@ -708,14 +708,21 @@ def create_routes_blueprint(deps):
     SETTINGS_BOUNDS = {
         "max_occupancy": {"min": 50, "max": 2000},
         "vector_index_top_k": {"min": 1, "max": 100},
+        "threshold": {"min": 0.1, "max": 0.95},
+        "quality_threshold": {"min": 0.1, "max": 0.95},
+        "recognition_confidence_threshold": {"min": 0.1, "max": 0.99},
+        "occupancy_warning_threshold": {"min": 0.5, "max": 0.99},
+        "occupancy_snapshot_interval_seconds": {"min": 60, "max": 3600},
+        "face_snapshot_retention_days": {"min": 1, "max": 365},
+        "recognition_event_retention_days": {"min": 1, "max": 3650},
     }
     SETTINGS_AUDIT_ACTION = "UPDATE_SETTINGS"
     SETTINGS_AUDIT_ROW_LIMIT = 25
 
     def _format_setting_value(field_name, value):
-        if field_name == "threshold":
+        if field_name in {"threshold", "recognition_confidence_threshold"}:
             return f"{float(value):.3f}"
-        if field_name == "quality_threshold":
+        if field_name in {"quality_threshold", "occupancy_warning_threshold"}:
             return f"{float(value):.2f}"
         return str(value)
 
@@ -733,49 +740,197 @@ def create_routes_blueprint(deps):
             return None, f"`{key}` must be between {minimum} and {maximum}."
         return parsed, None
 
+    def _parse_bounded_float_payload(payload, key, minimum, maximum):
+        if key not in payload:
+            return None, None
+        raw_value = str(payload.get(key, "")).strip()
+        if not raw_value:
+            return None, f"`{key}` is required."
+        try:
+            parsed = float(raw_value)
+        except (TypeError, ValueError):
+            return None, f"Invalid `{key}` value."
+        if parsed < minimum or parsed > maximum:
+            return None, f"`{key}` must be between {minimum} and {maximum}."
+        return parsed, None
+
+    def _parse_text_payload(payload, key, max_length=512):
+        if key not in payload:
+            return None, None
+        raw_value = payload.get(key, "")
+        text = str(raw_value or "").strip()
+        if not text:
+            return None, f"`{key}` is required."
+        if len(text) > max_length:
+            return None, f"`{key}` must be {max_length} characters or fewer."
+        return text, None
+
     def _read_recognition_settings():
+        config = deps["config"]
+
+        def _coerce_float_value(raw_value, fallback):
+            try:
+                return float(raw_value)
+            except (TypeError, ValueError):
+                return float(fallback)
+
+        def _coerce_int_value(raw_value, fallback):
+            try:
+                return int(raw_value)
+            except (TypeError, ValueError):
+                return int(fallback)
+
+        threshold_bounds = SETTINGS_BOUNDS["threshold"]
         threshold_setting = _get_setting(deps["db_path"], "threshold", str(deps["get_thresholds"]()[0]))
+        threshold = _coerce_float_value(threshold_setting, deps["get_thresholds"]()[0])
+        threshold = max(float(threshold_bounds["min"]), min(float(threshold_bounds["max"]), threshold))
+
+        quality_bounds = SETTINGS_BOUNDS["quality_threshold"]
         quality_threshold_setting = _get_setting(
             deps["db_path"], "quality_threshold", str(deps["get_thresholds"]()[1])
         )
-        try:
-            threshold = float(threshold_setting)
-        except (TypeError, ValueError):
-            threshold = deps["get_thresholds"]()[0]
-        try:
-            quality_threshold = float(quality_threshold_setting)
-        except (TypeError, ValueError):
-            quality_threshold = deps["get_thresholds"]()[1]
+        quality_threshold = _coerce_float_value(quality_threshold_setting, deps["get_thresholds"]()[1])
+        quality_threshold = max(
+            float(quality_bounds["min"]),
+            min(float(quality_bounds["max"]), quality_threshold),
+        )
         deps["set_thresholds"](threshold, quality_threshold)
 
-        vector_min = int(SETTINGS_BOUNDS["vector_index_top_k"]["min"])
-        vector_max = int(SETTINGS_BOUNDS["vector_index_top_k"]["max"])
+        confidence_bounds = SETTINGS_BOUNDS["recognition_confidence_threshold"]
+        recognition_confidence_setting = _get_setting(
+            deps["db_path"],
+            "recognition_confidence_threshold",
+            str(config.recognition_confidence_threshold),
+        )
+        recognition_confidence_threshold = _coerce_float_value(
+            recognition_confidence_setting,
+            config.recognition_confidence_threshold,
+        )
+        recognition_confidence_threshold = max(
+            float(confidence_bounds["min"]),
+            min(float(confidence_bounds["max"]), recognition_confidence_threshold),
+        )
+
+        vector_bounds = SETTINGS_BOUNDS["vector_index_top_k"]
         vector_index_top_k_setting = _get_setting(
             deps["db_path"],
             "vector_index_top_k",
-            str(deps["config"].vector_index_top_k),
+            str(config.vector_index_top_k),
         )
-        try:
-            vector_index_top_k = int(vector_index_top_k_setting)
-        except (TypeError, ValueError):
-            vector_index_top_k = int(deps["config"].vector_index_top_k)
-        vector_index_top_k = max(vector_min, min(vector_max, vector_index_top_k))
-        deps["config"].vector_index_top_k = vector_index_top_k
+        vector_index_top_k = _coerce_int_value(vector_index_top_k_setting, config.vector_index_top_k)
+        vector_index_top_k = max(
+            int(vector_bounds["min"]),
+            min(int(vector_bounds["max"]), vector_index_top_k),
+        )
+        config.vector_index_top_k = vector_index_top_k
 
-        occ_min = int(SETTINGS_BOUNDS["max_occupancy"]["min"])
-        occ_max = int(SETTINGS_BOUNDS["max_occupancy"]["max"])
-        max_occupancy_setting = _get_setting(deps["db_path"], "max_occupancy", "300")
-        try:
-            max_occupancy = int(max_occupancy_setting)
-        except (TypeError, ValueError):
-            max_occupancy = 300
-        max_occupancy = max(occ_min, min(occ_max, max_occupancy))
+        occ_bounds = SETTINGS_BOUNDS["max_occupancy"]
+        max_occupancy_setting = _get_setting(
+            deps["db_path"],
+            "max_occupancy",
+            str(config.max_library_capacity),
+        )
+        max_occupancy = _coerce_int_value(max_occupancy_setting, config.max_library_capacity)
+        max_occupancy = max(
+            int(occ_bounds["min"]),
+            min(int(occ_bounds["max"]), max_occupancy),
+        )
+        config.max_library_capacity = max_occupancy
+
+        warning_bounds = SETTINGS_BOUNDS["occupancy_warning_threshold"]
+        warning_setting = _get_setting(
+            deps["db_path"],
+            "occupancy_warning_threshold",
+            str(config.occupancy_warning_threshold),
+        )
+        occupancy_warning_threshold = _coerce_float_value(
+            warning_setting,
+            config.occupancy_warning_threshold,
+        )
+        occupancy_warning_threshold = max(
+            float(warning_bounds["min"]),
+            min(float(warning_bounds["max"]), occupancy_warning_threshold),
+        )
+        config.occupancy_warning_threshold = occupancy_warning_threshold
+
+        interval_bounds = SETTINGS_BOUNDS["occupancy_snapshot_interval_seconds"]
+        snapshot_setting = _get_setting(
+            deps["db_path"],
+            "occupancy_snapshot_interval_seconds",
+            str(config.occupancy_snapshot_interval_seconds),
+        )
+        occupancy_snapshot_interval_seconds = _coerce_int_value(
+            snapshot_setting,
+            config.occupancy_snapshot_interval_seconds,
+        )
+        occupancy_snapshot_interval_seconds = max(
+            int(interval_bounds["min"]),
+            min(int(interval_bounds["max"]), occupancy_snapshot_interval_seconds),
+        )
+        config.occupancy_snapshot_interval_seconds = occupancy_snapshot_interval_seconds
+
+        face_retention_bounds = SETTINGS_BOUNDS["face_snapshot_retention_days"]
+        face_retention_setting = _get_setting(
+            deps["db_path"],
+            "face_snapshot_retention_days",
+            str(getattr(config, "face_snapshot_retention_days", 30)),
+        )
+        face_snapshot_retention_days = _coerce_int_value(
+            face_retention_setting,
+            getattr(config, "face_snapshot_retention_days", 30),
+        )
+        face_snapshot_retention_days = max(
+            int(face_retention_bounds["min"]),
+            min(int(face_retention_bounds["max"]), face_snapshot_retention_days),
+        )
+        config.face_snapshot_retention_days = face_snapshot_retention_days
+
+        event_retention_bounds = SETTINGS_BOUNDS["recognition_event_retention_days"]
+        event_retention_setting = _get_setting(
+            deps["db_path"],
+            "recognition_event_retention_days",
+            str(getattr(config, "recognition_event_retention_days", 365)),
+        )
+        recognition_event_retention_days = _coerce_int_value(
+            event_retention_setting,
+            getattr(config, "recognition_event_retention_days", 365),
+        )
+        recognition_event_retention_days = max(
+            int(event_retention_bounds["min"]),
+            min(int(event_retention_bounds["max"]), recognition_event_retention_days),
+        )
+        config.recognition_event_retention_days = recognition_event_retention_days
+
+        entry_source_setting = _get_setting(
+            deps["db_path"],
+            "entry_cctv_stream_source",
+            str(config.entry_cctv_stream_source),
+        )
+        entry_cctv_stream_source = str(entry_source_setting or "").strip() or str(config.entry_cctv_stream_source)
+        config.entry_cctv_stream_source = entry_cctv_stream_source
+
+        exit_source_setting = _get_setting(
+            deps["db_path"],
+            "exit_cctv_stream_source",
+            str(config.exit_cctv_stream_source),
+        )
+        exit_cctv_stream_source = str(exit_source_setting or "").strip() or str(config.exit_cctv_stream_source)
+        config.exit_cctv_stream_source = exit_cctv_stream_source
+
+        config.recognition_confidence_threshold = recognition_confidence_threshold
 
         return {
             "threshold": float(threshold),
             "quality_threshold": float(quality_threshold),
+            "recognition_confidence_threshold": float(recognition_confidence_threshold),
             "vector_index_top_k": int(vector_index_top_k),
             "max_occupancy": int(max_occupancy),
+            "occupancy_warning_threshold": float(occupancy_warning_threshold),
+            "occupancy_snapshot_interval_seconds": int(occupancy_snapshot_interval_seconds),
+            "face_snapshot_retention_days": int(face_snapshot_retention_days),
+            "recognition_event_retention_days": int(recognition_event_retention_days),
+            "entry_cctv_stream_source": entry_cctv_stream_source,
+            "exit_cctv_stream_source": exit_cctv_stream_source,
         }
 
     def _read_settings_audit_rows(include_rows):
@@ -837,8 +992,15 @@ def create_routes_blueprint(deps):
             "user_count": deps["get_user_count"](),
             "threshold": settings_state["threshold"],
             "quality_threshold": settings_state["quality_threshold"],
+            "recognition_confidence_threshold": settings_state["recognition_confidence_threshold"],
             "vector_index_top_k": settings_state["vector_index_top_k"],
             "max_occupancy": settings_state["max_occupancy"],
+            "occupancy_warning_threshold": settings_state["occupancy_warning_threshold"],
+            "occupancy_snapshot_interval_seconds": settings_state["occupancy_snapshot_interval_seconds"],
+            "face_snapshot_retention_days": settings_state["face_snapshot_retention_days"],
+            "recognition_event_retention_days": settings_state["recognition_event_retention_days"],
+            "entry_cctv_stream_source": settings_state["entry_cctv_stream_source"],
+            "exit_cctv_stream_source": settings_state["exit_cctv_stream_source"],
             "permissions": permissions,
             "bounds": SETTINGS_BOUNDS,
             "last_change": last_change,
@@ -1288,48 +1450,6 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin", "library_staff")
     def settings():
         return _spa_index()
-
-    @bp.route("/api/stats", endpoint="get_stats")
-    @login_required
-    @role_required("super_admin", "library_admin", "library_staff")
-    def get_stats():
-        warnings.warn(
-            "get_stats now uses recognition_events (canonical event model). See docs/database_schema_policy.md",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        conn = db_connect(deps["db_path"])
-        c = conn.cursor()
-        c.execute(
-            """
-            SELECT u.user_id, u.name, re.confidence
-            FROM users u
-            LEFT JOIN recognition_events re ON u.user_id = re.user_id
-            WHERE re.captured_at IS NOT NULL
-            """
-        )
-        stats = {}
-        for user_id, name, confidence in c.fetchall():
-            entry = stats.setdefault(user_id, {"name": name, "count": 0, "sum": 0.0, "n": 0})
-            if confidence is not None:
-                entry["count"] += 1
-                value = _coerce_confidence(confidence)
-                if value is not None:
-                    entry["sum"] += value
-                    entry["n"] += 1
-        conn.close()
-
-        return {
-            "user_count": deps["get_user_count"](),
-            "recognition_stats": [
-                {
-                    "name": entry["name"],
-                    "recognitions": entry["count"],
-                    "avg_confidence": (entry["sum"] / entry["n"]) if entry["n"] else None,
-                }
-                for entry in sorted(stats.values(), key=lambda item: item["count"], reverse=True)
-            ],
-        }
 
     @bp.route("/registered-profiles", endpoint="registered_profiles")
     @login_required
@@ -2163,7 +2283,19 @@ def create_routes_blueprint(deps):
 
             payload = request.get_json(silent=True) or {}
             if role == "library_admin":
-                forbidden_fields = [key for key in ("threshold", "quality_threshold") if key in payload]
+                forbidden_fields = [
+                    key
+                    for key in (
+                        "threshold",
+                        "quality_threshold",
+                        "recognition_confidence_threshold",
+                        "face_snapshot_retention_days",
+                        "recognition_event_retention_days",
+                        "entry_cctv_stream_source",
+                        "exit_cctv_stream_source",
+                    )
+                    if key in payload
+                ]
                 if forbidden_fields:
                     return (
                         jsonify(
@@ -2180,25 +2312,52 @@ def create_routes_blueprint(deps):
             changed_fields = {}
 
             if role == "super_admin":
-                if "threshold" in payload:
-                    try:
-                        threshold_value = float(payload.get("threshold"))
-                    except (TypeError, ValueError):
-                        return jsonify({"success": False, "message": "Invalid threshold value."}), 400
+                threshold_bounds = SETTINGS_BOUNDS["threshold"]
+                threshold_value, threshold_error = _parse_bounded_float_payload(
+                    payload,
+                    "threshold",
+                    float(threshold_bounds["min"]),
+                    float(threshold_bounds["max"]),
+                )
+                if threshold_error:
+                    return jsonify({"success": False, "message": threshold_error}), 400
+                if threshold_value is not None:
                     next_settings["threshold"] = threshold_value
                     if threshold_value != current_settings["threshold"]:
                         changed_fields["threshold"] = (current_settings["threshold"], threshold_value)
 
-                if "quality_threshold" in payload:
-                    try:
-                        quality_threshold_value = float(payload.get("quality_threshold"))
-                    except (TypeError, ValueError):
-                        return jsonify({"success": False, "message": "Invalid quality threshold value."}), 400
+                quality_bounds = SETTINGS_BOUNDS["quality_threshold"]
+                quality_threshold_value, quality_error = _parse_bounded_float_payload(
+                    payload,
+                    "quality_threshold",
+                    float(quality_bounds["min"]),
+                    float(quality_bounds["max"]),
+                )
+                if quality_error:
+                    return jsonify({"success": False, "message": quality_error}), 400
+                if quality_threshold_value is not None:
                     next_settings["quality_threshold"] = quality_threshold_value
                     if quality_threshold_value != current_settings["quality_threshold"]:
                         changed_fields["quality_threshold"] = (
                             current_settings["quality_threshold"],
                             quality_threshold_value,
+                        )
+
+                confidence_bounds = SETTINGS_BOUNDS["recognition_confidence_threshold"]
+                recognition_confidence_value, confidence_error = _parse_bounded_float_payload(
+                    payload,
+                    "recognition_confidence_threshold",
+                    float(confidence_bounds["min"]),
+                    float(confidence_bounds["max"]),
+                )
+                if confidence_error:
+                    return jsonify({"success": False, "message": confidence_error}), 400
+                if recognition_confidence_value is not None:
+                    next_settings["recognition_confidence_threshold"] = recognition_confidence_value
+                    if recognition_confidence_value != current_settings["recognition_confidence_threshold"]:
+                        changed_fields["recognition_confidence_threshold"] = (
+                            current_settings["recognition_confidence_threshold"],
+                            recognition_confidence_value,
                         )
 
             vector_bounds = SETTINGS_BOUNDS["vector_index_top_k"]
@@ -2229,6 +2388,103 @@ def create_routes_blueprint(deps):
                 if max_occupancy_value != current_settings["max_occupancy"]:
                     changed_fields["max_occupancy"] = (current_settings["max_occupancy"], max_occupancy_value)
 
+            warning_bounds = SETTINGS_BOUNDS["occupancy_warning_threshold"]
+            warning_value, warning_error = _parse_bounded_float_payload(
+                payload,
+                "occupancy_warning_threshold",
+                float(warning_bounds["min"]),
+                float(warning_bounds["max"]),
+            )
+            if warning_error:
+                return jsonify({"success": False, "message": warning_error}), 400
+            if warning_value is not None:
+                next_settings["occupancy_warning_threshold"] = warning_value
+                if warning_value != current_settings["occupancy_warning_threshold"]:
+                    changed_fields["occupancy_warning_threshold"] = (
+                        current_settings["occupancy_warning_threshold"],
+                        warning_value,
+                    )
+
+            interval_bounds = SETTINGS_BOUNDS["occupancy_snapshot_interval_seconds"]
+            interval_value, interval_error = _parse_bounded_int_payload(
+                payload,
+                "occupancy_snapshot_interval_seconds",
+                int(interval_bounds["min"]),
+                int(interval_bounds["max"]),
+            )
+            if interval_error:
+                return jsonify({"success": False, "message": interval_error}), 400
+            if interval_value is not None:
+                next_settings["occupancy_snapshot_interval_seconds"] = interval_value
+                if interval_value != current_settings["occupancy_snapshot_interval_seconds"]:
+                    changed_fields["occupancy_snapshot_interval_seconds"] = (
+                        current_settings["occupancy_snapshot_interval_seconds"],
+                        interval_value,
+                    )
+
+            if role == "super_admin":
+                face_retention_bounds = SETTINGS_BOUNDS["face_snapshot_retention_days"]
+                face_retention_value, face_retention_error = _parse_bounded_int_payload(
+                    payload,
+                    "face_snapshot_retention_days",
+                    int(face_retention_bounds["min"]),
+                    int(face_retention_bounds["max"]),
+                )
+                if face_retention_error:
+                    return jsonify({"success": False, "message": face_retention_error}), 400
+                if face_retention_value is not None:
+                    next_settings["face_snapshot_retention_days"] = face_retention_value
+                    if face_retention_value != current_settings["face_snapshot_retention_days"]:
+                        changed_fields["face_snapshot_retention_days"] = (
+                            current_settings["face_snapshot_retention_days"],
+                            face_retention_value,
+                        )
+
+                event_retention_bounds = SETTINGS_BOUNDS["recognition_event_retention_days"]
+                event_retention_value, event_retention_error = _parse_bounded_int_payload(
+                    payload,
+                    "recognition_event_retention_days",
+                    int(event_retention_bounds["min"]),
+                    int(event_retention_bounds["max"]),
+                )
+                if event_retention_error:
+                    return jsonify({"success": False, "message": event_retention_error}), 400
+                if event_retention_value is not None:
+                    next_settings["recognition_event_retention_days"] = event_retention_value
+                    if event_retention_value != current_settings["recognition_event_retention_days"]:
+                        changed_fields["recognition_event_retention_days"] = (
+                            current_settings["recognition_event_retention_days"],
+                            event_retention_value,
+                        )
+
+                entry_source_value, entry_source_error = _parse_text_payload(
+                    payload,
+                    "entry_cctv_stream_source",
+                )
+                if entry_source_error:
+                    return jsonify({"success": False, "message": entry_source_error}), 400
+                if entry_source_value is not None:
+                    next_settings["entry_cctv_stream_source"] = entry_source_value
+                    if entry_source_value != current_settings["entry_cctv_stream_source"]:
+                        changed_fields["entry_cctv_stream_source"] = (
+                            current_settings["entry_cctv_stream_source"],
+                            entry_source_value,
+                        )
+
+                exit_source_value, exit_source_error = _parse_text_payload(
+                    payload,
+                    "exit_cctv_stream_source",
+                )
+                if exit_source_error:
+                    return jsonify({"success": False, "message": exit_source_error}), 400
+                if exit_source_value is not None:
+                    next_settings["exit_cctv_stream_source"] = exit_source_value
+                    if exit_source_value != current_settings["exit_cctv_stream_source"]:
+                        changed_fields["exit_cctv_stream_source"] = (
+                            current_settings["exit_cctv_stream_source"],
+                            exit_source_value,
+                        )
+
             if changed_fields:
                 for setting_key in changed_fields:
                     _set_setting(deps["db_path"], setting_key, next_settings[setting_key])
@@ -2237,9 +2493,35 @@ def create_routes_blueprint(deps):
                     float(next_settings["quality_threshold"]),
                 )
                 deps["config"].vector_index_top_k = int(next_settings["vector_index_top_k"])
+                deps["config"].recognition_confidence_threshold = float(
+                    next_settings["recognition_confidence_threshold"]
+                )
+                deps["config"].max_library_capacity = int(next_settings["max_occupancy"])
+                deps["config"].occupancy_warning_threshold = float(next_settings["occupancy_warning_threshold"])
+                deps["config"].occupancy_snapshot_interval_seconds = int(
+                    next_settings["occupancy_snapshot_interval_seconds"]
+                )
+                deps["config"].face_snapshot_retention_days = int(next_settings["face_snapshot_retention_days"])
+                deps["config"].recognition_event_retention_days = int(
+                    next_settings["recognition_event_retention_days"]
+                )
+                deps["config"].entry_cctv_stream_source = str(next_settings["entry_cctv_stream_source"])
+                deps["config"].exit_cctv_stream_source = str(next_settings["exit_cctv_stream_source"])
                 bump_settings_version(deps["db_path"])
 
-                ordered_keys = ["threshold", "quality_threshold", "vector_index_top_k", "max_occupancy"]
+                ordered_keys = [
+                    "threshold",
+                    "quality_threshold",
+                    "recognition_confidence_threshold",
+                    "vector_index_top_k",
+                    "max_occupancy",
+                    "occupancy_warning_threshold",
+                    "occupancy_snapshot_interval_seconds",
+                    "face_snapshot_retention_days",
+                    "recognition_event_retention_days",
+                    "entry_cctv_stream_source",
+                    "exit_cctv_stream_source",
+                ]
                 summary_parts = []
                 for setting_key in ordered_keys:
                     if setting_key not in changed_fields:
