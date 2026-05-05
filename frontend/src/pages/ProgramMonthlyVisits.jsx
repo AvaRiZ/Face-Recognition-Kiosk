@@ -1,7 +1,6 @@
 import React from 'react';
 import { getErrorMessage, showError, showSuccess } from '../alerts.js';
 import { fetchJson } from '../api.js';
-import { ALL_PROGRAM_NAMES } from '../data/programCatalog.js';
 import { downloadFile } from '../downloads.js';
 
 const ALL_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -36,7 +35,7 @@ export default function ProgramMonthlyVisitsPage() {
   const [currentPage, setCurrentPage] = React.useState(1);
   const [selectedYear, setSelectedYear] = React.useState(String(currentYear()));
   const [sortOrder, setSortOrder] = React.useState('most');
-  const [showZeroVisits, setShowZeroVisits] = React.useState(false);
+  const [showZeroVisits, setShowZeroVisits] = React.useState(true);
 
   const loadData = React.useCallback((year) => {
     setLoading(true);
@@ -119,6 +118,13 @@ export default function ProgramMonthlyVisitsPage() {
 
     return rows;
   }, [mergedRows, search, showZeroVisits, sortOrder, visibleMonthCount]);
+
+  const monthLabels = React.useMemo(() => {
+    if (Array.isArray(data.months) && data.months.length === 12) {
+      return data.months;
+    }
+    return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  }, [data.months]);
 
   const pageLimit = parseInt(pageSize, 10) || 10;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageLimit));

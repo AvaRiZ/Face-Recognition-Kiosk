@@ -67,6 +67,15 @@ def _resolve_worker_context() -> tuple[str, str, int, str | int]:
     return worker_role, station_id, camera_id, stream_source
 
 
+def _normalize_stream_source(value: object) -> str | int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    return text
+
+
 def _send_outbound_entry(api_client: ApiClient, entry: dict) -> bool:
     kind = str(entry.get("kind") or "")
     payload = entry.get("payload") or {}
@@ -98,6 +107,12 @@ def _apply_runtime_config(runtime: WorkerRuntime, payload: dict) -> None:
         payload.get("recognition_confidence_threshold", runtime.config.recognition_confidence_threshold)
     )
     runtime.config.recognition_confidence_threshold = max(0.0, min(1.0, recognition_confidence_threshold))
+    entry_source = _normalize_stream_source(payload.get("entry_cctv_stream_source"))
+    if entry_source is not None:
+        runtime.config.entry_cctv_stream_source = str(entry_source)
+    exit_source = _normalize_stream_source(payload.get("exit_cctv_stream_source"))
+    if exit_source is not None:
+        runtime.config.exit_cctv_stream_source = str(exit_source)
 
 
 def _start_sync_loop(runtime: WorkerRuntime, poll_interval_seconds: float = 3.0):
@@ -183,6 +198,12 @@ def build_runtime() -> WorkerRuntime:
                 ),
             ),
         )
+        env_stream_override = (os.environ.get("WORKER_CCTV_STREAM_SOURCE") or "").strip()
+        if not env_stream_override:
+            source_key = "entry_cctv_stream_source" if worker_role == "entry" else "exit_cctv_stream_source"
+            runtime_source = _normalize_stream_source(runtime_payload.get(source_key))
+            if runtime_source is not None:
+                stream_source = runtime_source
     except Exception as exc:
         log_step(f"Runtime config fetch failed; using local defaults ({exc})", status="WARN")
 

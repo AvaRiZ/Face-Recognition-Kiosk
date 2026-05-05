@@ -138,6 +138,11 @@ class AppConfig:
     # When occupancy_ratio >= this value, capacity_warning flag is set.
     occupancy_warning_threshold: float = 0.90
 
+    # Retention policies (in days).
+    # Face snapshots should be purged after the retention window.
+    face_snapshot_retention_days: int = 30
+    recognition_event_retention_days: int = 365
+
     # ------------------------------------------------------------------
     # Quality scoring: face size
     # ------------------------------------------------------------------

@@ -10,7 +10,7 @@ from core.config import AppConfig
 from core.state import AppStateManager
 from database.repository import UserRepository
 from database.schema import init_canonical_schema
-from db import is_postgres_target, resolve_database_target
+from db import get_app_setting, is_postgres_target, resolve_database_target
 from routes.routes import init_imported_logs_table
 from services.dataset_service import DetectorDatasetService
 from services.staff_service import ensure_profile_upload_dir
@@ -22,6 +22,116 @@ class AppRuntime:
     config: AppConfig
     state: AppStateManager
     repository: UserRepository
+
+
+def _apply_app_settings(runtime: AppRuntime) -> None:
+    def _coerce_float(raw_value, fallback, minimum, maximum):
+        try:
+            parsed = float(raw_value)
+        except (TypeError, ValueError):
+            parsed = float(fallback)
+        return max(float(minimum), min(float(maximum), float(parsed)))
+
+    def _coerce_int(raw_value, fallback, minimum, maximum):
+        try:
+            parsed = int(raw_value)
+        except (TypeError, ValueError):
+            parsed = int(fallback)
+        return max(int(minimum), min(int(maximum), int(parsed)))
+
+    config = runtime.config
+    state = runtime.state
+
+    threshold = _coerce_float(
+        get_app_setting(config.db_path, "threshold", str(state.base_threshold)),
+        state.base_threshold,
+        0.1,
+        0.95,
+    )
+    quality_threshold = _coerce_float(
+        get_app_setting(config.db_path, "quality_threshold", str(state.face_quality_threshold)),
+        state.face_quality_threshold,
+        0.1,
+        0.95,
+    )
+    state.set_thresholds(threshold, quality_threshold)
+
+    config.recognition_confidence_threshold = _coerce_float(
+        get_app_setting(
+            config.db_path,
+            "recognition_confidence_threshold",
+            str(config.recognition_confidence_threshold),
+        ),
+        config.recognition_confidence_threshold,
+        0.1,
+        0.99,
+    )
+    config.vector_index_top_k = _coerce_int(
+        get_app_setting(config.db_path, "vector_index_top_k", str(config.vector_index_top_k)),
+        config.vector_index_top_k,
+        1,
+        100,
+    )
+    config.max_library_capacity = _coerce_int(
+        get_app_setting(config.db_path, "max_occupancy", str(config.max_library_capacity)),
+        config.max_library_capacity,
+        50,
+        2000,
+    )
+    config.occupancy_warning_threshold = _coerce_float(
+        get_app_setting(
+            config.db_path,
+            "occupancy_warning_threshold",
+            str(config.occupancy_warning_threshold),
+        ),
+        config.occupancy_warning_threshold,
+        0.5,
+        0.99,
+    )
+    config.occupancy_snapshot_interval_seconds = _coerce_int(
+        get_app_setting(
+            config.db_path,
+            "occupancy_snapshot_interval_seconds",
+            str(config.occupancy_snapshot_interval_seconds),
+        ),
+        config.occupancy_snapshot_interval_seconds,
+        60,
+        3600,
+    )
+    config.face_snapshot_retention_days = _coerce_int(
+        get_app_setting(
+            config.db_path,
+            "face_snapshot_retention_days",
+            str(getattr(config, "face_snapshot_retention_days", 30)),
+        ),
+        getattr(config, "face_snapshot_retention_days", 30),
+        1,
+        365,
+    )
+    config.recognition_event_retention_days = _coerce_int(
+        get_app_setting(
+            config.db_path,
+            "recognition_event_retention_days",
+            str(getattr(config, "recognition_event_retention_days", 365)),
+        ),
+        getattr(config, "recognition_event_retention_days", 365),
+        1,
+        3650,
+    )
+
+    entry_source = str(
+        get_app_setting(config.db_path, "entry_cctv_stream_source", str(config.entry_cctv_stream_source))
+        or ""
+    ).strip()
+    if entry_source:
+        config.entry_cctv_stream_source = entry_source
+
+    exit_source = str(
+        get_app_setting(config.db_path, "exit_cctv_stream_source", str(config.exit_cctv_stream_source))
+        or ""
+    ).strip()
+    if exit_source:
+        config.exit_cctv_stream_source = exit_source
 
 
 def build_runtime() -> AppRuntime:
@@ -50,6 +160,7 @@ def main() -> None:
         )
 
     runtime = build_runtime()
+    _apply_app_settings(runtime)
     host = os.environ.get("FLASK_RUN_HOST", "0.0.0.0")
     port = int(os.environ.get("FLASK_RUN_PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}

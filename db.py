@@ -54,3 +54,24 @@ def table_columns(conn, table_name: str) -> set[str]:
     )
     rows = cur.fetchall()
     return {row[0] for row in rows}
+
+
+def get_app_setting(db_path: Optional[str], key: str, default: Optional[str] = None) -> Optional[str]:
+    """Fetch a single app_settings value with a safe fallback."""
+    try:
+        conn = connect(db_path)
+    except Exception:
+        return default
+
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
+        row = cur.fetchone()
+        return row[0] if row and row[0] is not None else default
+    except Exception:
+        return default
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

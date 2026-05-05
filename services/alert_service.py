@@ -39,7 +39,7 @@ class AlertService:
                 """
                 UPDATE occupancy_alerts
                 SET level = %s, message = %s, occupancy_count = %s, capacity_limit = %s,
-                    occupancy_ratio = %s, is_active = 1, updated_at = %s
+                    occupancy_ratio = %s, is_active = TRUE, updated_at = %s
                 WHERE id = %s
                 """,
                 ("full", message, int(occupancy_count), int(capacity_limit), float(ratio), now, alert_id),
@@ -50,7 +50,7 @@ class AlertService:
                 INSERT INTO occupancy_alerts (
                     alert_type, level, message, occupancy_count, capacity_limit, occupancy_ratio,
                     is_active, state_date, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s)
                 RETURNING id
                 """,
                 ("capacity_reached", "full", message, int(occupancy_count), int(capacity_limit), float(ratio), state_date, now, now),
@@ -124,7 +124,7 @@ class AlertService:
         c.execute(
             """
             UPDATE occupancy_alerts
-            SET dismissed_at = %s, dismissed_by = %s, is_active = 0, updated_at = %s
+            SET dismissed_at = %s, dismissed_by = %s, is_active = FALSE, updated_at = %s
             WHERE id = %s AND dismissed_at IS NULL
             """,
             (now, str(dismissed_by or "unknown"), now, int(alert_id)),

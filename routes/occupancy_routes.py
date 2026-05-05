@@ -11,9 +11,10 @@ from datetime import date, datetime, timezone
 from flask import Blueprint, jsonify, request
 
 from core.config import AppConfig
+from db import get_app_setting
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert
 from services.occupancy_alert_service import occupancy_alert_service
-from services.occupancy_service import OccupancyService
+from services.occupancy_service import OccupancyService, resolve_capacity_limit
 
 
 bp = Blueprint("occupancy", __name__)
@@ -22,6 +23,15 @@ bp = Blueprint("occupancy", __name__)
 def _json_error(message: str, status: int):
     """Format error response."""
     return jsonify({"success": False, "message": message}), status
+
+
+def _resolve_warning_threshold(db_path: str, default: float) -> float:
+    raw_value = get_app_setting(db_path, "occupancy_warning_threshold", str(default))
+    try:
+        parsed = float(raw_value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    return max(0.5, min(0.99, parsed))
 
 
 @bp.route("/current", methods=["GET"], endpoint="get_current")
@@ -45,10 +55,12 @@ def get_current() -> tuple:
     try:
         config = AppConfig()
         service = OccupancyService(config.db_path)
+        capacity_limit = resolve_capacity_limit(config.db_path, default=int(config.max_library_capacity))
 
+        warning_threshold = _resolve_warning_threshold(config.db_path, config.occupancy_warning_threshold)
         occ_data = service.get_current_occupancy(
-            config.max_library_capacity,
-            warning_threshold=config.occupancy_warning_threshold,
+            capacity_limit,
+            warning_threshold=warning_threshold,
         )
 
         return jsonify({
@@ -216,9 +228,11 @@ def adjust_occupancy() -> tuple:
             reason=reason,
             admin_id=admin_id,
         )
+        capacity_limit = resolve_capacity_limit(config.db_path, default=int(config.max_library_capacity))
+        warning_threshold = _resolve_warning_threshold(config.db_path, config.occupancy_warning_threshold)
         occ_data = service.get_current_occupancy(
-            config.max_library_capacity,
-            warning_threshold=config.occupancy_warning_threshold,
+            capacity_limit,
+            warning_threshold=warning_threshold,
         )
         alert_payload, _changed = occupancy_alert_service.evaluate(
             occupancy_count=int(occ_data["occupancy_count"]),
@@ -226,8 +240,8 @@ def adjust_occupancy() -> tuple:
             occupancy_ratio=float(occ_data["occupancy_ratio"]),
             is_full=bool(occ_data["is_full"]),
             capacity_warning=bool(occ_data["capacity_warning"]),
-            warning_threshold=float(config.occupancy_warning_threshold),
-            moderate_threshold=max(0.0, float(config.occupancy_warning_threshold) * 0.75),
+            warning_threshold=float(warning_threshold),
+            moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
             state_is_stale=False,
         )
         emit_analytics_update(

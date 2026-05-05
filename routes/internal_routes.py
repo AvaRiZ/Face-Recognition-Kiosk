@@ -10,7 +10,8 @@ from flask import Blueprint, jsonify, request
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert, emit_unrecognized_detection
 from core.models import User
 from db import connect as db_connect
-from services.occupancy_service import OccupancyService
+from db import get_app_setting
+from services.occupancy_service import OccupancyService, resolve_capacity_limit
 from services.alert_service import AlertService
 from services.occupancy_alert_service import occupancy_alert_service
 from services.versioning_service import bump_profiles_version, get_profiles_version, get_settings_version
@@ -36,6 +37,15 @@ def _optional_int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _resolve_warning_threshold(db_path: str, default: float) -> float:
+    raw_value = get_app_setting(db_path, "occupancy_warning_threshold", str(default))
+    try:
+        parsed = float(raw_value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    return max(0.5, min(0.99, parsed))
 
 
 def _camera_id_from_event_type(event_type: str) -> int | None:
@@ -112,6 +122,13 @@ def create_internal_blueprint(deps):
     def _auth_guard():
         return _require_worker_token()
 
+    def _runtime_capacity_limit() -> int:
+        config = deps["config"]
+        return resolve_capacity_limit(
+            deps["db_path"],
+            default=int(config.max_library_capacity),
+        )
+
     @bp.route("/profiles/version", methods=["GET"], endpoint="profiles_version")
     def profiles_version():
         db_path = deps["db_path"]
@@ -139,6 +156,8 @@ def create_internal_blueprint(deps):
                 "face_quality_threshold": float(quality_threshold),
                 "vector_index_top_k": int(config.vector_index_top_k),
                 "recognition_confidence_threshold": float(config.recognition_confidence_threshold),
+                "entry_cctv_stream_source": str(config.entry_cctv_stream_source),
+                "exit_cctv_stream_source": str(config.exit_cctv_stream_source),
             }
         )
 
@@ -282,10 +301,11 @@ def create_internal_blueprint(deps):
                         pass
             occupancy_service = OccupancyService(deps["db_path"])
             config = deps["config"]
+            warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
             occupancy_state = occupancy_service.record_event(event_type, captured_at)
             occupancy_view = occupancy_service.get_current_occupancy(
-                config.max_library_capacity,
-                warning_threshold=config.occupancy_warning_threshold,
+                _runtime_capacity_limit(),
+                warning_threshold=warning_threshold,
             )
             alert_payload, alert_changed = occupancy_alert_service.evaluate(
                 occupancy_count=int(occupancy_view["occupancy_count"]),
@@ -293,8 +313,8 @@ def create_internal_blueprint(deps):
                 occupancy_ratio=float(occupancy_view["occupancy_ratio"]),
                 is_full=bool(occupancy_view["is_full"]),
                 capacity_warning=bool(occupancy_view["capacity_warning"]),
-                warning_threshold=float(config.occupancy_warning_threshold),
-                moderate_threshold=max(0.0, float(config.occupancy_warning_threshold) * 0.75),
+                warning_threshold=float(warning_threshold),
+                moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
                 state_is_stale=False,
             )
             emit_analytics_update(
@@ -353,9 +373,10 @@ def create_internal_blueprint(deps):
                 except Exception:
                     pass
             config = deps["config"]
+            warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
             occ_view = OccupancyService(deps["db_path"]).get_current_occupancy(
-                config.max_library_capacity,
-                warning_threshold=config.occupancy_warning_threshold,
+                _runtime_capacity_limit(),
+                warning_threshold=warning_threshold,
             )
             capacity_warning = bool(occ_view["capacity_warning"])
             emit_unrecognized_detection(
@@ -395,10 +416,11 @@ def create_internal_blueprint(deps):
     @bp.route("/capacity-gate", methods=["GET"], endpoint="capacity_gate")
     def capacity_gate():
         config = deps["config"]
+        warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
         occupancy_service = OccupancyService(deps["db_path"])
         occ = occupancy_service.get_current_occupancy(
-            config.max_library_capacity,
-            warning_threshold=config.occupancy_warning_threshold,
+            _runtime_capacity_limit(),
+            warning_threshold=warning_threshold,
         )
         allow_entry = not bool(occ["is_full"])
         alert = None
@@ -413,8 +435,8 @@ def create_internal_blueprint(deps):
             occupancy_ratio=float(occ["occupancy_ratio"]),
             is_full=bool(occ["is_full"]),
             capacity_warning=bool(occ["capacity_warning"]),
-            warning_threshold=float(config.occupancy_warning_threshold),
-            moderate_threshold=max(0.0, float(config.occupancy_warning_threshold) * 0.75),
+            warning_threshold=float(warning_threshold),
+            moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
             state_is_stale=False,
         )
         if alert_changed or not allow_entry:
@@ -481,9 +503,10 @@ def create_internal_blueprint(deps):
         try:
             config = AppConfig()
             service = OccupancyService(config.db_path)
+            warning_threshold = _resolve_warning_threshold(config.db_path, config.occupancy_warning_threshold)
             service.create_snapshot(
-                config.max_library_capacity,
-                warning_threshold=config.occupancy_warning_threshold,
+                resolve_capacity_limit(config.db_path, default=int(config.max_library_capacity)),
+                warning_threshold=warning_threshold,
             )
             return jsonify({"success": True, "message": "Occupancy snapshot created."})
         except Exception as exc:

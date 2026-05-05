@@ -71,7 +71,32 @@ Notes:
 2. Restore verification on a target DB:
    - `pwsh -File scripts/restore_verify_postgres.ps1 -BackupFile backups\kiosk.backup -RestoreUrl "<postgres-url>"`
 
-## 6) Internal Worker API Contract
+## 6) Settings Runtime Behavior
+Settings are stored in `app_settings` and exposed via `GET/POST /api/settings` (`/api/settings/recognition` alias).
+
+Supported settings and bounds:
+- `threshold` (0.1 to 0.95)
+- `quality_threshold` (0.1 to 0.95)
+- `recognition_confidence_threshold` (0.1 to 0.99)
+- `vector_index_top_k` (1 to 100)
+- `max_occupancy` (50 to 2000)
+- `occupancy_warning_threshold` (0.5 to 0.99)
+- `occupancy_snapshot_interval_seconds` (60 to 3600)
+- `face_snapshot_retention_days` (1 to 365)
+- `recognition_event_retention_days` (1 to 3650)
+- `entry_cctv_stream_source` (text, non-empty)
+- `exit_cctv_stream_source` (text, non-empty)
+
+Role policy:
+- `super_admin`: full edit access for all settings.
+- `library_admin`: operational-only (`max_occupancy`, `vector_index_top_k`, `occupancy_warning_threshold`, `occupancy_snapshot_interval_seconds`).
+- `library_staff`: read-only.
+
+Apply timing:
+- Live (no restart): thresholds, top-k, occupancy capacity/warning, occupancy snapshot interval, retention windows.
+- Worker restart required: `entry_cctv_stream_source`, `exit_cctv_stream_source` (workers do not hot-reopen capture streams).
+
+## 7) Internal Worker API Contract
 - `POST /api/internal/recognition-events`
 - `GET /api/internal/profiles/version`
 - `GET /api/internal/profiles/snapshot`
