@@ -4,8 +4,27 @@ import { fetchJson } from '../api.js';
 import { ALL_PROGRAM_NAMES } from '../data/programCatalog.js';
 import { downloadFile } from '../downloads.js';
 
+const ALL_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 function currentYear() {
   return new Date().getFullYear();
+}
+
+// Returns the index (0-based) of the current month for the given year.
+// If viewing a past year, show all 12 months. If current year, show up to current month.
+function getVisibleMonthCount(year) {
+  const now = new Date();
+  const selectedYear = Number(year);
+  const currentYear = now.getFullYear();
+
+  // Past years → full 12 months
+  if (selectedYear < currentYear) return 12;
+
+  // Current year → up to current month
+  if (selectedYear === currentYear) return now.getMonth() + 1;
+
+  // Future years → treat as full year (or you can return 0 if you prefer "no data")
+  return 12;
 }
 
 export default function ProgramMonthlyVisitsPage() {
@@ -36,14 +55,21 @@ export default function ProgramMonthlyVisitsPage() {
     loadData(selectedYear);
   }, [loadData]);
 
+  // How many months to show based on selected year
+  const visibleMonthCount = getVisibleMonthCount(data.year || selectedYear);
+  const visibleMonths = ALL_MONTHS.slice(0, visibleMonthCount);
+
   const mergedRows = React.useMemo(() => {
     const sourceRows = Array.isArray(data.rows) ? data.rows : [];
     const rowMap = {};
 
     sourceRows.forEach((row) => {
+      // Normalize months array to always have 12 entries
+      const months = Array.isArray(row.months) ? row.months : Array(12).fill(0);
+      const paddedMonths = Array(12).fill(0).map((_, i) => Number(months[i] || 0));
       rowMap[row.program] = {
         program: row.program,
-        months: Array.isArray(row.months) ? row.months : Array(12).fill(0),
+        months: paddedMonths,
         overall_total: Number(row.overall_total || 0)
       };
     });
@@ -64,33 +90,56 @@ export default function ProgramMonthlyVisitsPage() {
   const filtered = React.useMemo(() => {
     const searchValue = search.trim().toLowerCase();
     const rows = mergedRows
-      .filter((row) => (showZeroVisits ? true : row.overall_total > 0))
+      .filter((row) => {
+        const visibleTotal = row.months
+          .slice(0, visibleMonthCount)
+          .reduce((sum, v) => sum + Number(v || 0), 0);
+
+        if (showZeroVisits) {
+          // show ONLY programs with zero visits
+          return visibleTotal === 0;
+        }
+
+        // normal mode: show only programs with visits
+        return visibleTotal > 0;
+      })
       .filter((row) => !searchValue || row.program.toLowerCase().includes(searchValue))
       .slice();
 
     rows.sort((a, b) => {
+      const aTotal = a.months.slice(0, visibleMonthCount).reduce((s, v) => s + v, 0);
+      const bTotal = b.months.slice(0, visibleMonthCount).reduce((s, v) => s + v, 0);
       if (sortOrder === 'least') {
-        if (a.overall_total !== b.overall_total) return a.overall_total - b.overall_total;
+        if (aTotal !== bTotal) return aTotal - bTotal;
         return a.program.localeCompare(b.program);
       }
-      if (a.overall_total !== b.overall_total) return b.overall_total - a.overall_total;
+      if (aTotal !== bTotal) return bTotal - aTotal;
       return a.program.localeCompare(b.program);
     });
 
     return rows;
-  }, [mergedRows, search, showZeroVisits, sortOrder]);
+  }, [mergedRows, search, showZeroVisits, sortOrder, visibleMonthCount]);
 
   const pageLimit = parseInt(pageSize, 10) || 10;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageLimit));
   const safePage = Math.min(currentPage, totalPages);
   const startIndex = (safePage - 1) * pageLimit;
   const pageRows = filtered.slice(startIndex, startIndex + pageLimit);
+
+  // Compute the monthly totals row from ALL filtered rows (not just current page)
+  const monthlyTotals = React.useMemo(() => {
+    return visibleMonths.map((_, idx) =>
+      filtered.reduce((sum, row) => sum + (Number(row.months[idx]) || 0), 0)
+    );
+  }, [filtered, visibleMonths]);
+
+  const grandTotal = monthlyTotals.reduce((sum, v) => sum + v, 0);
+
   const exportHref = `/program-monthly-visits/export?year=${encodeURIComponent(data.year || selectedYear)}`;
 
   async function handleExportClick(event) {
     event.preventDefault();
     setExporting(true);
-
     try {
       await downloadFile(exportHref, `program-monthly-visits-${data.year || selectedYear}.csv`);
       await showSuccess(
@@ -139,6 +188,9 @@ export default function ProgramMonthlyVisitsPage() {
       </div>
     );
   }
+
+  // Column count for empty state colspan: Program + visible months + Total
+  const colSpan = 1 + visibleMonths.length + 1;
 
   return (
     <section className="section">
@@ -250,54 +302,61 @@ export default function ProgramMonthlyVisitsPage() {
               <thead>
                 <tr>
                   <th>Program</th>
-                  {(data.months || []).map((month) => (
+                  {visibleMonths.map((month) => (
                     <th key={month} className="text-center">
                       {month}
                     </th>
                   ))}
-                  <th className="text-center">Overall Total</th>
+                  <th className="text-center fw-bold">Total Program Visit</th>
                 </tr>
               </thead>
               <tbody>
                 {pageRows.length ? (
-                  <>
-                    {pageRows.map((row) => (
+                  pageRows.map((row) => {
+                    const rowTotal = row.months
+                      .slice(0, visibleMonthCount)
+                      .reduce((sum, v) => sum + v, 0);
+                    return (
                       <tr key={row.program}>
                         <td className="fw-medium">{row.program}</td>
-                        {(row.months || []).map((count, idx) => (
+                        {visibleMonths.map((_, idx) => (
                           <td key={`${row.program}-${idx}`} className="text-center">
-                            {count}
+                            {row.months[idx] || 0}
                           </td>
                         ))}
-                        <td className="text-center fw-semibold">{row.overall_total}</td>
+                        <td className="text-center fw-semibold">{rowTotal}</td>
                       </tr>
-                    ))}
-                    {data.overall_row ? (
-                      <tr className="table-light">
-                        <td className="fw-bold">{data.overall_row.program}</td>
-                        {(data.overall_row.months || []).map((count, idx) => (
-                          <td key={`overall-${idx}`} className="text-center fw-bold">
-                            {count}
-                          </td>
-                        ))}
-                        <td className="text-center fw-bold">{data.overall_row.overall_total}</td>
-                      </tr>
-                    ) : null}
-                  </>
+                    );
+                  })
                 ) : (
                   <tr>
-                    <td colSpan={(data.months?.length || 12) + 2} className="text-center text-muted py-4">
+                    <td colSpan={colSpan} className="text-center text-muted py-4">
                       <i className="bi bi-table fs-3 d-block mb-2"></i>
                       No visit summary found for the selected year.
                     </td>
                   </tr>
                 )}
               </tbody>
+
+              {/* Pinned totals row — always shown at the bottom of the table */}
+              {pageRows.length > 0 && (
+                <tfoot>
+                  <tr className="border-top border-2">
+                    <td className="fw-bold">Total</td>
+                    {monthlyTotals.map((total, idx) => (
+                      <td key={`total-${idx}`} className="text-center fw-bold">
+                        {total}
+                      </td>
+                    ))}
+                    <td className="text-center fw-bold">{grandTotal}</td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
 
           <div className="small text-muted mt-2">
-            {filtered.length ? startIndex + 1 : 0}-{Math.min(startIndex + pageRows.length, filtered.length)} of {filtered.length} programs shown
+            {filtered.length ? startIndex + 1 : 0}–{Math.min(startIndex + pageRows.length, filtered.length)} of {filtered.length} programs shown
           </div>
 
           {totalPages > 1 ? (

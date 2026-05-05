@@ -709,6 +709,27 @@ def create_routes_blueprint(deps):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
 
+        # ── 1. Available years ─────────────────────────────────────────────
+        c.execute(
+            """
+            SELECT DISTINCT EXTRACT(YEAR FROM captured_at)::int AS yr
+            FROM recognition_events
+            WHERE captured_at IS NOT NULL
+            ORDER BY yr DESC
+            """
+        )
+        available_years = {current_year}
+        for (raw_year,) in c.fetchall():
+            try:
+                available_years.add(int(raw_year))
+            except:
+                continue
+        available_years = sorted(available_years, reverse=True)
+
+        if year not in available_years:
+            year = available_years[0] if available_years else current_year
+
+        # ── 2. Seed programs (active only) ─────────────────────────────────
         c.execute(
             """
             SELECT program_name
@@ -721,66 +742,53 @@ def create_routes_blueprint(deps):
 
         c.execute(
             """
-            SELECT DISTINCT SUBSTR(CAST(timestamp AS TEXT), 1, 4) AS year
-            FROM recognition_events
-            WHERE captured_at IS NOT NULL AND TRIM(CAST(captured_at AS TEXT)) != ''
-            ORDER BY year DESC
-            """
-        )
-        available_years = {current_year}
-        for (raw_year,) in c.fetchall():
-            try:
-                available_years.add(int(raw_year))
-            except (TypeError, ValueError):
-                continue
-        available_years = sorted(available_years, reverse=True)
-
-        if year not in available_years:
-            if available_years:
-                year = available_years[0]
-            else:
-                available_years = [current_year]
-                year = current_year
-
-        c.execute(
-            """
             SELECT
                 COALESCE(NULLIF(TRIM(u.course), ''), 'Unassigned') AS program,
-                SUBSTR(CAST(re.captured_at AS TEXT), 6, 2) AS month_num,
-                COUNT(*) AS visit_count
+                EXTRACT(MONTH FROM re.captured_at)::int            AS month_num,
+                COUNT(*)                                           AS visit_count
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
-              AND SUBSTR(CAST(re.captured_at AS TEXT), 1, 4) = %s
+            AND EXTRACT(YEAR FROM re.captured_at)::int = %s
+            AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
             GROUP BY program, month_num
             ORDER BY program ASC, month_num ASC
             """,
-            (str(year),),
+            (year,),
         )
+
         raw_rows = c.fetchall()
         conn.close()
 
-        grouped = {program_name: [0] * 12 for program_name in program_names}
-        for program, month_num, visit_count in raw_rows:
-            month_index = int(month_num or 0)
-            if month_index < 1 or month_index > 12:
-                continue
-            grouped.setdefault(program, [0] * 12)[month_index - 1] = int(visit_count or 0)
+        # ── 4. Build grouped data ─────────────────────────────────────────
+        grouped = {name: [0] * 12 for name in program_names}
 
+        for program, month_num, visit_count in raw_rows:
+            idx = int(month_num or 0) - 1
+            if idx < 0 or idx > 11:
+                continue
+
+            if program not in grouped:
+                grouped[program] = [0] * 12
+
+            grouped[program][idx] = int(visit_count or 0)
+
+        # ── 5. Build response ─────────────────────────────────────────────
         rows = []
         overall_monthly = [0] * 12
+
         for program in sorted(grouped):
             monthly_counts = grouped[program]
-            overall_total = sum(monthly_counts)
-            for idx, count in enumerate(monthly_counts):
-                overall_monthly[idx] += count
-            rows.append(
-                {
-                    "program": program,
-                    "months": monthly_counts,
-                    "overall_total": overall_total,
-                }
-            )
+            total = sum(monthly_counts)
+
+            for i, val in enumerate(monthly_counts):
+                overall_monthly[i] += val
+
+            rows.append({
+                "program": program,
+                "months": monthly_counts,
+                "overall_total": total,
+            })
 
         overall_row = {
             "program": "Overall Total",
@@ -791,11 +799,11 @@ def create_routes_blueprint(deps):
         return {
             "year": year,
             "years": available_years,
-            "months": [calendar.month_abbr[idx] for idx in range(1, 13)],
+            "months": [calendar.month_abbr[i] for i in range(1, 13)],
             "rows": rows,
             "overall_row": overall_row,
         }
-
+        
     def _dashboard_filter_window(filter_key=None):
         filter_options = {
             "today": {"days": 1, "label": "Today"},
