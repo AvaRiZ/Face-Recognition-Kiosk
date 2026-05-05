@@ -70,7 +70,7 @@ class OccupancySnapshotScheduler:
     def _run_loop(self) -> None:
         """Main loop for generating snapshots at regular intervals."""
         from core.config import AppConfig
-        from services.occupancy_service import OccupancyService
+        from services.occupancy_service import OccupancyService, resolve_capacity_limit
 
         config = AppConfig()
         service = OccupancyService(config.db_path)
@@ -107,8 +107,12 @@ class OccupancySnapshotScheduler:
 
             if now >= next_run:
                 try:
+                    capacity_limit = resolve_capacity_limit(
+                        config.db_path,
+                        default=int(config.max_library_capacity),
+                    )
                     service.create_snapshot(
-                        config.max_library_capacity,
+                        capacity_limit,
                         warning_threshold=config.occupancy_warning_threshold,
                     )
                     next_run = now.replace(microsecond=0) + timedelta(seconds=self.interval_seconds)

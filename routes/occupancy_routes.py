@@ -13,7 +13,7 @@ from flask import Blueprint, jsonify, request
 from core.config import AppConfig
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert
 from services.occupancy_alert_service import occupancy_alert_service
-from services.occupancy_service import OccupancyService
+from services.occupancy_service import OccupancyService, resolve_capacity_limit
 
 
 bp = Blueprint("occupancy", __name__)
@@ -45,9 +45,10 @@ def get_current() -> tuple:
     try:
         config = AppConfig()
         service = OccupancyService(config.db_path)
+        capacity_limit = resolve_capacity_limit(config.db_path, default=int(config.max_library_capacity))
 
         occ_data = service.get_current_occupancy(
-            config.max_library_capacity,
+            capacity_limit,
             warning_threshold=config.occupancy_warning_threshold,
         )
 
@@ -216,8 +217,9 @@ def adjust_occupancy() -> tuple:
             reason=reason,
             admin_id=admin_id,
         )
+        capacity_limit = resolve_capacity_limit(config.db_path, default=int(config.max_library_capacity))
         occ_data = service.get_current_occupancy(
-            config.max_library_capacity,
+            capacity_limit,
             warning_threshold=config.occupancy_warning_threshold,
         )
         alert_payload, _changed = occupancy_alert_service.evaluate(

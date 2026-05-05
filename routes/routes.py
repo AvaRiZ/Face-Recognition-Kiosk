@@ -38,7 +38,7 @@ from core.program_catalog import (
 from db import connect as db_connect, table_columns
 from routes.ml_analytics import run_ml_analytics
 from app.realtime import emit_analytics_update
-from services.occupancy_service import OccupancyService
+from services.occupancy_service import OccupancyService, resolve_capacity_limit
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
 from services.versioning_service import bump_profiles_version, bump_settings_version, ensure_version_settings
 from utils.image_utils import crop_face_region
@@ -229,8 +229,12 @@ def create_routes_blueprint(deps):
         if inserted:
             occupancy_service = OccupancyService(deps["db_path"])
             occupancy_state = occupancy_service.record_event("entry", captured_at)
+            capacity_limit = resolve_capacity_limit(
+                deps["db_path"],
+                default=int(deps["config"].max_library_capacity),
+            )
             occ_view = occupancy_service.get_current_occupancy(
-                deps["config"].max_library_capacity,
+                capacity_limit,
                 warning_threshold=deps["config"].occupancy_warning_threshold,
             )
             emit_analytics_update(
@@ -283,8 +287,12 @@ def create_routes_blueprint(deps):
         if inserted:
             occupancy_service = OccupancyService(deps["db_path"])
             occupancy_state = occupancy_service.record_event("exit", captured_at)
+            capacity_limit = resolve_capacity_limit(
+                deps["db_path"],
+                default=int(deps["config"].max_library_capacity),
+            )
             occ_view = occupancy_service.get_current_occupancy(
-                deps["config"].max_library_capacity,
+                capacity_limit,
                 warning_threshold=deps["config"].occupancy_warning_threshold,
             )
             emit_analytics_update(
@@ -696,6 +704,146 @@ def create_routes_blueprint(deps):
         )
         conn.commit()
         conn.close()
+
+    SETTINGS_BOUNDS = {
+        "max_occupancy": {"min": 50, "max": 2000},
+        "vector_index_top_k": {"min": 1, "max": 100},
+    }
+    SETTINGS_AUDIT_ACTION = "UPDATE_SETTINGS"
+    SETTINGS_AUDIT_ROW_LIMIT = 25
+
+    def _format_setting_value(field_name, value):
+        if field_name == "threshold":
+            return f"{float(value):.3f}"
+        if field_name == "quality_threshold":
+            return f"{float(value):.2f}"
+        return str(value)
+
+    def _parse_bounded_int_payload(payload, key, minimum, maximum):
+        if key not in payload:
+            return None, None
+        raw_value = str(payload.get(key, "")).strip()
+        if not raw_value:
+            return None, f"`{key}` is required."
+        try:
+            parsed = int(raw_value)
+        except (TypeError, ValueError):
+            return None, f"Invalid `{key}` value."
+        if parsed < minimum or parsed > maximum:
+            return None, f"`{key}` must be between {minimum} and {maximum}."
+        return parsed, None
+
+    def _read_recognition_settings():
+        threshold_setting = _get_setting(deps["db_path"], "threshold", str(deps["get_thresholds"]()[0]))
+        quality_threshold_setting = _get_setting(
+            deps["db_path"], "quality_threshold", str(deps["get_thresholds"]()[1])
+        )
+        try:
+            threshold = float(threshold_setting)
+        except (TypeError, ValueError):
+            threshold = deps["get_thresholds"]()[0]
+        try:
+            quality_threshold = float(quality_threshold_setting)
+        except (TypeError, ValueError):
+            quality_threshold = deps["get_thresholds"]()[1]
+        deps["set_thresholds"](threshold, quality_threshold)
+
+        vector_min = int(SETTINGS_BOUNDS["vector_index_top_k"]["min"])
+        vector_max = int(SETTINGS_BOUNDS["vector_index_top_k"]["max"])
+        vector_index_top_k_setting = _get_setting(
+            deps["db_path"],
+            "vector_index_top_k",
+            str(deps["config"].vector_index_top_k),
+        )
+        try:
+            vector_index_top_k = int(vector_index_top_k_setting)
+        except (TypeError, ValueError):
+            vector_index_top_k = int(deps["config"].vector_index_top_k)
+        vector_index_top_k = max(vector_min, min(vector_max, vector_index_top_k))
+        deps["config"].vector_index_top_k = vector_index_top_k
+
+        occ_min = int(SETTINGS_BOUNDS["max_occupancy"]["min"])
+        occ_max = int(SETTINGS_BOUNDS["max_occupancy"]["max"])
+        max_occupancy_setting = _get_setting(deps["db_path"], "max_occupancy", "300")
+        try:
+            max_occupancy = int(max_occupancy_setting)
+        except (TypeError, ValueError):
+            max_occupancy = 300
+        max_occupancy = max(occ_min, min(occ_max, max_occupancy))
+
+        return {
+            "threshold": float(threshold),
+            "quality_threshold": float(quality_threshold),
+            "vector_index_top_k": int(vector_index_top_k),
+            "max_occupancy": int(max_occupancy),
+        }
+
+    def _read_settings_audit_rows(include_rows):
+        if not include_rows:
+            return [], None
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT audit_id, staff_id, username, action, target, ip_address, timestamp
+            FROM audit_log
+            WHERE action = %s
+            ORDER BY timestamp DESC, audit_id DESC
+            LIMIT %s
+            """,
+            (SETTINGS_AUDIT_ACTION, SETTINGS_AUDIT_ROW_LIMIT),
+        )
+        rows = [
+            {
+                "audit_id": row[0],
+                "staff_id": row[1],
+                "username": row[2] or "",
+                "action": row[3] or "",
+                "target": row[4] or "",
+                "ip_address": row[5] or "",
+                "timestamp": _normalize_timestamp_for_json(row[6]),
+            }
+            for row in c.fetchall()
+        ]
+        conn.close()
+        if not rows:
+            return rows, None
+        latest = rows[0]
+        return rows, {
+            "audit_id": latest["audit_id"],
+            "staff_id": latest["staff_id"],
+            "username": latest["username"],
+            "target": latest["target"],
+            "timestamp": latest["timestamp"],
+        }
+
+    def _settings_permissions_for_role(role):
+        role_name = str(role or "").strip().lower()
+        return {
+            "can_edit_thresholds": role_name == "super_admin",
+            "can_edit_operational": role_name in {"super_admin", "library_admin"},
+            "can_manage_advanced_ops": role_name == "super_admin",
+            "can_view_audit": role_name in {"super_admin", "library_admin"},
+            "can_save": role_name in {"super_admin", "library_admin"},
+        }
+
+    def _build_settings_payload(role):
+        role_name = str(role or "").strip().lower()
+        permissions = _settings_permissions_for_role(role_name)
+        settings_state = _read_recognition_settings()
+        audit_rows, last_change = _read_settings_audit_rows(permissions["can_view_audit"])
+        return {
+            "role": role_name,
+            "user_count": deps["get_user_count"](),
+            "threshold": settings_state["threshold"],
+            "quality_threshold": settings_state["quality_threshold"],
+            "vector_index_top_k": settings_state["vector_index_top_k"],
+            "max_occupancy": settings_state["max_occupancy"],
+            "permissions": permissions,
+            "bounds": SETTINGS_BOUNDS,
+            "last_change": last_change,
+            "audit_rows": audit_rows,
+        }
 
     def _monthly_program_visits_data(selected_year=None):
         import calendar
@@ -1135,38 +1283,15 @@ def create_routes_blueprint(deps):
         flash("User status updated.", "success")
         return redirect(url_for("routes.manage_users"))
 
-    @bp.route("/settings", methods=["GET", "POST"], endpoint="settings")
+    @bp.route("/settings", methods=["GET"], endpoint="settings")
     @login_required
-    @role_required("super_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def settings():
-        if request.method == "POST":
-            deps["set_thresholds"](
-                float(request.form.get("threshold", deps["get_thresholds"]()[0])),
-                float(request.form.get("quality_threshold", deps["get_thresholds"]()[1])),
-            )
-            vector_index_top_k_raw = request.form.get("vector_index_top_k", "").strip()
-            if vector_index_top_k_raw:
-                try:
-                    vector_index_top_k = max(1, int(vector_index_top_k_raw))
-                except ValueError:
-                    vector_index_top_k = 20
-                deps["config"].vector_index_top_k = vector_index_top_k
-                _set_setting(deps["db_path"], "vector_index_top_k", vector_index_top_k)
-
-            max_occupancy_raw = request.form.get("max_occupancy", "").strip()
-            if max_occupancy_raw:
-                try:
-                    max_occupancy_value = max(1, int(max_occupancy_raw))
-                except ValueError:
-                    max_occupancy_value = 300
-                _set_setting(deps["db_path"], "max_occupancy", max_occupancy_value)
-            return redirect(url_for("routes.settings"))
-
         return _spa_index()
 
     @bp.route("/api/stats", endpoint="get_stats")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def get_stats():
         warnings.warn(
             "get_stats now uses recognition_events (canonical event model). See docs/database_schema_policy.md",
@@ -1405,9 +1530,10 @@ def create_routes_blueprint(deps):
         return _spa_index()
 
     @bp.route("/api/reset_database", methods=["POST"], endpoint="reset_database")
-    @login_required
-    @role_required("super_admin", "library_admin")
+    @api_login_required
+    @api_role_required("super_admin")
     def reset_database():
+        conn = None
         try:
             conn = db_connect(deps["db_path"])
             c = conn.cursor()
@@ -1430,16 +1556,18 @@ def create_routes_blueprint(deps):
             return {"success": True, "message": "Database reset successfully"}
         except Exception as e:
             try:
-                conn.rollback()
-                conn.close()
+                if conn is not None:
+                    conn.rollback()
+                    conn.close()
             except Exception:
                 pass
             return {"success": False, "message": str(e)}, 500
 
     @bp.route("/api/clear_log", methods=["POST"], endpoint="clear_log")
-    @login_required
-    @role_required("super_admin", "library_admin")
+    @api_login_required
+    @api_role_required("super_admin")
     def clear_log():
+        conn = None
         try:
             conn = db_connect(deps["db_path"])
             c = conn.cursor()
@@ -1448,6 +1576,12 @@ def create_routes_blueprint(deps):
             conn.close()
             return {"success": True, "message": "Recognition events cleared"}
         except Exception as e:
+            try:
+                if conn is not None:
+                    conn.rollback()
+                    conn.close()
+            except Exception:
+                pass
             return {"success": False, "message": str(e)}, 500
 
     @bp.route("/api/reset_registration", methods=["POST"], endpoint="reset_registration")
@@ -2019,79 +2153,106 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/settings/recognition", methods=["GET", "POST"], endpoint="api_settings")
     @bp.route("/api/settings", methods=["GET", "POST"])
-    @login_required
-    @role_required("super_admin")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
     def api_settings():
+        role = str(session.get("role") or "").strip().lower()
         if request.method == "POST":
+            if role == "library_staff":
+                return jsonify({"success": False, "message": "Forbidden."}), 403
+
             payload = request.get_json(silent=True) or {}
-            try:
-                threshold_value = float(payload.get("threshold", deps["get_thresholds"]()[0]))
-            except (TypeError, ValueError):
-                return jsonify({"success": False, "message": "Invalid threshold value."}), 400
-            try:
-                quality_threshold_value = float(payload.get("quality_threshold", deps["get_thresholds"]()[1]))
-            except (TypeError, ValueError):
-                return jsonify({"success": False, "message": "Invalid quality threshold value."}), 400
-            deps["set_thresholds"](threshold_value, quality_threshold_value)
-            _set_setting(deps["db_path"], "threshold", threshold_value)
-            _set_setting(deps["db_path"], "quality_threshold", quality_threshold_value)
+            if role == "library_admin":
+                forbidden_fields = [key for key in ("threshold", "quality_threshold") if key in payload]
+                if forbidden_fields:
+                    return (
+                        jsonify(
+                            {
+                                "success": False,
+                                "message": "Library administrators cannot modify recognition threshold settings.",
+                            }
+                        ),
+                        403,
+                    )
 
-            vector_index_top_k_raw = str(payload.get("vector_index_top_k", "")).strip()
-            if vector_index_top_k_raw:
-                try:
-                    vector_index_top_k = max(1, int(vector_index_top_k_raw))
-                except ValueError:
-                    vector_index_top_k = 20
-                deps["config"].vector_index_top_k = vector_index_top_k
-                _set_setting(deps["db_path"], "vector_index_top_k", vector_index_top_k)
+            current_settings = _read_recognition_settings()
+            next_settings = dict(current_settings)
+            changed_fields = {}
 
-            max_occupancy_raw = str(payload.get("max_occupancy", "")).strip()
-            if max_occupancy_raw:
-                try:
-                    max_occupancy_value = max(1, int(max_occupancy_raw))
-                except ValueError:
-                    max_occupancy_value = 300
-                _set_setting(deps["db_path"], "max_occupancy", max_occupancy_value)
-            bump_settings_version(deps["db_path"])
+            if role == "super_admin":
+                if "threshold" in payload:
+                    try:
+                        threshold_value = float(payload.get("threshold"))
+                    except (TypeError, ValueError):
+                        return jsonify({"success": False, "message": "Invalid threshold value."}), 400
+                    next_settings["threshold"] = threshold_value
+                    if threshold_value != current_settings["threshold"]:
+                        changed_fields["threshold"] = (current_settings["threshold"], threshold_value)
 
-        threshold_setting = _get_setting(deps["db_path"], "threshold", str(deps["get_thresholds"]()[0]))
-        quality_threshold_setting = _get_setting(
-            deps["db_path"], "quality_threshold", str(deps["get_thresholds"]()[1])
-        )
-        try:
-            threshold = float(threshold_setting)
-        except (TypeError, ValueError):
-            threshold = deps["get_thresholds"]()[0]
-        try:
-            quality_threshold = float(quality_threshold_setting)
-        except (TypeError, ValueError):
-            quality_threshold = deps["get_thresholds"]()[1]
-        deps["set_thresholds"](threshold, quality_threshold)
-        vector_index_top_k_setting = _get_setting(
-            deps["db_path"],
-            "vector_index_top_k",
-            str(deps["config"].vector_index_top_k),
-        )
-        try:
-            vector_index_top_k = max(1, int(vector_index_top_k_setting))
-        except (TypeError, ValueError):
-            vector_index_top_k = max(1, int(deps["config"].vector_index_top_k))
-        deps["config"].vector_index_top_k = vector_index_top_k
+                if "quality_threshold" in payload:
+                    try:
+                        quality_threshold_value = float(payload.get("quality_threshold"))
+                    except (TypeError, ValueError):
+                        return jsonify({"success": False, "message": "Invalid quality threshold value."}), 400
+                    next_settings["quality_threshold"] = quality_threshold_value
+                    if quality_threshold_value != current_settings["quality_threshold"]:
+                        changed_fields["quality_threshold"] = (
+                            current_settings["quality_threshold"],
+                            quality_threshold_value,
+                        )
 
-        max_occupancy_setting = _get_setting(deps["db_path"], "max_occupancy", "300")
-        try:
-            max_occupancy = int(max_occupancy_setting)
-        except (TypeError, ValueError):
-            max_occupancy = 300
-        return jsonify(
-            {
-                "user_count": deps["get_user_count"](),
-                "threshold": threshold,
-                "quality_threshold": quality_threshold,
-                "vector_index_top_k": vector_index_top_k,
-                "max_occupancy": max_occupancy,
-            }
-        )
+            vector_bounds = SETTINGS_BOUNDS["vector_index_top_k"]
+            vector_value, vector_error = _parse_bounded_int_payload(
+                payload,
+                "vector_index_top_k",
+                int(vector_bounds["min"]),
+                int(vector_bounds["max"]),
+            )
+            if vector_error:
+                return jsonify({"success": False, "message": vector_error}), 400
+            if vector_value is not None:
+                next_settings["vector_index_top_k"] = vector_value
+                if vector_value != current_settings["vector_index_top_k"]:
+                    changed_fields["vector_index_top_k"] = (current_settings["vector_index_top_k"], vector_value)
+
+            occupancy_bounds = SETTINGS_BOUNDS["max_occupancy"]
+            max_occupancy_value, max_occupancy_error = _parse_bounded_int_payload(
+                payload,
+                "max_occupancy",
+                int(occupancy_bounds["min"]),
+                int(occupancy_bounds["max"]),
+            )
+            if max_occupancy_error:
+                return jsonify({"success": False, "message": max_occupancy_error}), 400
+            if max_occupancy_value is not None:
+                next_settings["max_occupancy"] = max_occupancy_value
+                if max_occupancy_value != current_settings["max_occupancy"]:
+                    changed_fields["max_occupancy"] = (current_settings["max_occupancy"], max_occupancy_value)
+
+            if changed_fields:
+                for setting_key in changed_fields:
+                    _set_setting(deps["db_path"], setting_key, next_settings[setting_key])
+                deps["set_thresholds"](
+                    float(next_settings["threshold"]),
+                    float(next_settings["quality_threshold"]),
+                )
+                deps["config"].vector_index_top_k = int(next_settings["vector_index_top_k"])
+                bump_settings_version(deps["db_path"])
+
+                ordered_keys = ["threshold", "quality_threshold", "vector_index_top_k", "max_occupancy"]
+                summary_parts = []
+                for setting_key in ordered_keys:
+                    if setting_key not in changed_fields:
+                        continue
+                    previous_value, updated_value = changed_fields[setting_key]
+                    summary_parts.append(
+                        f"{setting_key}: {_format_setting_value(setting_key, previous_value)} -> "
+                        f"{_format_setting_value(setting_key, updated_value)}"
+                    )
+                if summary_parts:
+                    log_action(SETTINGS_AUDIT_ACTION, target="; ".join(summary_parts))
+
+        return jsonify(_build_settings_payload(role))
 
     _PROFILE_SORT_SQL = {
         "name_asc": "name ASC, user_id ASC",

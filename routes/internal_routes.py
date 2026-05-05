@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify, request
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert, emit_unrecognized_detection
 from core.models import User
 from db import connect as db_connect
-from services.occupancy_service import OccupancyService
+from services.occupancy_service import OccupancyService, resolve_capacity_limit
 from services.alert_service import AlertService
 from services.occupancy_alert_service import occupancy_alert_service
 from services.versioning_service import bump_profiles_version, get_profiles_version, get_settings_version
@@ -111,6 +111,13 @@ def create_internal_blueprint(deps):
     @bp.before_request
     def _auth_guard():
         return _require_worker_token()
+
+    def _runtime_capacity_limit() -> int:
+        config = deps["config"]
+        return resolve_capacity_limit(
+            deps["db_path"],
+            default=int(config.max_library_capacity),
+        )
 
     @bp.route("/profiles/version", methods=["GET"], endpoint="profiles_version")
     def profiles_version():
@@ -284,7 +291,7 @@ def create_internal_blueprint(deps):
             config = deps["config"]
             occupancy_state = occupancy_service.record_event(event_type, captured_at)
             occupancy_view = occupancy_service.get_current_occupancy(
-                config.max_library_capacity,
+                _runtime_capacity_limit(),
                 warning_threshold=config.occupancy_warning_threshold,
             )
             alert_payload, alert_changed = occupancy_alert_service.evaluate(
@@ -354,7 +361,7 @@ def create_internal_blueprint(deps):
                     pass
             config = deps["config"]
             occ_view = OccupancyService(deps["db_path"]).get_current_occupancy(
-                config.max_library_capacity,
+                _runtime_capacity_limit(),
                 warning_threshold=config.occupancy_warning_threshold,
             )
             capacity_warning = bool(occ_view["capacity_warning"])
@@ -397,7 +404,7 @@ def create_internal_blueprint(deps):
         config = deps["config"]
         occupancy_service = OccupancyService(deps["db_path"])
         occ = occupancy_service.get_current_occupancy(
-            config.max_library_capacity,
+            _runtime_capacity_limit(),
             warning_threshold=config.occupancy_warning_threshold,
         )
         allow_entry = not bool(occ["is_full"])
@@ -482,7 +489,7 @@ def create_internal_blueprint(deps):
             config = AppConfig()
             service = OccupancyService(config.db_path)
             service.create_snapshot(
-                config.max_library_capacity,
+                resolve_capacity_limit(config.db_path, default=int(config.max_library_capacity)),
                 warning_threshold=config.occupancy_warning_threshold,
             )
             return jsonify({"success": True, "message": "Occupancy snapshot created."})

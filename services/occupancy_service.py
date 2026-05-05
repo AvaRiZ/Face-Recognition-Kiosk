@@ -13,6 +13,46 @@ from datetime import datetime, date, timezone, timedelta
 
 from db import connect as db_connect
 
+DEFAULT_CAPACITY_LIMIT = 300
+MIN_CAPACITY_LIMIT = 50
+MAX_CAPACITY_LIMIT = 2000
+
+
+def resolve_capacity_limit(
+    db_path: str,
+    default: int = DEFAULT_CAPACITY_LIMIT,
+    minimum: int = MIN_CAPACITY_LIMIT,
+    maximum: int = MAX_CAPACITY_LIMIT,
+) -> int:
+    """Resolve runtime capacity limit from app_settings with safe fallback bounds."""
+    try:
+        fallback = int(default)
+    except (TypeError, ValueError):
+        fallback = DEFAULT_CAPACITY_LIMIT
+
+    if minimum > maximum:
+        minimum, maximum = maximum, minimum
+
+    resolved = fallback
+    conn = None
+    try:
+        conn = db_connect(db_path)
+        c = conn.cursor()
+        c.execute("SELECT value FROM app_settings WHERE key = %s", ("max_occupancy",))
+        row = c.fetchone()
+        if row and row[0] is not None:
+            resolved = int(str(row[0]).strip())
+    except Exception:
+        resolved = fallback
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return max(int(minimum), min(int(maximum), int(resolved)))
+
 
 class OccupancyService:
     """Manages occupancy calculations and snapshots."""

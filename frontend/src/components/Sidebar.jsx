@@ -78,7 +78,7 @@ export default function Sidebar() {
             {canSeeManagement ? <li className="nav-heading">Management</li> : null}
             {isStaff ? <NavItem to="/analytics-reports" icon="bi bi-graph-up-arrow" label="Reports & Analytics" /> : null}
             {isAdmin ? <NavItem to="/route-list" icon="bi bi-diagram-3" label="Route List" /> : null}
-            {role === 'super_admin' ? <NavItem to="/settings" icon="bi bi-gear" label="Settings" /> : null}
+            {isStaff ? <NavItem to="/settings" icon="bi bi-gear" label="Settings" /> : null}
           </ul>
         </div>
 
