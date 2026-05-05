@@ -82,12 +82,63 @@ class OccupancyService:
             return "exit"
         return "unknown"
 
-    def record_event(self, event_type: str | int, captured_at: datetime | None = None) -> dict:
-        """Record a single recognition event into the daily occupancy state."""
-        event_time = captured_at or datetime.now(timezone.utc)
+    @staticmethod
+    def _as_utc_timestamp(value: datetime | None = None) -> datetime:
+        event_time = value or datetime.now(timezone.utc)
         if event_time.tzinfo is None:
             event_time = event_time.replace(tzinfo=timezone.utc)
-        event_time = event_time.astimezone(timezone.utc)
+        return event_time.astimezone(timezone.utc)
+
+    @staticmethod
+    def _upsert_daily_state(cursor, state_date: str, daily_entries: int, daily_exits: int, updated_at: datetime) -> None:
+        cursor.execute(
+            """
+            INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT(state_date) DO UPDATE SET
+                daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
+                daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
+                updated_at = excluded.updated_at
+            """,
+            (state_date, int(daily_entries), int(daily_exits), updated_at),
+        )
+
+    @staticmethod
+    def _read_daily_state(cursor, state_date: str):
+        cursor.execute(
+            """
+            SELECT state_date, daily_entries, daily_exits, updated_at
+            FROM daily_occupancy_state
+            WHERE state_date = %s
+            """,
+            (state_date,),
+        )
+        return cursor.fetchone()
+
+    @staticmethod
+    def _daily_state_payload(row, fallback_state_date: str, fallback_updated_at: datetime) -> dict:
+        if not row:
+            return {
+                "state_date": fallback_state_date,
+                "daily_entries": 0,
+                "daily_exits": 0,
+                "occupancy_count": 0,
+                "updated_at": fallback_updated_at.isoformat(),
+            }
+
+        daily_entries = int(row[1] or 0)
+        daily_exits = int(row[2] or 0)
+        return {
+            "state_date": row[0],
+            "daily_entries": daily_entries,
+            "daily_exits": daily_exits,
+            "occupancy_count": max(0, daily_entries - daily_exits),
+            "updated_at": row[3],
+        }
+
+    def record_event(self, event_type: str | int, captured_at: datetime | None = None) -> dict:
+        """Record a single recognition event into the daily occupancy state."""
+        event_time = self._as_utc_timestamp(captured_at)
         state_date = event_time.date().isoformat()
         normalized_event_type = self._normalize_event_type(event_type)
 
@@ -97,50 +148,14 @@ class OccupancyService:
         conn = db_connect(self.db_path)
         c = conn.cursor()
 
-        c.execute(
-            """
-            INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT(state_date) DO UPDATE SET
-                daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
-                daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
-                updated_at = excluded.updated_at
-            """,
-            (state_date, daily_entries, daily_exits, event_time),
-        )
+        self._upsert_daily_state(c, state_date, daily_entries, daily_exits, event_time)
 
         conn.commit()
 
-        c.execute(
-            """
-            SELECT state_date, daily_entries, daily_exits, updated_at
-            FROM daily_occupancy_state
-            WHERE state_date = %s
-            """,
-            (state_date,),
-        )
-        row = c.fetchone()
+        row = self._read_daily_state(c, state_date)
         conn.close()
 
-        if not row:
-            return {
-                "state_date": state_date,
-                "daily_entries": 0,
-                "daily_exits": 0,
-                "occupancy_count": 0,
-                "updated_at": event_time.isoformat(),
-            }
-
-        daily_entries = int(row[1] or 0)
-        daily_exits = int(row[2] or 0)
-        occupancy_count = max(0, daily_entries - daily_exits)
-        return {
-            "state_date": row[0],
-            "daily_entries": daily_entries,
-            "daily_exits": daily_exits,
-            "occupancy_count": occupancy_count,
-            "updated_at": row[3],
-        }
+        return self._daily_state_payload(row, state_date, event_time)
 
     def get_daily_state(self, target_date: date | None = None) -> dict | None:
         """Return the tracked daily occupancy state for a date, if present."""
@@ -149,29 +164,17 @@ class OccupancyService:
 
         conn = db_connect(self.db_path)
         c = conn.cursor()
-        c.execute(
-            """
-            SELECT state_date, daily_entries, daily_exits, updated_at
-            FROM daily_occupancy_state
-            WHERE state_date = %s
-            """,
-            (target_date.isoformat(),),
-        )
-        row = c.fetchone()
+        state_date = target_date.isoformat()
+        row = self._read_daily_state(c, state_date)
         conn.close()
         if not row:
             return None
 
-        daily_entries = int(row[1] or 0)
-        daily_exits = int(row[2] or 0)
-        occupancy_count = max(0, daily_entries - daily_exits)
-        return {
-            "state_date": row[0],
-            "daily_entries": daily_entries,
-            "daily_exits": daily_exits,
-            "occupancy_count": occupancy_count,
-            "updated_at": row[3],
-        }
+        return self._daily_state_payload(
+            row,
+            fallback_state_date=state_date,
+            fallback_updated_at=datetime.now(timezone.utc),
+        )
 
     def calculate_occupancy(self, target_date: date | None = None) -> dict:
         """
@@ -634,7 +637,7 @@ class OccupancyService:
         if int(adjustment) == 0:
             raise ValueError("`adjustment` must be non-zero.")
 
-        now = datetime.now(timezone.utc)
+        now = self._as_utc_timestamp()
         state_date = now.date().isoformat()
         delta = int(adjustment)
         entry_delta = max(delta, 0)
@@ -642,28 +645,11 @@ class OccupancyService:
 
         conn = db_connect(self.db_path)
         c = conn.cursor()
-        c.execute(
-            """
-            INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT(state_date) DO UPDATE SET
-                daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
-                daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
-                updated_at = excluded.updated_at
-            """,
-            (state_date, entry_delta, exit_delta, now),
-        )
-        c.execute(
-            """
-            SELECT daily_entries, daily_exits
-            FROM daily_occupancy_state
-            WHERE state_date = %s
-            """,
-            (state_date,),
-        )
-        row = c.fetchone()
-        daily_entries = int(row[0] or 0) if row else 0
-        daily_exits = int(row[1] or 0) if row else 0
+        self._upsert_daily_state(c, state_date, entry_delta, exit_delta, now)
+        row = self._read_daily_state(c, state_date)
+        state_payload = self._daily_state_payload(row, state_date, now)
+        daily_entries = int(state_payload["daily_entries"])
+        daily_exits = int(state_payload["daily_exits"])
 
         # Clamp impossible negative occupancy by normalizing exits to entries.
         if daily_exits > daily_entries:

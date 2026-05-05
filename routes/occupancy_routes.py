@@ -13,6 +13,7 @@ from flask import Blueprint, jsonify, request
 from core.config import AppConfig
 from db import get_app_setting
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert
+from services.alert_service import AlertService
 from services.occupancy_alert_service import occupancy_alert_service
 from services.occupancy_service import OccupancyService, resolve_capacity_limit
 
@@ -244,6 +245,18 @@ def adjust_occupancy() -> tuple:
             moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
             state_is_stale=False,
         )
+        level = str(alert_payload.get("level") or "").strip().lower()
+        alert = None
+        if level == "full":
+            alert = AlertService(config.db_path).create_capacity_reached_alert(
+                occupancy_count=int(occ_data["occupancy_count"]),
+                capacity_limit=int(occ_data["capacity_limit"]),
+            )
+        elif level == "warning":
+            alert = AlertService(config.db_path).create_capacity_warning_alert(
+                occupancy_count=int(occ_data["occupancy_count"]),
+                capacity_limit=int(occ_data["capacity_limit"]),
+            )
         emit_analytics_update(
             "occupancy_adjusted",
             {
@@ -258,6 +271,7 @@ def adjust_occupancy() -> tuple:
             {
                 "reason": "manual_occupancy_adjustment",
                 "capacity_warning": bool(occ_data["capacity_warning"]),
+                "alert": alert,
                 **alert_payload,
             }
         )

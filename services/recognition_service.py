@@ -36,10 +36,25 @@ class FaceRecognitionService:
         camera_id = int(getattr(self.repository, "camera_id", 1) or 1)
         return "exit" if camera_id == 2 else "entry"
 
+    def _recognition_event_lock_seconds(self) -> float:
+        return max(0.0, float(getattr(self.config, "recognition_event_lock_seconds", 8) or 8.0))
+
+    def _prune_expired_recognition_locks(self, now: float, lock_seconds: float) -> None:
+        if lock_seconds <= 0 or not self._recognition_event_locks:
+            return
+        cutoff = float(now) - float(lock_seconds)
+        stale_keys = [
+            key for key, ts in self._recognition_event_locks.items()
+            if float(ts) < cutoff
+        ]
+        for key in stale_keys:
+            self._recognition_event_locks.pop(key, None)
+
     def _should_emit_recognition_event(self, user_id: int) -> bool:
         now = time.time()
         event_type = self._event_type_for_current_repository()
-        lock_seconds = max(0.0, float(getattr(self.config, "recognition_event_lock_seconds", 8) or 8.0))
+        lock_seconds = self._recognition_event_lock_seconds()
+        self._prune_expired_recognition_locks(now, lock_seconds)
         if lock_seconds <= 0:
             return True
 

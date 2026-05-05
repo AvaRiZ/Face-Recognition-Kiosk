@@ -1,5 +1,5 @@
 import React from "react";
-import { getErrorMessage, showError, showSuccess } from "../alerts.js";
+import { getErrorMessage, showAlert, showError, showSuccess } from "../alerts.js";
 import { fetchJson } from "../api.js";
 import { socket } from "../socket.js";
 
@@ -7,6 +7,7 @@ const PEAK_HOUR_START = 7;
 const PEAK_HOUR_END = 19;
 const PEAK_HOUR_COUNT = PEAK_HOUR_END - PEAK_HOUR_START + 1;
 const DAYS_OF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const CAPACITY_ALERT_POPUP_COOLDOWN_MS = 45000;
 
 function toNonNegativeNumber(value) {
   const parsed = Number(value);
@@ -1015,6 +1016,8 @@ export default function Dashboard() {
   const [showSnapshotDetail, setShowSnapshotDetail] = React.useState(false);
   const latestRequestRef = React.useRef(0);
   const hasLoadedDataRef = React.useRef(false);
+  const lastCapacityPopupKeyRef = React.useRef("");
+  const lastCapacityPopupAtRef = React.useRef(0);
 
   React.useEffect(() => {
     hasLoadedDataRef.current = Boolean(data);
@@ -1072,6 +1075,52 @@ export default function Dashboard() {
     }
   }
 
+  async function maybeShowCapacityPopup(payload) {
+    const level = String(payload?.level || "").trim().toLowerCase();
+    if (level !== "warning" && level !== "full") {
+      return;
+    }
+
+    const occupancyCount = Number(payload?.occupancy_count ?? 0);
+    const capacityLimit = Number(payload?.capacity_limit ?? 0);
+    const occupancyRatio = Number(payload?.occupancy_ratio ?? 0);
+    const percent = Number.isFinite(occupancyRatio)
+      ? Math.max(0, Math.min(100, Math.round(occupancyRatio * 100)))
+      : 0;
+    const popupKey = `${level}:${occupancyCount}:${capacityLimit}:${percent}`;
+    const now = Date.now();
+    if (
+      popupKey === lastCapacityPopupKeyRef.current &&
+      (now - Number(lastCapacityPopupAtRef.current || 0)) < CAPACITY_ALERT_POPUP_COOLDOWN_MS
+    ) {
+      return;
+    }
+    lastCapacityPopupKeyRef.current = popupKey;
+    lastCapacityPopupAtRef.current = now;
+
+    let title = "Occupancy Warning";
+    let text = `Current occupancy is ${occupancyCount}/${capacityLimit} (${percent}%).`;
+    let icon = "warning";
+
+    if (level === "full") {
+      title = "Capacity Reached";
+      icon = "error";
+      if (capacityLimit > 0 && occupancyCount > capacityLimit) {
+        text = `Current occupancy is ${occupancyCount}/${capacityLimit} (${percent}%). Capacity is exceeded.`;
+      } else {
+        text = `Current occupancy is ${occupancyCount}/${capacityLimit} (${percent}%). Entry flow should be monitored closely.`;
+      }
+    }
+
+    await showAlert({
+      icon,
+      title,
+      text,
+      timer: 5000,
+      showConfirmButton: false,
+    });
+  }
+
   React.useEffect(() => {
     loadDashboardData({ filterKey: selectedFilter });
     loadOccupancyPanel();
@@ -1090,8 +1139,9 @@ export default function Dashboard() {
       loadOccupancyPanel({ silent: true });
     }
 
-    function handleCapacityAlert() {
+    function handleCapacityAlert(payload) {
       loadOccupancyPanel({ silent: true });
+      void maybeShowCapacityPopup(payload);
     }
 
     socket.connect();

@@ -151,6 +151,69 @@ def _parse_observed_timestamp(value) -> float:
         return time.time()
 
 
+def _parse_utc_datetime(value) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return datetime.now(timezone.utc)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return datetime.now(timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _build_daily_occupancy_state(row, fallback_state_date: str, fallback_updated_at: datetime) -> dict:
+    if not row:
+        return {
+            "state_date": fallback_state_date,
+            "daily_entries": 0,
+            "daily_exits": 0,
+            "occupancy_count": 0,
+            "updated_at": fallback_updated_at.isoformat(),
+        }
+
+    tracked_entries = int(row[1] or 0)
+    tracked_exits = int(row[2] or 0)
+    return {
+        "state_date": row[0],
+        "daily_entries": tracked_entries,
+        "daily_exits": tracked_exits,
+        "occupancy_count": max(0, tracked_entries - tracked_exits),
+        "updated_at": row[3],
+    }
+
+
+def _upsert_daily_occupancy_state(cursor, captured_at: datetime, event_type: str) -> dict:
+    state_date = captured_at.date().isoformat()
+    daily_entries = 1 if event_type == "entry" else 0
+    daily_exits = 1 if event_type == "exit" else 0
+    cursor.execute(
+        """
+        INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT(state_date) DO UPDATE SET
+            daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
+            daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
+            updated_at = excluded.updated_at
+        """,
+        (state_date, daily_entries, daily_exits, captured_at),
+    )
+    cursor.execute(
+        """
+        SELECT state_date, daily_entries, daily_exits, updated_at
+        FROM daily_occupancy_state
+        WHERE state_date = %s
+        """,
+        (state_date,),
+    )
+    return _build_daily_occupancy_state(cursor.fetchone(), state_date, captured_at)
+
+
 def create_internal_blueprint(deps):
     bp = Blueprint("internal_routes", __name__, url_prefix="/api/internal")
 
@@ -180,6 +243,98 @@ def create_internal_blueprint(deps):
             value = getter("entry")
             if isinstance(value, (int, float)):
                 return float(value)
+        return None
+
+    def _safe_insert_user_registration_audit(
+        *,
+        user_id: int | None,
+        event_id: str,
+        registration_type: str,
+        flow_type: str,
+        status: str,
+        notes: str,
+    ) -> None:
+        audit_conn = None
+        try:
+            audit_conn = db_connect(deps["db_path"])
+            audit_cursor = audit_conn.cursor()
+            audit_cursor.execute(
+                """
+                INSERT INTO user_registrations (
+                    user_id, event_id, registration_type, flow_type, status, performed_by, notes
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    event_id,
+                    registration_type,
+                    flow_type,
+                    status,
+                    "system",
+                    notes,
+                ),
+            )
+            audit_conn.commit()
+        except Exception:
+            pass
+        finally:
+            if audit_conn is not None:
+                try:
+                    audit_conn.close()
+                except Exception:
+                    pass
+
+    def _is_visitor_user(user_id: int) -> bool:
+        conn = None
+        try:
+            conn = db_connect(deps["db_path"])
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (int(user_id),))
+            row = cursor.fetchone()
+            return bool(row and str(row[0] or "").strip().lower() == "visitor")
+        except Exception:
+            return False
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _get_occupancy_view() -> tuple[dict, float]:
+        config = deps["config"]
+        warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
+        occupancy_view = OccupancyService(deps["db_path"]).get_current_occupancy(
+            _runtime_capacity_limit(),
+            warning_threshold=warning_threshold,
+        )
+        return occupancy_view, warning_threshold
+
+    def _evaluate_occupancy_alert(occupancy_view: dict, warning_threshold: float) -> tuple[dict, bool]:
+        return occupancy_alert_service.evaluate(
+            occupancy_count=int(occupancy_view["occupancy_count"]),
+            capacity_limit=int(occupancy_view["capacity_limit"]),
+            occupancy_ratio=float(occupancy_view["occupancy_ratio"]),
+            is_full=bool(occupancy_view["is_full"]),
+            capacity_warning=bool(occupancy_view["capacity_warning"]),
+            warning_threshold=float(warning_threshold),
+            moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
+            state_is_stale=False,
+        )
+
+    def _persist_capacity_alert_from_level(level: str, occupancy_view: dict) -> dict | None:
+        alert_service = AlertService(deps["db_path"])
+        if str(level or "").strip().lower() == "full":
+            return alert_service.create_capacity_reached_alert(
+                occupancy_count=int(occupancy_view["occupancy_count"]),
+                capacity_limit=int(occupancy_view["capacity_limit"]),
+            )
+        if str(level or "").strip().lower() == "warning":
+            return alert_service.create_capacity_warning_alert(
+                occupancy_count=int(occupancy_view["occupancy_count"]),
+                capacity_limit=int(occupancy_view["capacity_limit"]),
+            )
         return None
 
     @bp.route("/profiles/version", methods=["GET"], endpoint="profiles_version")
@@ -362,18 +517,7 @@ def create_internal_blueprint(deps):
         except ValueError as exc:
             return _json_error(str(exc), 400)
 
-        captured_at_raw = payload.get("captured_at")
-        captured_at = datetime.now(timezone.utc)
-        if captured_at_raw:
-            text = str(captured_at_raw).strip()
-            if text:
-                try:
-                    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-                    if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
-                    captured_at = parsed.astimezone(timezone.utc)
-                except Exception:
-                    captured_at = datetime.now(timezone.utc)
+        captured_at = _parse_utc_datetime(payload.get("captured_at"))
 
         confidence = _optional_float(payload.get("confidence"))
         primary_confidence = _optional_float(payload.get("primary_confidence"))
@@ -435,39 +579,7 @@ def create_internal_blueprint(deps):
             inserted = (c.rowcount or 0) > 0
 
             if inserted and decision == "allowed":
-                daily_entries = 1 if event_type == "entry" else 0
-                daily_exits = 1 if event_type == "exit" else 0
-                state_date = captured_at.date().isoformat()
-                c.execute(
-                    """
-                    INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT(state_date) DO UPDATE SET
-                        daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
-                        daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
-                        updated_at = excluded.updated_at
-                    """,
-                    (state_date, daily_entries, daily_exits, captured_at),
-                )
-                c.execute(
-                    """
-                    SELECT state_date, daily_entries, daily_exits, updated_at
-                    FROM daily_occupancy_state
-                    WHERE state_date = %s
-                    """,
-                    (state_date,),
-                )
-                row = c.fetchone()
-                if row:
-                    tracked_entries = int(row[1] or 0)
-                    tracked_exits = int(row[2] or 0)
-                    occupancy_state = {
-                        "state_date": row[0],
-                        "daily_entries": tracked_entries,
-                        "daily_exits": tracked_exits,
-                        "occupancy_count": max(0, tracked_entries - tracked_exits),
-                        "updated_at": row[3],
-                    }
+                occupancy_state = _upsert_daily_occupancy_state(c, captured_at, event_type)
 
             conn.commit()
         except Exception:
@@ -480,64 +592,23 @@ def create_internal_blueprint(deps):
             conn.close()
 
         if inserted and decision == "allowed":
-            if event_type == "exit" and user_id:
-                try:
-                    audit_conn = db_connect(deps["db_path"])
-                    audit_cursor = audit_conn.cursor()
-                    audit_cursor.execute(
-                        "SELECT user_type FROM users WHERE user_id = %s",
-                        (user_id,),
-                    )
-                    user_row = audit_cursor.fetchone()
-                    if user_row and str(user_row[0] or "").strip().lower() == "visitor":
-                        audit_cursor.execute(
-                            """
-                            INSERT INTO user_registrations (
-                                user_id, event_id, registration_type, flow_type, status, performed_by, notes
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                user_id,
-                                event_id,
-                                "visitor",
-                                "manual_entry",
-                                "approved",
-                                "system",
-                                "Visitor exit recorded by exit worker.",
-                            ),
-                        )
-                        audit_conn.commit()
-                except Exception:
-                    pass
-                finally:
-                    try:
-                        audit_conn.close()
-                    except Exception:
-                        pass
-            occupancy_service = OccupancyService(deps["db_path"])
-            config = deps["config"]
-            warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
-            if occupancy_state is None:
-                occupancy_state = {
-                    "daily_entries": 0,
-                    "daily_exits": 0,
-                    "occupancy_count": 0,
-                }
-            occupancy_view = occupancy_service.get_current_occupancy(
-                _runtime_capacity_limit(),
-                warning_threshold=warning_threshold,
+            if event_type == "exit" and user_id and _is_visitor_user(int(user_id)):
+                _safe_insert_user_registration_audit(
+                    user_id=int(user_id),
+                    event_id=event_id,
+                    registration_type="visitor",
+                    flow_type="manual_entry",
+                    status="approved",
+                    notes="Visitor exit recorded by exit worker.",
+                )
+            occupancy_state = occupancy_state or _build_daily_occupancy_state(
+                None,
+                fallback_state_date=captured_at.date().isoformat(),
+                fallback_updated_at=captured_at,
             )
-            alert_payload, alert_changed = occupancy_alert_service.evaluate(
-                occupancy_count=int(occupancy_view["occupancy_count"]),
-                capacity_limit=int(occupancy_view["capacity_limit"]),
-                occupancy_ratio=float(occupancy_view["occupancy_ratio"]),
-                is_full=bool(occupancy_view["is_full"]),
-                capacity_warning=bool(occupancy_view["capacity_warning"]),
-                warning_threshold=float(warning_threshold),
-                moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
-                state_is_stale=False,
-            )
+            occupancy_view, warning_threshold = _get_occupancy_view()
+            alert_payload, alert_changed = _evaluate_occupancy_alert(occupancy_view, warning_threshold)
+            persisted_alert = _persist_capacity_alert_from_level(alert_payload.get("level"), occupancy_view)
             emit_analytics_update(
                 "recognition_event_ingested",
                 {
@@ -558,6 +629,7 @@ def create_internal_blueprint(deps):
                     {
                         "reason": "occupancy_state_changed",
                         "capacity_warning": bool(occupancy_view["capacity_warning"]),
+                        "alert": persisted_alert,
                         **alert_payload,
                     }
                 )
@@ -565,40 +637,15 @@ def create_internal_blueprint(deps):
             metadata = payload.get("snapshot_metadata")
             if not isinstance(metadata, dict):
                 metadata = {}
-            try:
-                audit_conn = db_connect(deps["db_path"])
-                audit_cursor = audit_conn.cursor()
-                audit_cursor.execute(
-                    """
-                    INSERT INTO user_registrations (
-                        user_id, event_id, registration_type, flow_type, status, performed_by, notes
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        user_id,
-                        event_id,
-                        "unrecognized",
-                        "manual_entry",
-                        "pending",
-                        "system",
-                        "Pending librarian approval for unrecognized detection.",
-                    ),
-                )
-                audit_conn.commit()
-            except Exception:
-                pass
-            finally:
-                try:
-                    audit_conn.close()
-                except Exception:
-                    pass
-            config = deps["config"]
-            warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
-            occ_view = OccupancyService(deps["db_path"]).get_current_occupancy(
-                _runtime_capacity_limit(),
-                warning_threshold=warning_threshold,
+            _safe_insert_user_registration_audit(
+                user_id=user_id,
+                event_id=event_id,
+                registration_type="unrecognized",
+                flow_type="manual_entry",
+                status="pending",
+                notes="Pending librarian approval for unrecognized detection.",
             )
+            occ_view, _warning_threshold = _get_occupancy_view()
             capacity_warning = bool(occ_view["capacity_warning"])
             emit_unrecognized_detection(
                 {
@@ -636,31 +683,11 @@ def create_internal_blueprint(deps):
 
     @bp.route("/capacity-gate", methods=["GET"], endpoint="capacity_gate")
     def capacity_gate():
-        config = deps["config"]
-        warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
-        occupancy_service = OccupancyService(deps["db_path"])
-        occ = occupancy_service.get_current_occupancy(
-            _runtime_capacity_limit(),
-            warning_threshold=warning_threshold,
-        )
+        occ, warning_threshold = _get_occupancy_view()
         allow_entry = True
         monitoring_reason = "capacity_reached_monitoring_only" if bool(occ["is_full"]) else "ok"
-        alert = None
-        if bool(occ["is_full"]):
-            alert = AlertService(deps["db_path"]).create_capacity_reached_alert(
-                occupancy_count=int(occ["occupancy_count"]),
-                capacity_limit=int(occ["capacity_limit"]),
-            )
-        alert_payload, alert_changed = occupancy_alert_service.evaluate(
-            occupancy_count=int(occ["occupancy_count"]),
-            capacity_limit=int(occ["capacity_limit"]),
-            occupancy_ratio=float(occ["occupancy_ratio"]),
-            is_full=bool(occ["is_full"]),
-            capacity_warning=bool(occ["capacity_warning"]),
-            warning_threshold=float(warning_threshold),
-            moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
-            state_is_stale=False,
-        )
+        alert_payload, alert_changed = _evaluate_occupancy_alert(occ, warning_threshold)
+        alert = _persist_capacity_alert_from_level(alert_payload.get("level"), occ)
         if alert_changed or alert is not None:
             emit_capacity_threshold_alert(
                 {
