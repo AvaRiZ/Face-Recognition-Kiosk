@@ -1891,42 +1891,6 @@ def create_routes_blueprint(deps):
             }
         )
     
-    @bp.route("/registered-profiles/delete/<int:user_id>", methods=["POST"], endpoint="delete_profile")
-    @login_required
-    @role_required("super_admin", "library_admin")
-    def delete_profile(user_id):
-        try:
-            conn = db_connect(deps["db_path"])
-            c = conn.cursor()
- 
-            # Get student info before deleting
-            c.execute("SELECT name, sr_code FROM users WHERE user_id = %s", (user_id,))
-            student = c.fetchone()
- 
-            if not student:
-                conn.close()
-                flash("Student not found.", "error")
-                return redirect(url_for("routes.registered_profiles"))
- 
-            name, sr_code = student
- 
-            # Delete the student
-            c.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
-            conn.commit()
-            conn.close()
-            bump_profiles_version(deps["db_path"])
- 
-            # Remove from in-memory embeddings
-            deps["remove_user_embedding"](user_id)
- 
-            log_action("DELETE_STUDENT", target=f"{name} ({sr_code})")
-            flash(f"Student '{name}' deleted successfully.", "success")
- 
-        except Exception as e:
-            flash(f"Failed to delete student: {str(e)}", "error")
- 
-        return redirect(url_for("routes.registered_profiles"))
- 
     @bp.route("/entry-logs", endpoint="entry_logs")
     @bp.route("/entry-exit-logs", endpoint="entry_exit_logs")
     @login_required
@@ -2129,6 +2093,132 @@ def create_routes_blueprint(deps):
             }
         )
 
+    _PROFILE_SORT_SQL = {
+        "name_asc": "name ASC, user_id ASC",
+        "name_desc": "name DESC, user_id DESC",
+        "created_desc": "created_at DESC, user_id DESC",
+        "created_asc": "created_at ASC, user_id ASC",
+        "updated_desc": "last_updated DESC, user_id DESC",
+        "updated_asc": "last_updated ASC, user_id ASC",
+        "archived_desc": "archived_at DESC, user_id DESC",
+        "archived_asc": "archived_at ASC, user_id ASC",
+    }
+
+    def _parse_positive_query_int(name: str, default: int, min_value: int = 1, max_value: int = 200) -> int:
+        raw_value = request.args.get(name, default)
+        try:
+            parsed = int(raw_value)
+        except (TypeError, ValueError):
+            parsed = int(default)
+        return max(min_value, min(max_value, parsed))
+
+    def _normalize_profile_status(value: str | None) -> str:
+        normalized = str(value or "active").strip().lower()
+        return normalized if normalized in {"active", "archived"} else "active"
+
+    @bp.route("/api/profiles", methods=["GET"], endpoint="api_profiles_list")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def api_profiles_list():
+        status = _normalize_profile_status(request.args.get("status"))
+        query = (request.args.get("q") or "").strip().lower()
+        program = (request.args.get("program") or "").strip()
+        page_size = _parse_positive_query_int("page_size", default=10, min_value=1, max_value=200)
+        page = _parse_positive_query_int("page", default=1, min_value=1, max_value=1000000)
+
+        default_sort = "created_desc" if status == "active" else "archived_desc"
+        requested_sort = str(request.args.get("sort") or default_sort).strip().lower()
+        sort_key = requested_sort if requested_sort in _PROFILE_SORT_SQL else default_sort
+        order_by_sql = _PROFILE_SORT_SQL[sort_key]
+
+        status_condition = "archived_at IS NULL" if status == "active" else "archived_at IS NOT NULL"
+        where_clauses = [status_condition]
+        where_params: list[object] = []
+
+        if query:
+            where_clauses.append("(LOWER(COALESCE(name, '')) LIKE %s OR LOWER(COALESCE(sr_code, '')) LIKE %s)")
+            like_query = f"%{query}%"
+            where_params.extend([like_query, like_query])
+
+        if program:
+            where_clauses.append("course = %s")
+            where_params.append(program)
+
+        where_sql = " AND ".join(where_clauses)
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+
+        c.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END), 0) AS active_count,
+                COALESCE(SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS archived_count
+            FROM users
+            """
+        )
+        counts_row = c.fetchone() or (0, 0)
+        counts = {
+            "active": int(counts_row[0] or 0),
+            "archived": int(counts_row[1] or 0),
+        }
+
+        c.execute(f"SELECT COUNT(*) FROM users WHERE {where_sql}", tuple(where_params))
+        total = int((c.fetchone() or [0])[0] or 0)
+        total_pages = max(1, math.ceil(total / page_size))
+        if page > total_pages:
+            page = total_pages
+        offset = (page - 1) * page_size
+
+        c.execute(
+            f"""
+            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated, archived_at
+            FROM users
+            WHERE {where_sql}
+            ORDER BY {order_by_sql}
+            LIMIT %s OFFSET %s
+            """,
+            tuple([*where_params, page_size, offset]),
+        )
+        rows = [
+            {
+                "user_id": row[0],
+                "name": row[1] or "-",
+                "sr_code": row[2] or "-",
+                "gender": row[3] or "-",
+                "program": row[4] or "-",
+                "created_at": _normalize_timestamp_for_json(row[5], "-"),
+                "last_updated": _normalize_timestamp_for_json(row[6], "-"),
+                "archived_at": _normalize_timestamp_for_json(row[7], "-"),
+            }
+            for row in c.fetchall()
+        ]
+
+        c.execute(
+            f"""
+            SELECT DISTINCT course
+            FROM users
+            WHERE {status_condition} AND course IS NOT NULL AND TRIM(course) <> ''
+            ORDER BY course ASC
+            """
+        )
+        programs = [str(row[0]).strip() for row in c.fetchall() if str(row[0] or "").strip()]
+        conn.close()
+
+        return jsonify(
+            {
+                "rows": rows,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "counts": counts,
+                "programs": programs,
+                "status": status,
+                "sort": sort_key,
+            }
+        )
+
     @bp.route("/api/registered-profiles", methods=["GET"], endpoint="api_registered_profiles")
     @login_required
     @role_required("super_admin", "library_admin")
@@ -2243,6 +2333,39 @@ def create_routes_blueprint(deps):
             deps["replace_user"](refreshed_user)
         bump_profiles_version(deps["db_path"])
         log_action("UPDATE_PROFILE_RECORD", target=f"{name} ({sr_code})")
+        return jsonify({"success": True, "user_id": int(user_id)})
+
+    @bp.route("/api/profiles/<int:user_id>", methods=["DELETE"], endpoint="api_profiles_delete")
+    @login_required
+    @role_required("super_admin", "library_admin")
+    def api_profiles_delete(user_id):
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute("SELECT name, sr_code, archived_at FROM users WHERE user_id = %s", (user_id,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"success": False, "message": "Profile not found."}), 404
+
+        name = row[0] or "-"
+        sr_code = row[1] or "-"
+        archived_at = row[2]
+        if archived_at is None or not str(archived_at).strip():
+            conn.close()
+            return jsonify({"success": False, "message": "Active profiles must be archived before deletion."}), 409
+
+        try:
+            c.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "message": f"Failed to delete profile: {exc}"}), 400
+
+        conn.close()
+        bump_profiles_version(deps["db_path"])
+        deps["remove_user_embedding"](int(user_id))
+        log_action("DELETE_PROFILE_RECORD", target=f"{name} ({sr_code})")
         return jsonify({"success": True, "user_id": int(user_id)})
 
     @bp.route("/api/archive-profiles", methods=["GET"], endpoint="api_archive_profiles")

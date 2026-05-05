@@ -33,6 +33,8 @@ class ApiContractRouteTests(unittest.TestCase):
         self.assertIn('/api/analytics/occupancy-trends', source)
         self.assertIn('/api/audit-log', source)
         self.assertIn('/api/profiles', source)
+        self.assertIn('/api/profiles/<int:user_id>', source)
+        self.assertNotIn('/registered-profiles/delete/<int:user_id>', source)
 
     def test_settings_threshold_help_text_matches_comparator_semantics(self) -> None:
         source = Path("frontend/src/pages/Settings.jsx").read_text(encoding="utf-8")

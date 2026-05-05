@@ -71,7 +71,7 @@ export default function Sidebar() {
           <ul className="sidebar-nav" id="sidebar-nav">
             <li className="nav-heading">Library System</li>
             <NavItem to="/dashboard" icon="bi bi-house-door" label="Dashboard" />
-            {isAdmin ? <NavItem to="/registered-profiles" icon="bi bi-people" label="Registered Profiles" /> : null}
+            {isAdmin ? <NavItem to="/profile-management" icon="bi bi-people" label="Profile Management" /> : null}
             {isStaff ? <NavItem to="/entry-logs" icon="bi bi-clipboard-check" label="Entry & Exit Logs" /> : null}
             {role ? <NavItem to="/program-monthly-visits" icon="bi bi-bar-chart" label="Program Monthly Visits" /> : null}
 

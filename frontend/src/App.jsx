@@ -4,9 +4,7 @@ import Layout from './components/Layout.jsx';
 import { AppProviders, useSession } from './contexts.jsx';
 import LoginPage from './pages/Login.jsx';
 import DashboardPage from './pages/Dashboard.jsx';
-import RegisteredProfilesPage from './pages/RegisteredProfiles.jsx';
-import ArchiveProfilesPage from './pages/ArchiveProfiles.jsx';
-import ArchivedProfilesPage from './pages/ArchivedProfiles.jsx';
+import ProfileManagementPage from './pages/ProfileManagement.jsx';
 import EntryExitLogsPage from './pages/EntryExitLogs.jsx';
 import ProgramMonthlyVisitsPage from './pages/ProgramMonthlyVisits.jsx';
 import AnalyticsReportsPage from './pages/AnalyticsReports.jsx';
@@ -91,9 +89,10 @@ export default function App() {
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="registered-profiles" element={<RegisteredProfilesPage />} />
-          <Route path="archive-profiles" element={<ArchiveProfilesPage />} />
-          <Route path="archived-profiles" element={<ArchivedProfilesPage />} />
+          <Route path="profile-management" element={<ProfileManagementPage />} />
+          <Route path="registered-profiles" element={<Navigate to="/profile-management" replace />} />
+          <Route path="archive-profiles" element={<Navigate to="/profile-management?status=active" replace />} />
+          <Route path="archived-profiles" element={<Navigate to="/profile-management?status=archived" replace />} />
           <Route path="entry-logs" element={<EntryExitLogsPage />} />
           <Route path="program-monthly-visits" element={<ProgramMonthlyVisitsPage />} />
           <Route path="analytics-reports" element={<AnalyticsReportsPage />} />
