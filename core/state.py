@@ -411,6 +411,9 @@ class AppStateManager:
         )
 
     def start_manual_registration(self, track_id: int) -> None:
+        # Preserve current web session id (if any) so early captured samples
+        # can be synced immediately instead of waiting for next runtime poll.
+        existing_session_id = self._registration_state.session_id
         self._set_registration_flags(
             capture_requested=False,
             capture_active=True,
@@ -422,6 +425,8 @@ class AppStateManager:
         )
         self._reset_registration_collections()
         self._restart_registration_session(create_session_id=False)
+        if existing_session_id:
+            self._registration_state.session_id = existing_session_id
         self.set_registration_status_reason(
             "capture_locked",
             "Student face locked. Capturing required pose samples.",

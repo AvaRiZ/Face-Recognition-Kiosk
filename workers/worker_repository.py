@@ -152,9 +152,11 @@ class WorkerApiRepository:
         embeddings: dict[str, list[np.ndarray]],
     ) -> str | None:
         if face_crop is None or getattr(face_crop, "size", 0) == 0:
+            print("[REG-SAMPLE][QUEUE-SKIP] empty face_crop")
             return None
         success, encoded = cv2.imencode(".jpg", face_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
         if not success:
+            print("[REG-SAMPLE][QUEUE-SKIP] jpeg encode failed")
             return None
 
         payload_embeddings: dict[str, list[list[float]]] = {}
@@ -169,6 +171,7 @@ class WorkerApiRepository:
             if serialized_vectors:
                 payload_embeddings[str(model_name)] = serialized_vectors
         if not payload_embeddings:
+            print("[REG-SAMPLE][QUEUE-SKIP] no valid embeddings")
             return None
 
         payload = {
@@ -184,6 +187,15 @@ class WorkerApiRepository:
             "camera_id": int(self.camera_id),
         }
         if not payload["session_id"] or payload["pose"] not in {"front", "left", "right"}:
+            print(
+                f"[REG-SAMPLE][QUEUE-SKIP] invalid payload session_id='{payload['session_id']}' pose='{payload['pose']}'"
+            )
             return None
-        return self.outbound_queue.enqueue("registration_sample", payload)
+        entry_id = self.outbound_queue.enqueue("registration_sample", payload)
+        print(
+            "[REG-SAMPLE][QUEUED] "
+            f"entry_id={entry_id} sample_id={payload['sample_id']} session_id={payload['session_id']} "
+            f"pose={payload['pose']} quality={payload['quality']:.4f} camera_id={payload['camera_id']}"
+        )
+        return entry_id
 

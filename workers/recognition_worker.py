@@ -87,7 +87,20 @@ def _send_outbound_entry(api_client: ApiClient, entry: dict) -> bool:
         response = api_client.post_json("/api/internal/embedding-updates", payload)
         return bool(response.get("success"))
     if kind == "registration_sample":
+        sample_id = str(payload.get("sample_id") or "")
+        session_id = str(payload.get("session_id") or "")
+        pose = str(payload.get("pose") or "")
+        print(
+            "[REG-SAMPLE][SEND] "
+            f"sample_id={sample_id} session_id={session_id} pose={pose} "
+            f"queue_entry_id={entry.get('id')}"
+        )
         response = api_client.post_json("/api/internal/registration-samples", payload)
+        print(
+            "[REG-SAMPLE][ACK] "
+            f"sample_id={sample_id} session_id={session_id} success={bool(response.get('success'))} "
+            f"duplicate={bool(response.get('duplicate'))} capture_count={response.get('capture_count')}"
+        )
         return bool(response.get("success"))
     return True
 

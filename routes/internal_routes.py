@@ -425,38 +425,63 @@ def create_internal_blueprint(deps):
         face_jpeg_base64 = payload.get("face_jpeg_base64")
         embeddings = _deserialize_embeddings(payload.get("embeddings") or {})
 
+        def _log_reject(reason: str, status: int):
+            print(
+                "[REG-SAMPLE][REJECT] "
+                f"reason={reason} status={status} sample_id={sample_id} session_id={session_id} "
+                f"worker_role={worker_role} station_id={station_id} camera_id={camera_id} pose={pose}"
+            )
+
         if not sample_id:
+            _log_reject("missing_sample_id", 400)
             return _json_error("`sample_id` is required.", 400)
         if not session_id:
+            _log_reject("missing_session_id", 400)
             return _json_error("`session_id` is required.", 400)
         if worker_role != "entry":
+            _log_reject("non_entry_worker", 403)
             return _json_error("Registration sample ingestion only accepts entry worker payloads.", 403)
         if pose not in {"front", "left", "right"}:
+            _log_reject("invalid_pose", 400)
             return _json_error("`pose` must be one of: front, left, right.", 400)
         if quality is None:
+            _log_reject("missing_quality", 400)
             return _json_error("`quality` is required and must be numeric.", 400)
         if not embeddings:
+            _log_reject("invalid_embeddings", 400)
             return _json_error("`embeddings` is required and must contain valid vectors.", 400)
 
         reg_state_getter = deps.get("get_registration_state")
         capture_sample = deps.get("capture_registration_sample")
         claim_sample = deps.get("claim_registration_sample_id")
         if not callable(reg_state_getter) or not callable(capture_sample) or not callable(claim_sample):
+            _log_reject("ingestion_dependencies_unavailable", 503)
             return _json_error("Registration sample ingestion dependencies are unavailable.", 503)
 
         reg_state = reg_state_getter()
         active_session_id = str(getattr(reg_state, "session_id", "") or "").strip()
         if not active_session_id:
+            _log_reject("no_active_session", 409)
             return _json_error("No active registration session is available for sample ingestion.", 409)
         if session_id != active_session_id:
+            print(
+                "[REG-SAMPLE][SESSION-MISMATCH] "
+                f"sample_id={sample_id} payload_session_id={session_id} active_session_id={active_session_id}"
+            )
+            _log_reject("stale_session", 409)
             return _json_error("Registration session is stale. Start a new session and retry capture.", 409)
 
         face_crop = _decode_face_jpeg_base64(face_jpeg_base64)
         if face_crop is None or getattr(face_crop, "size", 0) == 0:
+            _log_reject("invalid_face_jpeg_base64", 400)
             return _json_error("`face_jpeg_base64` must contain a valid JPEG image.", 400)
 
         accepted = bool(claim_sample(session_id, sample_id))
         if not accepted:
+            print(
+                "[REG-SAMPLE][DUPLICATE] "
+                f"sample_id={sample_id} session_id={session_id} pose={pose}"
+            )
             return jsonify(
                 {
                     "success": True,
@@ -474,6 +499,12 @@ def create_internal_blueprint(deps):
         )
         capture_count = int(capture_sample(sample))
         reg_state = reg_state_getter()
+        print(
+            "[REG-SAMPLE][INGESTED] "
+            f"sample_id={sample_id} session_id={session_id} pose={pose} "
+            f"capture_count={capture_count}/{int(getattr(reg_state, 'max_captures', 0))} "
+            f"in_progress={bool(getattr(reg_state, 'in_progress', False))}"
+        )
         return jsonify(
             {
                 "success": True,
@@ -548,6 +579,29 @@ def create_internal_blueprint(deps):
                 row = c.fetchone()
                 if row:
                     user_id = int(row[0])
+            elif user_id is not None:
+                # Guard against stale worker user ids that no longer exist in host DB.
+                c.execute("SELECT 1 FROM users WHERE user_id = %s", (int(user_id),))
+                exists = c.fetchone() is not None
+                if not exists:
+                    fallback_user_id = None
+                    if sr_code:
+                        c.execute("SELECT user_id FROM users WHERE sr_code = %s", (sr_code,))
+                        fallback_row = c.fetchone()
+                        if fallback_row:
+                            fallback_user_id = int(fallback_row[0])
+                    if fallback_user_id is not None:
+                        print(
+                            "[RECOGNITION-EVENT][USER-ID-REMAP] "
+                            f"event_id={event_id} stale_user_id={user_id} remapped_user_id={fallback_user_id} sr_code={sr_code}"
+                        )
+                        user_id = fallback_user_id
+                    else:
+                        print(
+                            "[RECOGNITION-EVENT][USER-ID-DROPPED] "
+                            f"event_id={event_id} stale_user_id={user_id} sr_code={sr_code}"
+                        )
+                        user_id = None
 
             c.execute(
                 """
