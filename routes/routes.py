@@ -1009,6 +1009,14 @@ def create_routes_blueprint(deps):
             "can_save": role_name in {"super_admin", "library_admin"},
         }
 
+    def _read_registered_user_count() -> int:
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM users")
+        row = c.fetchone()
+        conn.close()
+        return int((row or [0])[0] or 0)
+
     def _build_settings_payload(role):
         role_name = str(role or "").strip().lower()
         permissions = _settings_permissions_for_role(role_name)
@@ -1016,7 +1024,7 @@ def create_routes_blueprint(deps):
         audit_rows, last_change = _read_settings_audit_rows(permissions["can_view_audit"])
         return {
             "role": role_name,
-            "user_count": deps["get_user_count"](),
+            "user_count": _read_registered_user_count(),
             "threshold": settings_state["threshold"],
             "quality_threshold": settings_state["quality_threshold"],
             "recognition_confidence_threshold": settings_state["recognition_confidence_threshold"],
@@ -1920,6 +1928,7 @@ def create_routes_blueprint(deps):
     @api_role_required("super_admin", "library_admin", "library_staff")
     def register_submit():
         deps["expire_registration_session_if_needed"]()
+        repository = deps["repository"]
         reg_state = deps["get_registration_state"]()
         pending_registration = reg_state.pending_registration or []
         if not pending_registration:
@@ -1954,7 +1963,6 @@ def create_routes_blueprint(deps):
             return jsonify({"success": False, "message": validation_message, "field": invalid_field}), 400
 
         if user_type == "enrolled":
-            repository = deps["repository"]
             existing = repository.get_user_by_sr_code(sr_code)
             if existing is not None:
                 return (
