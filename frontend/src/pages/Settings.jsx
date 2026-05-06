@@ -198,6 +198,31 @@ export default function SettingsPage() {
     }
   }
 
+  async function resetOccupancyDatabase() {
+    const firstConfirmation = await confirmAction({
+      title: 'Reset Occupancy Database?',
+      text: 'This will clear occupancy snapshots, capacity alerts, and tracked occupancy counts.',
+      confirmButtonText: 'Continue',
+      confirmButtonColor: '#dc3545'
+    });
+    if (!firstConfirmation) return;
+
+    const secondConfirmation = await confirmAction({
+      title: 'Final Confirmation',
+      text: 'Confirm again to reset occupancy tracking data and set occupancy to zero.',
+      confirmButtonText: 'Confirm Reset',
+      confirmButtonColor: '#dc3545'
+    });
+    if (!secondConfirmation) return;
+
+    try {
+      await fetchJson('/api/occupancy/reset', { method: 'POST' });
+      await showSuccess('Completed', 'Occupancy database reset successfully.');
+    } catch (error) {
+      await showError('Request Failed', getErrorMessage(error));
+    }
+  }
+
   if (loading) {
     return (
       <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '30vh' }}>
@@ -224,6 +249,7 @@ export default function SettingsPage() {
 
   const canEditThresholds = Boolean(permissions.can_edit_thresholds);
   const canEditOperational = Boolean(permissions.can_edit_operational);
+  const canResetOccupancyDatabase = canEditOperational;
   const canSave = Boolean(permissions.can_save);
   const canManageAdvancedOps = Boolean(permissions.can_manage_advanced_ops);
   const canViewAudit = Boolean(permissions.can_view_audit);
@@ -575,6 +601,22 @@ export default function SettingsPage() {
             </div>
           </form>
         </div>
+
+        {canResetOccupancyDatabase ? (
+          <div className="col-12">
+            <div className="card border-warning">
+              <div className="card-body">
+                <h5 className="card-title text-warning">Occupancy Operations</h5>
+                <p className="text-muted">
+                  <strong>Warning:</strong> This will reset occupancy tracking state and cannot be undone.
+                </p>
+                <button onClick={resetOccupancyDatabase} className="btn btn-outline-danger" type="button">
+                  Reset Occupancy Database
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {canManageAdvancedOps ? (
           <div className="col-12">

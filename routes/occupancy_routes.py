@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from flask import Blueprint, jsonify, request
 
+from auth import api_login_required, api_role_required, log_action
 from core.config import AppConfig
 from db import get_app_setting
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert
@@ -197,6 +198,57 @@ def get_summary() -> tuple:
 
     except Exception as exc:
         return _json_error(f"Failed to fetch summary: {str(exc)}", 500)
+
+
+@bp.route("/reset", methods=["POST"], endpoint="reset_occupancy")
+@api_login_required
+@api_role_required("super_admin", "library_admin")
+def reset_occupancy() -> tuple:
+    """Reset occupancy tracking tables and set today's occupancy state to zero."""
+    try:
+        config = AppConfig()
+        service = OccupancyService(config.db_path)
+        result = service.reset_tracking_database()
+
+        capacity_limit = resolve_capacity_limit(config.db_path, default=int(config.max_library_capacity))
+        warning_threshold = _resolve_warning_threshold(config.db_path, config.occupancy_warning_threshold)
+        occ_data = service.get_current_occupancy(
+            capacity_limit,
+            warning_threshold=warning_threshold,
+        )
+
+        emit_analytics_update(
+            "occupancy_reset",
+            {
+                "occupancy_count": int(occ_data["occupancy_count"]),
+                "daily_entries": int(occ_data["daily_entries"]),
+                "daily_exits": int(occ_data["daily_exits"]),
+                "capacity_warning": bool(occ_data["capacity_warning"]),
+            },
+        )
+        emit_capacity_threshold_alert(
+            {
+                "reason": "manual_occupancy_reset",
+                "capacity_warning": bool(occ_data["capacity_warning"]),
+                "level": "normal",
+                "status": "normal",
+                "message": "Occupancy tracking was reset.",
+                "occupancy_count": int(occ_data["occupancy_count"]),
+                "capacity_limit": int(occ_data["capacity_limit"]),
+                "occupancy_ratio": float(occ_data["occupancy_ratio"]),
+            }
+        )
+        log_action("RESET_OCCUPANCY_DATABASE", target=f"state_date:{result['state_date']}")
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "Occupancy database reset successfully.",
+                **result,
+            }
+        ), 200
+    except Exception as exc:
+        return _json_error(f"Failed to reset occupancy database: {str(exc)}", 500)
 
 
 @bp.route("/adjust", methods=["POST"], endpoint="adjust_occupancy")

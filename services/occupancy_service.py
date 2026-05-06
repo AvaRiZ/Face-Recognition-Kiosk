@@ -761,3 +761,45 @@ class OccupancyService:
             "threshold": int(drift_threshold),
             "alerted": exceeds,
         }
+
+    def reset_tracking_database(self) -> dict:
+        """Clear occupancy tracking tables and reset today's tracked state to zero."""
+        now = self._as_utc_timestamp()
+        state_date = now.date().isoformat()
+
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+
+        c.execute("DELETE FROM occupancy_snapshots")
+        cleared_snapshots = int(c.rowcount or 0)
+
+        c.execute("DELETE FROM occupancy_alerts")
+        cleared_alerts = int(c.rowcount or 0)
+
+        c.execute("DELETE FROM daily_occupancy_state")
+        cleared_daily_state_rows = int(c.rowcount or 0)
+
+        c.execute(
+            """
+            INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
+            VALUES (%s, 0, 0, %s)
+            ON CONFLICT(state_date) DO UPDATE SET
+                daily_entries = EXCLUDED.daily_entries,
+                daily_exits = EXCLUDED.daily_exits,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (state_date, now),
+        )
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "state_date": state_date,
+            "daily_entries": 0,
+            "daily_exits": 0,
+            "occupancy_count": 0,
+            "cleared_snapshots": cleared_snapshots,
+            "cleared_alerts": cleared_alerts,
+            "cleared_daily_state_rows": cleared_daily_state_rows,
+        }
