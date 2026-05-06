@@ -91,7 +91,7 @@ class UserRepository:
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim
+            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type
             FROM users
             WHERE archived_at IS NULL
             """
@@ -103,7 +103,7 @@ class UserRepository:
         conn.close()
 
         users: list[User] = []
-        for user_id, name, sr_code, gender, program, legacy_emb_blob, image_paths_raw, embedding_dim in rows:
+        for user_id, name, sr_code, gender, program, legacy_emb_blob, image_paths_raw, embedding_dim, user_type in rows:
             embeddings = embeddings_by_user_id.get(int(user_id)) or self._deserialize_legacy_embeddings_blob(legacy_emb_blob)
             image_paths = image_paths_raw.split(";") if image_paths_raw else []
             users.append(
@@ -113,6 +113,7 @@ class UserRepository:
                     sr_code=sr_code or "",
                     gender=gender or "",
                     program=program or "",
+                    user_type=user_type or "enrolled",
                     embeddings=embeddings,
                     image_paths=image_paths,
                     embedding_dim=int(embedding_dim or infer_embedding_dim(embeddings)),
@@ -125,7 +126,7 @@ class UserRepository:
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim
+            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type
             FROM users
             WHERE sr_code = %s
             """,
@@ -146,6 +147,7 @@ class UserRepository:
             sr_code=row[2] or "",
             gender=row[3] or "",
             program=row[4] or "",
+            user_type=row[8] or "enrolled",
             embeddings=embeddings,
             image_paths=image_paths,
             embedding_dim=int(row[7] or infer_embedding_dim(embeddings)),
@@ -156,7 +158,7 @@ class UserRepository:
         c = conn.cursor()
         c.execute(
             """
-            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim
+            SELECT user_id, name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type
             FROM users
             WHERE user_id = %s
             """,
@@ -177,6 +179,7 @@ class UserRepository:
             sr_code=row[2] or "",
             gender=row[3] or "",
             program=row[4] or "",
+            user_type=row[8] or "enrolled",
             embeddings=embeddings,
             image_paths=image_paths,
             embedding_dim=int(row[7] or infer_embedding_dim(embeddings)),
@@ -206,6 +209,7 @@ class UserRepository:
                     SET name = %s,
                         gender = %s,
                         course = %s,
+                        user_type = %s,
                         image_paths = %s,
                         embedding_dim = %s,
                         last_updated = CURRENT_TIMESTAMP
@@ -215,6 +219,7 @@ class UserRepository:
                         user.name,
                         user.gender,
                         user.program,
+                        user.user_type,
                         ";".join(merged_paths),
                         infer_embedding_dim(merged_embeddings),
                         user_id,
@@ -227,6 +232,7 @@ class UserRepository:
                     SET name = %s,
                         gender = %s,
                         course = %s,
+                        user_type = %s,
                         embeddings = %s,
                         image_paths = %s,
                         embedding_dim = %s,
@@ -237,6 +243,7 @@ class UserRepository:
                         user.name,
                         user.gender,
                         user.program,
+                        user.user_type,
                         self._serialize_legacy_embeddings_blob(merged_embeddings),
                         ";".join(merged_paths),
                         infer_embedding_dim(merged_embeddings),
@@ -252,8 +259,8 @@ class UserRepository:
 
             c.execute(
                 """
-                INSERT INTO users (name, sr_code, gender, course, embeddings, image_paths, embedding_dim)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO users (name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING user_id
                 """,
                 (
@@ -264,6 +271,7 @@ class UserRepository:
                     legacy_blob,
                     ";".join(user.image_paths),
                     infer_embedding_dim(normalized_embeddings),
+                    user.user_type,
                 ),
             )
             user_id = int(c.fetchone()[0])

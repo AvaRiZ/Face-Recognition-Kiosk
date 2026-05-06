@@ -20,6 +20,7 @@ class User:
     sr_code: str
     gender: str = ""
     program: str = ""
+    user_type: str = "enrolled"
     embeddings: EmbeddingMap = field(default_factory=dict)
     image_paths: list[str] = field(default_factory=list)
     embedding_dim: int = 0

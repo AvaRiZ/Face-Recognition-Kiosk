@@ -525,14 +525,14 @@ def create_routes_blueprint(deps):
             return False
         return len(pending_registration) >= int(reg_state.total_retained_samples)
 
-    def _validate_registration_fields(name: str, sr_code: str, gender: str, program: str):
+    def _validate_registration_fields(name: str, sr_code: str, gender: str, program: str, user_type: str = "enrolled"):
         allowed_genders = {"Male", "Female", "Other"}
         normalized_name = " ".join(name.split())
         normalized_program = " ".join(program.split())
         normalized_sr_code = sr_code.strip()
 
-        if not normalized_name or not normalized_sr_code or not gender or not normalized_program:
-            return False, "Name, SR Code, gender, and program are required.", None
+        if not normalized_name or not gender:
+            return False, "Name and gender are required.", "name"
 
         if "," not in normalized_name:
             return False, "Use the name format: Last Name, First Name.", "name"
@@ -544,11 +544,25 @@ def create_routes_blueprint(deps):
         if not re.fullmatch(r"[A-Za-z][A-Za-z .,'-]{1,79}", normalized_name):
             return False, "Name contains invalid characters.", "name"
 
-        if not re.fullmatch(r"\d{2}-\d{5}", normalized_sr_code):
-            return False, "SR Code must use the format 23-12345.", "sr_code"
-
         if gender not in allowed_genders:
             return False, "Please select a valid gender.", "gender"
+
+        if user_type == "visitor":
+            if normalized_sr_code:
+                if not re.fullmatch(r"\d{2}-\d{5}", normalized_sr_code):
+                    return False, "SR Code must use the format 23-12345.", "sr_code"
+            if normalized_program:
+                if len(normalized_program) < 4 or len(normalized_program) > 120:
+                    return False, "Program must be between 4 and 120 characters.", "program"
+                if not re.fullmatch(r"[A-Za-z0-9&(),./' -]+", normalized_program):
+                    return False, "Program contains invalid characters.", "program"
+            return True, "", None
+
+        if not normalized_sr_code or not normalized_program:
+            return False, "Name, SR Code, gender, and program are required.", None
+
+        if not re.fullmatch(r"\d{2}-\d{5}", normalized_sr_code):
+            return False, "SR Code must use the format 23-12345.", "sr_code"
 
         if len(normalized_program) < 4 or len(normalized_program) > 120:
             return False, "Program must be between 4 and 120 characters.", "program"
@@ -1921,35 +1935,41 @@ def create_routes_blueprint(deps):
                 400,
             )
 
+        registration_type = str(request.form.get("user_type", "student") or "student").strip().lower()
+        user_type = "visitor" if registration_type == "visitor" else "enrolled"
         name = request.form.get("name", "").strip()
-        sr_code = request.form.get("sr_code", "").strip()
+        sr_code = request.form.get("sr_code", "").strip() if registration_type != "visitor" else request.form.get("sr_code", "").strip()
+        if registration_type == "visitor" and sr_code == "":
+            sr_code = None
         gender = request.form.get("gender", "").strip()
         program = request.form.get("program", "").strip()
         is_valid, validation_message, invalid_field = _validate_registration_fields(
             name,
-            sr_code,
+            sr_code or "",
             gender,
             program,
+            user_type=user_type,
         )
         if not is_valid:
             return jsonify({"success": False, "message": validation_message, "field": invalid_field}), 400
 
-        repository = deps["repository"]
-        existing = repository.get_user_by_sr_code(sr_code)
-        if existing is not None:
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "message": f"SR Code {sr_code} is already registered to {existing.name}. Use a different SR Code.",
-                    }
-                ),
-                409,
-            )
+        if user_type == "enrolled":
+            repository = deps["repository"]
+            existing = repository.get_user_by_sr_code(sr_code)
+            if existing is not None:
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "message": f"SR Code {sr_code} is already registered to {existing.name}. Use a different SR Code.",
+                        }
+                    ),
+                    409,
+                )
 
         all_embeddings = {}
         image_paths = []
-        user_folder = os.path.join(deps["base_save_dir"], sr_code)
+        user_folder = os.path.join(deps["base_save_dir"], sr_code or "visitor")
         os.makedirs(user_folder, exist_ok=True)
 
         for index, face_sample in enumerate(pending_registration):
@@ -1967,15 +1987,15 @@ def create_routes_blueprint(deps):
                 sr_code=sr_code,
                 gender=gender,
                 program=program,
+                user_type=user_type,
                 embeddings=all_embeddings,
                 image_paths=image_paths,
                 embedding_dim=0,
             )
         )
         bump_profiles_version(deps["db_path"])
-        saved_user = repository.get_user_by_sr_code(sr_code)
+        saved_user = repository.get_user_by_id(user_id)
         if saved_user:
-            saved_user.id = user_id
             deps["replace_user"](saved_user)
 
         deps["complete_registration"]()

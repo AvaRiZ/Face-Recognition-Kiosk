@@ -140,6 +140,10 @@ const INITIAL_INFO = {
 };
 
 const INITIAL_FORM = { name: '', sr_code: '', gender: '', college: '', program: '' };
+const REGISTRATION_TYPES = {
+  student: 'student',
+  visitor: 'visitor'
+};
 
 const ALLOWED_GENDERS = new Set(['Male', 'Female', 'Other']);
 const NAME_PATTERN = /^[A-Za-z][A-Za-z .,'-]{1,79}$/;
@@ -282,7 +286,7 @@ function formatCountdown(secondsRemaining) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
-function validateField(field, form) {
+function validateField(field, form, registrationType) {
   const normalizedName = normalizeSpaces(form.name || '');
   const normalizedSrCode = (form.sr_code || '').trim();
   const normalizedProgram = normalizeSpaces(form.program || '');
@@ -303,7 +307,7 @@ function validateField(field, form) {
     }
   }
 
-  if (field === 'sr_code') {
+  if (field === 'sr_code' && registrationType !== REGISTRATION_TYPES.visitor) {
     if (!normalizedSrCode) {
       return 'SR Code is required.';
     }
@@ -321,13 +325,13 @@ function validateField(field, form) {
     }
   }
 
-  if (field === 'college') {
+  if (field === 'college' && registrationType !== REGISTRATION_TYPES.visitor) {
     if (!form.college) {
       return 'College is required.';
     }
   }
 
-  if (field === 'program') {
+  if (field === 'program' && registrationType !== REGISTRATION_TYPES.visitor) {
     if (!normalizedProgram) {
       return 'Program is required.';
     }
@@ -342,7 +346,7 @@ function validateField(field, form) {
   return '';
 }
 
-function validateRegistrationForm(form) {
+function validateRegistrationForm(form, registrationType) {
   const errors = {};
   const normalized = {
     name: normalizeSpaces(form.name || ''),
@@ -352,8 +356,13 @@ function validateRegistrationForm(form) {
     program: normalizeSpaces(form.program || '')
   };
 
-  ['name', 'sr_code', 'gender', 'college', 'program'].forEach((field) => {
-    const fieldError = validateField(field, normalized);
+  const fieldsToValidate = ['name', 'gender'];
+  if (registrationType !== REGISTRATION_TYPES.visitor) {
+    fieldsToValidate.push('sr_code', 'college', 'program');
+  }
+
+  fieldsToValidate.forEach((field) => {
+    const fieldError = validateField(field, normalized, registrationType);
     if (fieldError) {
       errors[field] = fieldError;
     }
@@ -460,7 +469,9 @@ export default function RegisterPage() {
   const [result, setResult] = React.useState(null);
   const [programOptionsByCollege, setProgramOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
   const [collegeOptions, setCollegeOptions] = React.useState(DEFAULT_COLLEGE_OPTIONS);
+  const [registrationType, setRegistrationType] = React.useState(REGISTRATION_TYPES.student);
   const [form, setForm] = React.useState(INITIAL_FORM);
+  const isVisitor = registrationType === REGISTRATION_TYPES.visitor;
 
   React.useEffect(() => {
     let cancelled = false;
@@ -756,7 +767,7 @@ export default function RegisterPage() {
       return;
     }
 
-    const { errors, normalized } = validateRegistrationForm(form);
+    const { errors, normalized } = validateRegistrationForm(form, registrationType);
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors);
       setTouchedFields({
@@ -770,18 +781,20 @@ export default function RegisterPage() {
       return;
     }
 
+    const summary = [
+      `${registrationType === REGISTRATION_TYPES.visitor ? 'Visitor' : 'Student'}: ${normalized.name}`,
+      `Gender: ${normalized.gender}`,
+      `Retained Samples: ${info.total_progress?.retained ?? info.sample_previews?.length ?? 0} / ${info.total_progress?.retained_required ?? 0}`,
+      `Capture Ready: ${info.ready_to_submit ? 'Yes' : 'No'}`
+    ];
+    if (registrationType !== REGISTRATION_TYPES.visitor) {
+      summary.splice(1, 0, `SR Code: ${normalized.sr_code}`, `College: ${normalized.college}`, `Program: ${normalized.program}`);
+    }
+
     const reviewConfirmed = await confirmAction({
       icon: 'info',
       title: 'Review Registration Before Submit',
-      text: [
-        `Student: ${normalized.name}`,
-        `SR Code: ${normalized.sr_code}`,
-        `Gender: ${normalized.gender}`,
-        `College: ${normalized.college}`,
-        `Program: ${normalized.program}`,
-        `Retained Samples: ${info.total_progress?.retained ?? info.sample_previews?.length ?? 0} / ${info.total_progress?.retained_required ?? 0}`,
-        `Capture Ready: ${info.ready_to_submit ? 'Yes' : 'No'}`
-      ].join('\n'),
+      text: summary.join('\n'),
       confirmButtonText: 'Submit Registration',
       confirmButtonColor: '#0d6efd'
     });
@@ -792,18 +805,36 @@ export default function RegisterPage() {
     setSubmitting(true);
 
     const formData = new FormData();
+    formData.append('user_type', registrationType);
     formData.append('name', normalized.name);
-    formData.append('sr_code', normalized.sr_code);
+    if (registrationType !== REGISTRATION_TYPES.visitor) {
+      formData.append('sr_code', normalized.sr_code);
+      formData.append('program', normalized.program);
+      formData.append('college', normalized.college);
+    }
     formData.append('gender', normalized.gender);
-    formData.append('program', normalized.program);
 
     try {
       const response = await fetch('/register', {
         method: 'POST',
         credentials: 'include',
-        body: formData
+        body: formData,
+        headers: {
+          Accept: 'application/json'
+        }
       });
-      const payload = await response.json();
+
+      let payload;
+      try {
+        payload = await response.json();
+      } catch (jsonError) {
+        const responseText = await response.text();
+        console.error('Unexpected non-JSON /register response:', response.status, responseText);
+        const message = response.status >= 500 ? 'Server error while saving registration.' : 'Unexpected server response while saving registration.';
+        setCaptureError(message);
+        await showError('Registration Failed', message);
+        return;
+      }
 
       if (!response.ok || !payload.success) {
         if (payload.field) {
@@ -1001,9 +1032,9 @@ export default function RegisterPage() {
                         <div className="text-uppercase text-muted fw-semibold" style={{ fontSize: '11px', letterSpacing: '0.08em' }}>
                           First-Time Registration Only
                         </div>
-                        <h5 className="card-title mb-1">Complete first-time student registration</h5>
+                        <h5 className="card-title mb-1">Complete first-time registration</h5>
                         <p className="text-muted mb-0" style={{ fontSize: '14px' }}>
-                          Use this page only for students who are not yet registered. Complete capture first, then submit details.
+                          Use this page for students or visitors who are not yet registered. Complete capture first, then submit details.
                         </p>
                       </div>
                       <span className={`badge rounded-pill ${statePresentation.badgeClass}`} style={{ fontSize: '13px' }}>
@@ -1222,10 +1253,35 @@ export default function RegisterPage() {
                             </div>
                             <ul className="mb-0 ps-3 text-muted" style={{ fontSize: '14px', lineHeight: 1.7 }}>
                               <li>Use the format Last Name, First Name.</li>
-                              <li>SR Code must follow the format 23-12345.</li>
-                              <li>Program search is available without selecting college first.</li>
-                              <li>Reset samples only if the wrong student was captured or the set is incomplete.</li>
+                              <li>{isVisitor ? 'Visitor registration does not require SR Code, college, or program.' : 'SR Code must follow the format 23-12345.'}</li>
+                              {!isVisitor ? <li>Program search is available without selecting college first.</li> : null}
+                              <li>Reset samples only if the wrong person was captured or the set is incomplete.</li>
                             </ul>
+                          </div>
+                        </div>
+
+                        <div className="col-12">
+                          <div className="btn-group" role="group" aria-label="Registration type selector">
+                            <button
+                              type="button"
+                              className={`btn ${registrationType === REGISTRATION_TYPES.student ? 'btn-primary' : 'btn-outline-secondary'}`}
+                              onClick={() => setRegistrationType(REGISTRATION_TYPES.student)}
+                            >
+                              Student
+                            </button>
+                            <button
+                              type="button"
+                              className={`btn ${registrationType === REGISTRATION_TYPES.visitor ? 'btn-primary' : 'btn-outline-secondary'}`}
+                              onClick={() => {
+                                setRegistrationType(REGISTRATION_TYPES.visitor);
+                                setForm((prev) => ({ ...prev, sr_code: '', college: '', program: '' }));
+                              }}
+                            >
+                              Visitor
+                            </button>
+                          </div>
+                          <div className="text-muted mt-2" style={{ fontSize: '14px' }}>
+                            Select the registration type before completing the details form.
                           </div>
                         </div>
 
@@ -1258,31 +1314,33 @@ export default function RegisterPage() {
                           />
                           {fieldErrors.name ? <div className="invalid-feedback">{fieldErrors.name}</div> : null}
                           <div className="form-text" style={{ fontSize: '14px' }}>
-                            Enter the official student name using Last Name, First Name.
+                            Enter the official {registrationType === REGISTRATION_TYPES.visitor ? 'visitor' : 'student'} name using Last Name, First Name.
                           </div>
                         </div>
 
-                        <div className="col-md-6">
-                          <label htmlFor="sr_code" className="form-label" style={{ fontSize: '14px' }}>
-                            SR Code
-                          </label>
-                          <input
-                            type="text"
-                            id="sr_code"
-                            name="sr_code"
-                            className={`form-control ${fieldErrors.sr_code ? 'is-invalid' : ''}`}
-                            placeholder="23-12345"
-                            value={form.sr_code}
-                            onChange={(ev) => updateForm('sr_code', ev.target.value)}
-                            onBlur={() => handleFieldBlur('sr_code')}
-                            disabled={formLocked}
-                            required
-                          />
-                          {fieldErrors.sr_code ? <div className="invalid-feedback">{fieldErrors.sr_code}</div> : null}
-                          <div className="form-text" style={{ fontSize: '14px' }}>
-                            Duplicate SR Codes are blocked to prevent registration conflicts.
+                        {!isVisitor ? (
+                          <div className="col-md-6">
+                            <label htmlFor="sr_code" className="form-label" style={{ fontSize: '14px' }}>
+                              SR Code
+                            </label>
+                            <input
+                              type="text"
+                              id="sr_code"
+                              name="sr_code"
+                              className={`form-control ${fieldErrors.sr_code ? 'is-invalid' : ''}`}
+                              placeholder="23-12345"
+                              value={form.sr_code}
+                              onChange={(ev) => updateForm('sr_code', ev.target.value)}
+                              onBlur={() => handleFieldBlur('sr_code')}
+                              disabled={formLocked}
+                              required={!isVisitor}
+                            />
+                            {fieldErrors.sr_code ? <div className="invalid-feedback">{fieldErrors.sr_code}</div> : null}
+                            <div className="form-text" style={{ fontSize: '14px' }}>
+                              Duplicate SR Codes are blocked to prevent registration conflicts.
+                            </div>
                           </div>
-                        </div>
+                        ) : null}
 
                         <div className="col-md-6">
                           <label htmlFor="gender" className="form-label" style={{ fontSize: '14px' }}>
@@ -1306,57 +1364,61 @@ export default function RegisterPage() {
                           {fieldErrors.gender ? <div className="invalid-feedback">{fieldErrors.gender}</div> : null}
                         </div>
 
-                        <div className="col-md-6">
-                          <label htmlFor="college" className="form-label" style={{ fontSize: '14px' }}>
-                            College
-                          </label>
-                          <select
-                            id="college"
-                            name="college"
-                            className={`form-select ${fieldErrors.college ? 'is-invalid' : ''}`}
-                            value={form.college}
-                            onChange={(ev) => updateForm('college', ev.target.value)}
-                            onBlur={() => handleFieldBlur('college')}
-                            disabled={formLocked}
-                            required
-                          >
-                            <option value="">Select college</option>
-                            {collegeOptions.map((college) => (
-                              <option key={college} value={college}>
-                                {college}
-                              </option>
-                            ))}
-                          </select>
-                          {fieldErrors.college ? <div className="invalid-feedback">{fieldErrors.college}</div> : null}
-                        </div>
+                        {!isVisitor ? (
+                          <>
+                            <div className="col-md-6">
+                              <label htmlFor="college" className="form-label" style={{ fontSize: '14px' }}>
+                                College
+                              </label>
+                              <select
+                                id="college"
+                                name="college"
+                                className={`form-select ${fieldErrors.college ? 'is-invalid' : ''}`}
+                                value={form.college}
+                                onChange={(ev) => updateForm('college', ev.target.value)}
+                                onBlur={() => handleFieldBlur('college')}
+                                disabled={formLocked}
+                                required={!isVisitor}
+                              >
+                                <option value="">Select college</option>
+                                {collegeOptions.map((college) => (
+                                  <option key={college} value={college}>
+                                    {college}
+                                  </option>
+                                ))}
+                              </select>
+                              {fieldErrors.college ? <div className="invalid-feedback">{fieldErrors.college}</div> : null}
+                            </div>
 
-                        <div className="col-md-6">
-                          <label htmlFor="program" className="form-label" style={{ fontSize: '14px' }}>
-                            Program
-                          </label>
-                          <input
-                            type="text"
-                            id="program"
-                            name="program"
-                            className={`form-control ${fieldErrors.program ? 'is-invalid' : ''}`}
-                            list="program-options"
-                            placeholder="Search or type a program"
-                            value={form.program}
-                            onChange={(ev) => updateForm('program', ev.target.value)}
-                            onBlur={() => handleFieldBlur('program')}
-                            disabled={formLocked}
-                            required
-                          />
-                          {fieldErrors.program ? <div className="invalid-feedback">{fieldErrors.program}</div> : null}
-                          <datalist id="program-options">
-                            {allProgramOptions.map((program) => (
-                              <option key={program} value={program} />
-                            ))}
-                          </datalist>
-                          <div className="form-text" style={{ fontSize: '14px' }}>
-                            Program is searchable across all colleges. Known programs auto-fill the matching college.
-                          </div>
-                        </div>
+                            <div className="col-md-6">
+                              <label htmlFor="program" className="form-label" style={{ fontSize: '14px' }}>
+                                Program
+                              </label>
+                              <input
+                                type="text"
+                                id="program"
+                                name="program"
+                                className={`form-control ${fieldErrors.program ? 'is-invalid' : ''}`}
+                                list="program-options"
+                                placeholder="Search or type a program"
+                                value={form.program}
+                                onChange={(ev) => updateForm('program', ev.target.value)}
+                                onBlur={() => handleFieldBlur('program')}
+                                disabled={formLocked}
+                                required={!isVisitor}
+                              />
+                              {fieldErrors.program ? <div className="invalid-feedback">{fieldErrors.program}</div> : null}
+                              <datalist id="program-options">
+                                {allProgramOptions.map((program) => (
+                                  <option key={program} value={program} />
+                                ))}
+                              </datalist>
+                              <div className="form-text" style={{ fontSize: '14px' }}>
+                                Program is searchable across all colleges. Known programs auto-fill the matching college.
+                              </div>
+                            </div>
+                          </>
+                        ) : null}
 
                         <div className="col-12">
                           <div className="alert alert-info d-flex align-items-start gap-3 mb-0">
