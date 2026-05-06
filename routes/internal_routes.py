@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import time
 from datetime import datetime, timezone
 
+import cv2
 import numpy as np
 from flask import Blueprint, jsonify, request
 
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert, emit_unrecognized_detection
-from core.models import User
+from core.models import RegistrationSample, User
 from db import connect as db_connect
 from db import get_app_setting
 from services.occupancy_service import OccupancyService, resolve_capacity_limit
@@ -115,6 +118,102 @@ def _deserialize_embeddings(payload_embeddings: dict) -> dict[str, list[np.ndarr
     return normalized
 
 
+def _decode_face_jpeg_base64(encoded_image: str) -> np.ndarray | None:
+    text = str(encoded_image or "").strip()
+    if not text:
+        return None
+    if "," in text and text.lower().startswith("data:"):
+        _, text = text.split(",", 1)
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    buffer = np.frombuffer(raw, dtype=np.uint8)
+    if buffer.size == 0:
+        return None
+    return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+
+def _parse_observed_timestamp(value) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return time.time()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return float(parsed.timestamp())
+    except Exception:
+        return time.time()
+
+
+def _parse_utc_datetime(value) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return datetime.now(timezone.utc)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return datetime.now(timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _build_daily_occupancy_state(row, fallback_state_date: str, fallback_updated_at: datetime) -> dict:
+    if not row:
+        return {
+            "state_date": fallback_state_date,
+            "daily_entries": 0,
+            "daily_exits": 0,
+            "occupancy_count": 0,
+            "updated_at": fallback_updated_at.isoformat(),
+        }
+
+    tracked_entries = int(row[1] or 0)
+    tracked_exits = int(row[2] or 0)
+    return {
+        "state_date": row[0],
+        "daily_entries": tracked_entries,
+        "daily_exits": tracked_exits,
+        "occupancy_count": max(0, tracked_entries - tracked_exits),
+        "updated_at": row[3],
+    }
+
+
+def _upsert_daily_occupancy_state(cursor, captured_at: datetime, event_type: str) -> dict:
+    state_date = captured_at.date().isoformat()
+    daily_entries = 1 if event_type == "entry" else 0
+    daily_exits = 1 if event_type == "exit" else 0
+    cursor.execute(
+        """
+        INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT(state_date) DO UPDATE SET
+            daily_entries = daily_occupancy_state.daily_entries + excluded.daily_entries,
+            daily_exits = daily_occupancy_state.daily_exits + excluded.daily_exits,
+            updated_at = excluded.updated_at
+        """,
+        (state_date, daily_entries, daily_exits, captured_at),
+    )
+    cursor.execute(
+        """
+        SELECT state_date, daily_entries, daily_exits, updated_at
+        FROM daily_occupancy_state
+        WHERE state_date = %s
+        """,
+        (state_date,),
+    )
+    return _build_daily_occupancy_state(cursor.fetchone(), state_date, captured_at)
+
+
 def create_internal_blueprint(deps):
     bp = Blueprint("internal_routes", __name__, url_prefix="/api/internal")
 
@@ -128,6 +227,115 @@ def create_internal_blueprint(deps):
             deps["db_path"],
             default=int(config.max_library_capacity),
         )
+
+    def _registration_worker_heartbeat_ttl_seconds() -> int:
+        return int(getattr(deps["config"], "registration_worker_heartbeat_ttl_seconds", 10) or 10)
+
+    def _entry_worker_online() -> bool:
+        checker = deps.get("is_worker_online")
+        if callable(checker):
+            return bool(checker("entry", _registration_worker_heartbeat_ttl_seconds()))
+        return bool(deps.get("worker_runtime_attached"))
+
+    def _entry_worker_last_seen_at() -> float | None:
+        getter = deps.get("get_worker_last_seen_at")
+        if callable(getter):
+            value = getter("entry")
+            if isinstance(value, (int, float)):
+                return float(value)
+        return None
+
+    def _safe_insert_user_registration_audit(
+        *,
+        user_id: int | None,
+        event_id: str,
+        registration_type: str,
+        flow_type: str,
+        status: str,
+        notes: str,
+    ) -> None:
+        audit_conn = None
+        try:
+            audit_conn = db_connect(deps["db_path"])
+            audit_cursor = audit_conn.cursor()
+            audit_cursor.execute(
+                """
+                INSERT INTO user_registrations (
+                    user_id, event_id, registration_type, flow_type, status, performed_by, notes
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    event_id,
+                    registration_type,
+                    flow_type,
+                    status,
+                    "system",
+                    notes,
+                ),
+            )
+            audit_conn.commit()
+        except Exception:
+            pass
+        finally:
+            if audit_conn is not None:
+                try:
+                    audit_conn.close()
+                except Exception:
+                    pass
+
+    def _is_visitor_user(user_id: int) -> bool:
+        conn = None
+        try:
+            conn = db_connect(deps["db_path"])
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (int(user_id),))
+            row = cursor.fetchone()
+            return bool(row and str(row[0] or "").strip().lower() == "visitor")
+        except Exception:
+            return False
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _get_occupancy_view() -> tuple[dict, float]:
+        config = deps["config"]
+        warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
+        occupancy_view = OccupancyService(deps["db_path"]).get_current_occupancy(
+            _runtime_capacity_limit(),
+            warning_threshold=warning_threshold,
+        )
+        return occupancy_view, warning_threshold
+
+    def _evaluate_occupancy_alert(occupancy_view: dict, warning_threshold: float) -> tuple[dict, bool]:
+        return occupancy_alert_service.evaluate(
+            occupancy_count=int(occupancy_view["occupancy_count"]),
+            capacity_limit=int(occupancy_view["capacity_limit"]),
+            occupancy_ratio=float(occupancy_view["occupancy_ratio"]),
+            is_full=bool(occupancy_view["is_full"]),
+            capacity_warning=bool(occupancy_view["capacity_warning"]),
+            warning_threshold=float(warning_threshold),
+            moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
+            state_is_stale=False,
+        )
+
+    def _persist_capacity_alert_from_level(level: str, occupancy_view: dict) -> dict | None:
+        alert_service = AlertService(deps["db_path"])
+        if str(level or "").strip().lower() == "full":
+            return alert_service.create_capacity_reached_alert(
+                occupancy_count=int(occupancy_view["occupancy_count"]),
+                capacity_limit=int(occupancy_view["capacity_limit"]),
+            )
+        if str(level or "").strip().lower() == "warning":
+            return alert_service.create_capacity_warning_alert(
+                occupancy_count=int(occupancy_view["occupancy_count"]),
+                capacity_limit=int(occupancy_view["capacity_limit"]),
+            )
+        return None
 
     @bp.route("/profiles/version", methods=["GET"], endpoint="profiles_version")
     def profiles_version():
@@ -149,6 +357,17 @@ def create_internal_blueprint(deps):
     def runtime_config():
         threshold, quality_threshold = deps["get_thresholds"]()
         config = deps["config"]
+        reg_state = deps["get_registration_state"]() if deps.get("get_registration_state") else None
+        registration_session = {
+            "web_session_active": bool(getattr(reg_state, "web_session_active", False)),
+            "manual_requested": bool(getattr(reg_state, "manual_requested", False)),
+            "manual_active": bool(getattr(reg_state, "manual_active", False)),
+            "in_progress": bool(getattr(reg_state, "in_progress", False)),
+            "session_id": str(getattr(reg_state, "session_id", "") or "") or None,
+            "capture_count": int(getattr(reg_state, "capture_count", 0)),
+            "status_reason_code": str(getattr(reg_state, "status_reason_code", "") or ""),
+            "status_reason_message": str(getattr(reg_state, "status_reason_message", "") or ""),
+        }
         return jsonify(
             {
                 "settings_version": get_settings_version(deps["db_path"]),
@@ -158,6 +377,147 @@ def create_internal_blueprint(deps):
                 "recognition_confidence_threshold": float(config.recognition_confidence_threshold),
                 "entry_cctv_stream_source": str(config.entry_cctv_stream_source),
                 "exit_cctv_stream_source": str(config.exit_cctv_stream_source),
+                "registration_session": registration_session,
+                "entry_worker_online": _entry_worker_online(),
+                "entry_worker_last_seen_at": _entry_worker_last_seen_at(),
+            }
+        )
+
+    @bp.route("/worker-heartbeat", methods=["POST"], endpoint="worker_heartbeat")
+    def worker_heartbeat():
+        payload = request.get_json(silent=True) or {}
+        worker_role = str(payload.get("worker_role") or "").strip().lower() or "entry"
+        if worker_role not in {"entry", "exit"}:
+            return _json_error("`worker_role` must be 'entry' or 'exit'.", 400)
+
+        camera_id = _optional_int(payload.get("camera_id"))
+        station_id = str(payload.get("station_id") or "").strip() or None
+        observed_at = _parse_observed_timestamp(payload.get("observed_at"))
+        recorder = deps.get("record_worker_heartbeat")
+        if not callable(recorder):
+            return _json_error("Worker heartbeat storage is unavailable.", 503)
+        recorded_at = recorder(
+            worker_role=worker_role,
+            station_id=station_id,
+            camera_id=camera_id,
+            observed_at=observed_at,
+        )
+        return jsonify(
+            {
+                "success": True,
+                "worker_role": worker_role,
+                "recorded_at": float(recorded_at),
+                "entry_worker_online": _entry_worker_online(),
+                "entry_worker_last_seen_at": _entry_worker_last_seen_at(),
+            }
+        )
+
+    @bp.route("/registration-samples", methods=["POST"], endpoint="registration_samples_ingest")
+    def registration_samples_ingest():
+        payload = request.get_json(silent=True) or {}
+        sample_id = str(payload.get("sample_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        worker_role = str(payload.get("worker_role") or "").strip().lower() or "entry"
+        station_id = str(payload.get("station_id") or "").strip() or None
+        camera_id = _optional_int(payload.get("camera_id"))
+        pose = str(payload.get("pose") or "").strip().lower()
+        quality = _optional_float(payload.get("quality"))
+        face_jpeg_base64 = payload.get("face_jpeg_base64")
+        embeddings = _deserialize_embeddings(payload.get("embeddings") or {})
+
+        def _log_reject(reason: str, status: int):
+            print(
+                "[REG-SAMPLE][REJECT] "
+                f"reason={reason} status={status} sample_id={sample_id} session_id={session_id} "
+                f"worker_role={worker_role} station_id={station_id} camera_id={camera_id} pose={pose}"
+            )
+
+        if not sample_id:
+            _log_reject("missing_sample_id", 400)
+            return _json_error("`sample_id` is required.", 400)
+        if not session_id:
+            _log_reject("missing_session_id", 400)
+            return _json_error("`session_id` is required.", 400)
+        if worker_role != "entry":
+            _log_reject("non_entry_worker", 403)
+            return _json_error("Registration sample ingestion only accepts entry worker payloads.", 403)
+        if pose not in {"front", "left", "right"}:
+            _log_reject("invalid_pose", 400)
+            return _json_error("`pose` must be one of: front, left, right.", 400)
+        if quality is None:
+            _log_reject("missing_quality", 400)
+            return _json_error("`quality` is required and must be numeric.", 400)
+        if not embeddings:
+            _log_reject("invalid_embeddings", 400)
+            return _json_error("`embeddings` is required and must contain valid vectors.", 400)
+
+        reg_state_getter = deps.get("get_registration_state")
+        capture_sample = deps.get("capture_registration_sample")
+        claim_sample = deps.get("claim_registration_sample_id")
+        if not callable(reg_state_getter) or not callable(capture_sample) or not callable(claim_sample):
+            _log_reject("ingestion_dependencies_unavailable", 503)
+            return _json_error("Registration sample ingestion dependencies are unavailable.", 503)
+
+        reg_state = reg_state_getter()
+        active_session_id = str(getattr(reg_state, "session_id", "") or "").strip()
+        if not active_session_id:
+            _log_reject("no_active_session", 409)
+            return _json_error("No active registration session is available for sample ingestion.", 409)
+        if session_id != active_session_id:
+            print(
+                "[REG-SAMPLE][SESSION-MISMATCH] "
+                f"sample_id={sample_id} payload_session_id={session_id} active_session_id={active_session_id}"
+            )
+            _log_reject("stale_session", 409)
+            return _json_error("Registration session is stale. Start a new session and retry capture.", 409)
+
+        face_crop = _decode_face_jpeg_base64(face_jpeg_base64)
+        if face_crop is None or getattr(face_crop, "size", 0) == 0:
+            _log_reject("invalid_face_jpeg_base64", 400)
+            return _json_error("`face_jpeg_base64` must contain a valid JPEG image.", 400)
+
+        accepted = bool(claim_sample(session_id, sample_id))
+        if not accepted:
+            print(
+                "[REG-SAMPLE][DUPLICATE] "
+                f"sample_id={sample_id} session_id={session_id} pose={pose}"
+            )
+            return jsonify(
+                {
+                    "success": True,
+                    "duplicate": True,
+                    "sample_id": sample_id,
+                    "session_id": session_id,
+                }
+            )
+
+        sample = RegistrationSample(
+            face_crop=face_crop,
+            embeddings=embeddings,
+            quality=float(quality),
+            pose=pose,
+        )
+        capture_count = int(capture_sample(sample))
+        reg_state = reg_state_getter()
+        print(
+            "[REG-SAMPLE][INGESTED] "
+            f"sample_id={sample_id} session_id={session_id} pose={pose} "
+            f"capture_count={capture_count}/{int(getattr(reg_state, 'max_captures', 0))} "
+            f"in_progress={bool(getattr(reg_state, 'in_progress', False))}"
+        )
+        return jsonify(
+            {
+                "success": True,
+                "duplicate": False,
+                "sample_id": sample_id,
+                "session_id": session_id,
+                "capture_count": capture_count,
+                "max_captures": int(getattr(reg_state, "max_captures", 0)),
+                "in_progress": bool(getattr(reg_state, "in_progress", False)),
+                "has_pending_registration": bool(getattr(reg_state, "pending_registration", None)),
+                "worker_role": worker_role,
+                "station_id": station_id,
+                "camera_id": camera_id,
             }
         )
 
@@ -188,18 +548,7 @@ def create_internal_blueprint(deps):
         except ValueError as exc:
             return _json_error(str(exc), 400)
 
-        captured_at_raw = payload.get("captured_at")
-        captured_at = datetime.now(timezone.utc)
-        if captured_at_raw:
-            text = str(captured_at_raw).strip()
-            if text:
-                try:
-                    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-                    if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
-                    captured_at = parsed.astimezone(timezone.utc)
-                except Exception:
-                    captured_at = datetime.now(timezone.utc)
+        captured_at = _parse_utc_datetime(payload.get("captured_at"))
 
         confidence = _optional_float(payload.get("confidence"))
         primary_confidence = _optional_float(payload.get("primary_confidence"))
@@ -222,6 +571,7 @@ def create_internal_blueprint(deps):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         inserted = False
+        occupancy_state = None
 
         try:
             if user_id is None and sr_code:
@@ -229,6 +579,29 @@ def create_internal_blueprint(deps):
                 row = c.fetchone()
                 if row:
                     user_id = int(row[0])
+            elif user_id is not None:
+                # Guard against stale worker user ids that no longer exist in host DB.
+                c.execute("SELECT 1 FROM users WHERE user_id = %s", (int(user_id),))
+                exists = c.fetchone() is not None
+                if not exists:
+                    fallback_user_id = None
+                    if sr_code:
+                        c.execute("SELECT user_id FROM users WHERE sr_code = %s", (sr_code,))
+                        fallback_row = c.fetchone()
+                        if fallback_row:
+                            fallback_user_id = int(fallback_row[0])
+                    if fallback_user_id is not None:
+                        print(
+                            "[RECOGNITION-EVENT][USER-ID-REMAP] "
+                            f"event_id={event_id} stale_user_id={user_id} remapped_user_id={fallback_user_id} sr_code={sr_code}"
+                        )
+                        user_id = fallback_user_id
+                    else:
+                        print(
+                            "[RECOGNITION-EVENT][USER-ID-DROPPED] "
+                            f"event_id={event_id} stale_user_id={user_id} sr_code={sr_code}"
+                        )
+                        user_id = None
 
             c.execute(
                 """
@@ -237,7 +610,7 @@ def create_internal_blueprint(deps):
                     primary_confidence, secondary_confidence, primary_distance, secondary_distance,
                     face_quality, method, captured_at, payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(event_id) DO NOTHING
                 """,
                 (
@@ -259,64 +632,37 @@ def create_internal_blueprint(deps):
             )
             inserted = (c.rowcount or 0) > 0
 
+            if inserted and decision == "allowed":
+                occupancy_state = _upsert_daily_occupancy_state(c, captured_at, event_type)
+
             conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             conn.close()
 
         if inserted and decision == "allowed":
-            if event_type == "exit" and user_id:
-                try:
-                    audit_conn = db_connect(deps["db_path"])
-                    audit_cursor = audit_conn.cursor()
-                    audit_cursor.execute(
-                        "SELECT user_type FROM users WHERE user_id = %s",
-                        (user_id,),
-                    )
-                    user_row = audit_cursor.fetchone()
-                    if user_row and str(user_row[0] or "").strip().lower() == "visitor":
-                        audit_cursor.execute(
-                            """
-                            INSERT INTO user_registrations (
-                                user_id, event_id, registration_type, flow_type, status, performed_by, notes
-                            )
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                user_id,
-                                event_id,
-                                "visitor",
-                                "manual_entry",
-                                "approved",
-                                "system",
-                                "Visitor exit recorded by exit worker.",
-                            ),
-                        )
-                        audit_conn.commit()
-                except Exception:
-                    pass
-                finally:
-                    try:
-                        audit_conn.close()
-                    except Exception:
-                        pass
-            occupancy_service = OccupancyService(deps["db_path"])
-            config = deps["config"]
-            warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
-            occupancy_state = occupancy_service.record_event(event_type, captured_at)
-            occupancy_view = occupancy_service.get_current_occupancy(
-                _runtime_capacity_limit(),
-                warning_threshold=warning_threshold,
+            if event_type == "exit" and user_id and _is_visitor_user(int(user_id)):
+                _safe_insert_user_registration_audit(
+                    user_id=int(user_id),
+                    event_id=event_id,
+                    registration_type="visitor",
+                    flow_type="manual_entry",
+                    status="approved",
+                    notes="Visitor exit recorded by exit worker.",
+                )
+            occupancy_state = occupancy_state or _build_daily_occupancy_state(
+                None,
+                fallback_state_date=captured_at.date().isoformat(),
+                fallback_updated_at=captured_at,
             )
-            alert_payload, alert_changed = occupancy_alert_service.evaluate(
-                occupancy_count=int(occupancy_view["occupancy_count"]),
-                capacity_limit=int(occupancy_view["capacity_limit"]),
-                occupancy_ratio=float(occupancy_view["occupancy_ratio"]),
-                is_full=bool(occupancy_view["is_full"]),
-                capacity_warning=bool(occupancy_view["capacity_warning"]),
-                warning_threshold=float(warning_threshold),
-                moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
-                state_is_stale=False,
-            )
+            occupancy_view, warning_threshold = _get_occupancy_view()
+            alert_payload, alert_changed = _evaluate_occupancy_alert(occupancy_view, warning_threshold)
+            persisted_alert = _persist_capacity_alert_from_level(alert_payload.get("level"), occupancy_view)
             emit_analytics_update(
                 "recognition_event_ingested",
                 {
@@ -337,6 +683,7 @@ def create_internal_blueprint(deps):
                     {
                         "reason": "occupancy_state_changed",
                         "capacity_warning": bool(occupancy_view["capacity_warning"]),
+                        "alert": persisted_alert,
                         **alert_payload,
                     }
                 )
@@ -344,40 +691,15 @@ def create_internal_blueprint(deps):
             metadata = payload.get("snapshot_metadata")
             if not isinstance(metadata, dict):
                 metadata = {}
-            try:
-                audit_conn = db_connect(deps["db_path"])
-                audit_cursor = audit_conn.cursor()
-                audit_cursor.execute(
-                    """
-                    INSERT INTO user_registrations (
-                        user_id, event_id, registration_type, flow_type, status, performed_by, notes
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        user_id,
-                        event_id,
-                        "unrecognized",
-                        "manual_entry",
-                        "pending",
-                        "system",
-                        "Pending librarian approval for unrecognized detection.",
-                    ),
-                )
-                audit_conn.commit()
-            except Exception:
-                pass
-            finally:
-                try:
-                    audit_conn.close()
-                except Exception:
-                    pass
-            config = deps["config"]
-            warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
-            occ_view = OccupancyService(deps["db_path"]).get_current_occupancy(
-                _runtime_capacity_limit(),
-                warning_threshold=warning_threshold,
+            _safe_insert_user_registration_audit(
+                user_id=user_id,
+                event_id=event_id,
+                registration_type="unrecognized",
+                flow_type="manual_entry",
+                status="pending",
+                notes="Pending librarian approval for unrecognized detection.",
             )
+            occ_view, _warning_threshold = _get_occupancy_view()
             capacity_warning = bool(occ_view["capacity_warning"])
             emit_unrecognized_detection(
                 {
@@ -415,31 +737,12 @@ def create_internal_blueprint(deps):
 
     @bp.route("/capacity-gate", methods=["GET"], endpoint="capacity_gate")
     def capacity_gate():
-        config = deps["config"]
-        warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
-        occupancy_service = OccupancyService(deps["db_path"])
-        occ = occupancy_service.get_current_occupancy(
-            _runtime_capacity_limit(),
-            warning_threshold=warning_threshold,
-        )
-        allow_entry = not bool(occ["is_full"])
-        alert = None
-        if not allow_entry:
-            alert = AlertService(deps["db_path"]).create_capacity_reached_alert(
-                occupancy_count=int(occ["occupancy_count"]),
-                capacity_limit=int(occ["capacity_limit"]),
-            )
-        alert_payload, alert_changed = occupancy_alert_service.evaluate(
-            occupancy_count=int(occ["occupancy_count"]),
-            capacity_limit=int(occ["capacity_limit"]),
-            occupancy_ratio=float(occ["occupancy_ratio"]),
-            is_full=bool(occ["is_full"]),
-            capacity_warning=bool(occ["capacity_warning"]),
-            warning_threshold=float(warning_threshold),
-            moderate_threshold=max(0.0, float(warning_threshold) * 0.75),
-            state_is_stale=False,
-        )
-        if alert_changed or not allow_entry:
+        occ, warning_threshold = _get_occupancy_view()
+        allow_entry = True
+        monitoring_reason = "capacity_reached_monitoring_only" if bool(occ["is_full"]) else "ok"
+        alert_payload, alert_changed = _evaluate_occupancy_alert(occ, warning_threshold)
+        alert = _persist_capacity_alert_from_level(alert_payload.get("level"), occ)
+        if alert_changed or alert is not None:
             emit_capacity_threshold_alert(
                 {
                     "reason": "capacity_gate_check",
@@ -452,7 +755,7 @@ def create_internal_blueprint(deps):
             "capacity_gate_checked",
             {
                 "allow_entry": allow_entry,
-                "reason": "capacity_reached" if not allow_entry else "ok",
+                "reason": monitoring_reason,
                 "occupancy_count": int(occ["occupancy_count"]),
                 "capacity_limit": int(occ["capacity_limit"]),
                 "occupancy_ratio": float(occ["occupancy_ratio"]),
@@ -464,7 +767,7 @@ def create_internal_blueprint(deps):
             {
                 "success": True,
                 "allow_entry": allow_entry,
-                "reason": "capacity_reached" if not allow_entry else "ok",
+                "reason": monitoring_reason,
                 "occupancy_count": int(occ["occupancy_count"]),
                 "capacity_limit": int(occ["capacity_limit"]),
                 "occupancy_ratio": float(occ["occupancy_ratio"]),

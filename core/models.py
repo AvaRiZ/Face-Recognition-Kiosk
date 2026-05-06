@@ -51,6 +51,7 @@ class RegistrationSample:
 class RegistrationState:
     pending_registration: Optional[list[RegistrationSample]] = None
     in_progress: bool = False
+    session_id: Optional[str] = None
     captured_samples: list[RegistrationSample] = field(default_factory=list)
     required_poses: list[str] = field(default_factory=lambda: ["front", "left", "right"])
     current_pose_index: int = 0
@@ -70,6 +71,7 @@ class RegistrationState:
     status_reason_code: Optional[str] = None
     status_reason_message: str = ""
     status_updated_at: Optional[str] = None
+    allow_unknown_override: bool = False
 
     @property
     def capture_count(self) -> int:
@@ -156,6 +158,8 @@ class TrackingState:
     last_recognition_threshold: Optional[float] = None
     failed_good_quality_attempts: int = 0
     selected_for_registration: bool = False
+    registration_recognized_streak: int = 0
+    registration_recognized_name: str = ""
 
 
 def recognized_user_payload(result: RecognitionResult) -> dict[str, str]:

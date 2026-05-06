@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import math
+import uuid
 
 import cv2
 
@@ -42,6 +43,7 @@ class CLIApplication:
         tracking_service: TrackingService,
         yolo_model,
         yolo_device: str,
+        worker_role: str = "entry",
     ):
         self.config = config
         self.state = state
@@ -51,6 +53,7 @@ class CLIApplication:
         self.tracking_service = tracking_service
         self.yolo_model = yolo_model
         self.yolo_device = yolo_device
+        self.worker_role = str(worker_role or "entry").strip().lower()
         self.detector_dataset_service = DetectorDatasetService(config)
         self._detection_pause_event = threading.Event()
         self._pause_notice_shown = False
@@ -61,6 +64,9 @@ class CLIApplication:
             "last_frame_ts": None,
             "updated_at": time.time(),
         }
+
+    def _registration_allowed_on_this_worker(self) -> bool:
+        return self.worker_role == "entry"
 
     def _set_stream_status(self, state: str, message: str, last_frame_ts: float | None = None) -> None:
         with self._stream_status_lock:
@@ -275,42 +281,47 @@ class CLIApplication:
 
         return "Tracking", (180, 180, 180)
 
+    def _is_registration_lock_candidate(self, track_state) -> bool:
+        if track_state is None:
+            return False
+        if not track_state.last_stable:
+            return False
+        if track_state.recognized:
+            return False
+        min_area = int(self.config.registration_min_face_area)
+        return track_state.last_area >= min_area
+
+    def _select_largest_registration_candidate(self, candidate_ids: list[int]) -> int | None:
+        selected_id = None
+        largest_area = -1
+        for track_id in candidate_ids:
+            track_state = self.state.get_track_state(track_id)
+            if track_state is None:
+                continue
+            area = int(track_state.last_area or 0)
+            if area > largest_area:
+                largest_area = area
+                selected_id = track_id
+        return selected_id
+
     def _select_registration_candidate(self, visible_track_ids: list[int]):
         reg_state = self.state.registration_state
-        candidate_ids: list[int] = []
-
-        for track_id in visible_track_ids:
-            track_state = self.state.get_track_state(track_id)
-            if track_state is None or not track_state.last_stable:
-                continue
-            if track_state.last_area <= 0:
-                continue
-            candidate_ids.append(track_id)
-
         for _track_id, track_state in self.state.tracked_faces.items():
             track_state.selected_for_registration = False
 
-        if reg_state.manual_active and reg_state.manual_track_id in candidate_ids:
+        if reg_state.manual_active and reg_state.manual_track_id is not None:
             selected_id = reg_state.manual_track_id
         else:
-            selected_id = None
-            previous_id = reg_state.selected_track_id
-            previous_area = 0
-            if previous_id is not None:
-                previous_state = self.state.get_track_state(previous_id)
-                previous_area = previous_state.last_area if previous_state is not None else 0
-
-            largest_area = 0
-            for track_id in candidate_ids:
-                track_state = self.state.get_track_state(track_id)
-                if track_state is None:
-                    continue
-                if track_state.last_area > largest_area:
-                    largest_area = track_state.last_area
-                    selected_id = track_id
-
-            if previous_id in candidate_ids and previous_area > 0 and previous_area >= int(largest_area * 0.85):
-                selected_id = previous_id
+            eligible_ids = [
+                track_id
+                for track_id in visible_track_ids
+                if self._is_registration_lock_candidate(self.state.get_track_state(track_id))
+            ]
+            locked_id = reg_state.selected_track_id
+            if locked_id in eligible_ids:
+                selected_id = locked_id
+            else:
+                selected_id = self._select_largest_registration_candidate(eligible_ids)
 
         reg_state.selected_track_id = selected_id
         if selected_id is not None:
@@ -318,6 +329,97 @@ class CLIApplication:
             if selected_state is not None:
                 selected_state.selected_for_registration = True
         return selected_id
+
+    def _locked_registration_track_id(self) -> int | None:
+        reg_state = self.state.registration_state
+        if reg_state.manual_active:
+            return reg_state.manual_track_id
+        return reg_state.selected_track_id
+
+    @staticmethod
+    def _should_skip_track_during_registration(
+        registration_enabled: bool,
+        reg_state,
+        locked_track_id: int | None,
+        track_id: int,
+    ) -> bool:
+        if not registration_enabled:
+            return False
+        if not reg_state.manual_active:
+            return False
+        if locked_track_id is None:
+            return False
+        return track_id != locked_track_id
+
+    @staticmethod
+    def _reset_registration_recognition_streak(track_state) -> None:
+        track_state.registration_recognized_streak = 0
+        track_state.registration_recognized_name = ""
+
+    def _handle_existing_recognition_during_registration(self, track_state, result: dict) -> None:
+        reg_state = self.state.registration_state
+        if not reg_state.manual_active:
+            return
+
+        if reg_state.allow_unknown_override:
+            self._reset_registration_recognition_streak(track_state)
+            if hasattr(self.state, "set_registration_status_reason"):
+                self.state.set_registration_status_reason(
+                    "override_forced_unknown",
+                    "Manual override enabled. Continuing registration as an unknown student.",
+                )
+            return
+
+        user_name = (track_state.user or {}).get("name", "").strip() or "an existing user"
+        confidence = _coerce_float(result.get("match_confidence")) or 0.0
+        threshold = _coerce_float(result.get("match_threshold")) or float(
+            self.config.recognition_confidence_threshold
+        )
+        required_frames = max(
+            1,
+            int(getattr(self.config, "registration_recognition_confirm_frames", 5)),
+        )
+
+        if confidence < threshold:
+            track_state.registration_recognized_streak = 0
+            track_state.registration_recognized_name = user_name
+            if hasattr(self.state, "set_registration_status_reason"):
+                self.state.set_registration_status_reason(
+                    "possible_existing_match",
+                    (
+                        f"Possible match with {user_name} ({confidence:.2%}). "
+                        "Hold still to confirm or use Continue as New Student."
+                    ),
+                )
+            return
+
+        if track_state.registration_recognized_name == user_name:
+            track_state.registration_recognized_streak += 1
+        else:
+            track_state.registration_recognized_name = user_name
+            track_state.registration_recognized_streak = 1
+
+        if track_state.registration_recognized_streak < required_frames:
+            if hasattr(self.state, "set_registration_status_reason"):
+                self.state.set_registration_status_reason(
+                    "possible_existing_match",
+                    (
+                        f"Possible match with {user_name} ({confidence:.2%}) "
+                        f"[{track_state.registration_recognized_streak}/{required_frames} confirmations]. "
+                        "Hold still to confirm or use Continue as New Student."
+                    ),
+                )
+            return
+
+        self.state.stop_manual_registration()
+        self.state.clear_captured_samples()
+        self._reset_registration_recognition_streak(track_state)
+        if hasattr(self.state, "set_registration_status_reason"):
+            self.state.set_registration_status_reason(
+                "recognized_existing",
+                f"Face confirmed as {user_name}. First-time registration was canceled.",
+            )
+        print(f"Face confirmed as {user_name}. First-time registration canceled.")
 
     @staticmethod
     def _draw_text_block(frame, lines, origin_x, origin_y, color, scale=0.65, thickness=2, line_gap=26):
@@ -503,11 +605,12 @@ class CLIApplication:
             else:
                 self.tracking_service.cleanup_stale_tracks(current_time)
 
+            registration_enabled = self._registration_allowed_on_this_worker()
             reg_state = self.state.registration_state
             if run_detection:
-                selected_track_id = self._select_registration_candidate(last_visible_track_ids)
+                selected_track_id = self._select_registration_candidate(last_visible_track_ids) if registration_enabled else None
 
-                if reg_state.manual_requested and selected_track_id is not None:
+                if registration_enabled and reg_state.manual_requested and selected_track_id is not None:
                     selected_state = self.state.get_track_state(selected_track_id)
                     from_web_session = bool(reg_state.web_session_active)
                     if selected_state and selected_state.recognized and selected_state.user:
@@ -532,11 +635,17 @@ class CLIApplication:
                         )
 
                 reg_state = self.state.registration_state
+                locked_track_id = self._locked_registration_track_id()
                 for track_id in last_visible_track_ids:
                     track_state = self.state.get_track_state(track_id)
                     if track_state is None or not track_state.last_stable or track_state.recognized:
                         continue
-                    if reg_state.manual_active and reg_state.manual_track_id is not None and track_id != reg_state.manual_track_id:
+                    if self._should_skip_track_during_registration(
+                        registration_enabled=registration_enabled,
+                        reg_state=reg_state,
+                        locked_track_id=locked_track_id,
+                        track_id=track_id,
+                    ):
                         continue
                     if (current_time - track_state.last_recognition_time) < self.config.recognition_cooldown_seconds:
                         continue
@@ -549,11 +658,15 @@ class CLIApplication:
                     if face_crop is None or clamped_bbox is None:
                         continue
 
+                    registration_capture_allowed = (
+                        registration_enabled
+                        and reg_state.manual_active
+                        and track_id == locked_track_id
+                    )
                     result = self.recognition_service.register_or_recognize_face(
                         face_crop,
                         quality_service=self.quality_service,
-                        face_id=track_id,
-                        allow_registration=(reg_state.manual_active and track_id == reg_state.manual_track_id),
+                        allow_registration=registration_capture_allowed,
                         detection_confidence=track_state.last_detection_confidence,
                         landmarks=track_state.last_landmarks,
                         precomputed_quality=(
@@ -576,19 +689,13 @@ class CLIApplication:
                     else:
                         track_state.recognized = False
                         track_state.user = None
+                        self._reset_registration_recognition_streak(track_state)
                         if status in {"uncertain", "no_match"} and track_state.last_quality_score >= self.config.face_quality_threshold:
                             track_state.failed_good_quality_attempts += 1
 
-                    if reg_state.manual_active:
+                    if registration_capture_allowed:
                         if status == "recognized":
-                            self.state.stop_manual_registration()
-                            self.state.clear_captured_samples()
-                            if hasattr(self.state, "set_registration_status_reason"):
-                                self.state.set_registration_status_reason(
-                                    "recognized_existing",
-                                    "Face already exists in the database. First-time registration was canceled.",
-                                )
-                            print("Face already exists in the database. First-time registration canceled.")
+                            self._handle_existing_recognition_during_registration(track_state, result)
                         elif self.state.registration_state.in_progress:
                             self.state.stop_manual_registration()
                         elif hasattr(self.state, "set_registration_status_reason"):
@@ -624,9 +731,28 @@ class CLIApplication:
                                     "no_match",
                                     "No match yet. Continue holding position for registration capture.",
                                 )
+                    if (
+                        status == "registration_captured"
+                        and registration_enabled
+                        and hasattr(self.repository, "enqueue_registration_sample")
+                    ):
+                        session_id = str(getattr(self.state.registration_state, "session_id", "") or "").strip()
+                        registration_sample = result.get("registration_sample")
+                        if session_id and registration_sample is not None:
+                            try:
+                                self.repository.enqueue_registration_sample(
+                                    sample_id=f"sample-{uuid.uuid4().hex}",
+                                    session_id=session_id,
+                                    pose=str(getattr(registration_sample, "pose", "front") or "front"),
+                                    quality=float(getattr(registration_sample, "quality", 0.0) or 0.0),
+                                    face_crop=getattr(registration_sample, "face_crop", None),
+                                    embeddings=getattr(registration_sample, "embeddings", {}) or {},
+                                )
+                            except Exception as exc:
+                                print(f"[WARN] Failed to queue registration sample for API sync: {exc}")
 
             reg_state = self.state.registration_state
-            selected_track_id = reg_state.manual_track_id if reg_state.manual_active else reg_state.selected_track_id
+            selected_track_id = self._locked_registration_track_id() if registration_enabled else None
 
             for track_id in list(last_visible_track_ids):
                 track_state = self.state.get_track_state(track_id)
@@ -634,7 +760,11 @@ class CLIApplication:
                     continue
 
                 x1, y1, x2, y2 = track_state.last_bbox
-                is_selected = track_id == selected_track_id and (reg_state.manual_requested or reg_state.manual_active)
+                is_selected = (
+                    registration_enabled
+                    and track_id == selected_track_id
+                    and (reg_state.manual_requested or reg_state.manual_active)
+                )
                 if is_selected:
                     color = (255, 215, 0)
                     thickness = 4

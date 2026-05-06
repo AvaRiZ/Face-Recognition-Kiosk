@@ -120,6 +120,7 @@ def build_runtime() -> HostRuntime:
         tracking_service=tracking_service,
         yolo_model=yolo_model,
         yolo_device=yolo_device,
+        worker_role="entry",
     )
     return HostRuntime(config=config, state=state, repository=repository, cli=cli)
 

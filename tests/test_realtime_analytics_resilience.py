@@ -264,6 +264,101 @@ class InternalIngestRealtimeTests(unittest.TestCase):
         self.assertEqual(c.fetchone()[0], 1)
         conn.close()
 
+    def test_capacity_gate_is_warning_only_even_when_full(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        db_path = str(Path(temp_dir.name) / "internal_capacity_gate.db")
+        init_canonical_schema(db_path)
+
+        today = datetime.now().date().isoformat()
+        conn = db_connect(db_path)
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('max_occupancy', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        c.execute(
+            """
+            INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
+            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT(state_date) DO UPDATE SET
+                daily_entries = excluded.daily_entries,
+                daily_exits = excluded.daily_exits,
+                updated_at = excluded.updated_at
+            """,
+            (today, 1, 0),
+        )
+        conn.commit()
+        conn.close()
+
+        config = AppConfig()
+        config.db_path = db_path
+        state = AppStateManager(config)
+        app = Flask(__name__)
+        app.secret_key = "test-secret"
+        deps = {
+            "db_path": db_path,
+            "repository": _DummyRepository(),
+            "get_thresholds": state.get_thresholds,
+            "config": config,
+        }
+        app.register_blueprint(create_internal_blueprint(deps))
+        client = app.test_client()
+
+        response = client.get("/api/internal/capacity-gate")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get("success"))
+        self.assertTrue(payload.get("allow_entry"))
+        self.assertTrue(payload.get("is_full"))
+        self.assertEqual(payload.get("reason"), "capacity_reached_monitoring_only")
+        alert_payload = payload.get("alert") or {}
+        alert_message = str(alert_payload.get("message") or "").lower()
+        self.assertNotIn("blocked", alert_message)
+
+    def test_internal_ingest_rolls_back_event_when_daily_state_update_fails(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        db_path = str(Path(temp_dir.name) / "internal_ingest_txn.db")
+        init_canonical_schema(db_path)
+
+        conn = db_connect(db_path)
+        c = conn.cursor()
+        c.execute("DROP TABLE daily_occupancy_state")
+        conn.commit()
+        conn.close()
+
+        config = AppConfig()
+        config.db_path = db_path
+        state = AppStateManager(config)
+        app = Flask(__name__)
+        app.secret_key = "test-secret"
+        deps = {
+            "db_path": db_path,
+            "repository": _DummyRepository(),
+            "get_thresholds": state.get_thresholds,
+            "config": config,
+        }
+        app.register_blueprint(create_internal_blueprint(deps))
+        client = app.test_client()
+
+        response = client.post(
+            "/api/internal/recognition-events",
+            json={
+                "event_id": "evt-should-rollback",
+                "sr_code": "SR001",
+                "decision": "allowed",
+                "event_type": "entry",
+                "confidence": 0.99,
+            },
+        )
+        self.assertEqual(response.status_code, 500)
+
+        conn = db_connect(db_path)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM recognition_events WHERE event_id = %s", ("evt-should-rollback",))
+        self.assertEqual(c.fetchone()[0], 0)
+        conn.close()
+
 
 @unittest.skipIf(create_routes_blueprint is None, "Route blueprint dependencies are unavailable.")
 class ApiEventsContractTests(unittest.TestCase):

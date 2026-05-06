@@ -343,7 +343,7 @@ def create_routes_blueprint(deps):
         if not worker_attached:
             return (
                 "worker_unattached",
-                "Recognition worker is not attached. Start the host stack (API + worker) on the host PC.",
+                "Entry recognition worker is offline. Start the entry worker and wait for heartbeat sync.",
                 _utc_now_iso(),
             )
 
@@ -454,7 +454,18 @@ def create_routes_blueprint(deps):
         total_progress = progress.get("total_progress", {})
         captured_total = int(total_progress.get("captured", reg_state.capture_count))
         stream_status = deps["stream_status"]() if deps.get("stream_status") else {"state": "unknown", "message": "Camera status unavailable."}
-        worker_attached = bool(deps.get("worker_runtime_attached"))
+        heartbeat_ttl_seconds = int(getattr(deps["config"], "registration_worker_heartbeat_ttl_seconds", 10) or 10)
+        worker_online_checker = deps.get("is_worker_online")
+        if callable(worker_online_checker):
+            worker_attached = bool(worker_online_checker("entry", heartbeat_ttl_seconds))
+        else:
+            worker_attached = bool(deps.get("worker_runtime_attached"))
+        worker_last_seen_getter = deps.get("get_worker_last_seen_at")
+        entry_worker_last_seen_at = None
+        if callable(worker_last_seen_getter):
+            raw_last_seen = worker_last_seen_getter("entry")
+            if isinstance(raw_last_seen, (int, float)):
+                entry_worker_last_seen_at = float(raw_last_seen)
         detection_paused = bool(deps["detection_paused"]())
         session_timeout_seconds = int(getattr(deps["config"], "registration_session_timeout_seconds", 0) or 0)
         session_started_at = float(reg_state.session_started_at) if reg_state.session_started_at is not None else None
@@ -478,8 +489,10 @@ def create_routes_blueprint(deps):
             "has_pending_registration": bool(reg_state.pending_registration),
             "is_in_progress": reg_state.in_progress,
             "web_session_active": bool(reg_state.web_session_active),
+            "allow_unknown_override": bool(getattr(reg_state, "allow_unknown_override", False)),
             "session_expired": bool(getattr(reg_state, "session_expired", False)),
             "worker_attached": worker_attached,
+            "entry_worker_last_seen_at": entry_worker_last_seen_at,
             "detection_paused": detection_paused,
             "sample_previews": _registration_sample_previews(reg_state),
             "required_poses": progress["required_poses"],
@@ -1800,10 +1813,16 @@ def create_routes_blueprint(deps):
     def api_register_session_start():
         deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
-        if not deps.get("worker_runtime_attached"):
+        heartbeat_ttl_seconds = int(getattr(deps["config"], "registration_worker_heartbeat_ttl_seconds", 10) or 10)
+        worker_online_checker = deps.get("is_worker_online")
+        if callable(worker_online_checker):
+            worker_attached = bool(worker_online_checker("entry", heartbeat_ttl_seconds))
+        else:
+            worker_attached = bool(deps.get("worker_runtime_attached"))
+        if not worker_attached:
             payload = _registration_error_payload(
                 reg_state,
-                "Recognition worker is not attached to this API process. Start the host stack (API + worker together) on the host PC.",
+                "Entry recognition worker is offline. Start the entry worker and wait for heartbeat sync before starting registration.",
                 status_reason_code="worker_unattached",
             )
             return jsonify(payload), 503
@@ -1878,6 +1897,37 @@ def create_routes_blueprint(deps):
             {
                 "success": True,
                 "message": "Registration session canceled.",
+            }
+        )
+        return jsonify(payload)
+
+    @bp.route("/api/register-session/continue-unknown", methods=["POST"], endpoint="api_register_session_continue_unknown")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
+    def api_register_session_continue_unknown():
+        deps["expire_registration_session_if_needed"]()
+        reg_state = deps["get_registration_state"]()
+        if not (reg_state.manual_active or reg_state.web_session_active or reg_state.capture_count > 0):
+            payload = _registration_error_payload(
+                reg_state,
+                "No active registration capture is in progress.",
+                status_reason_code="no_active_capture",
+            )
+            return jsonify(payload), 409
+
+        if deps.get("enable_unknown_registration_override"):
+            deps["enable_unknown_registration_override"]()
+        if deps.get("set_registration_status_reason"):
+            deps["set_registration_status_reason"](
+                "override_forced_unknown",
+                "Manual override enabled. Continuing registration as an unknown student.",
+            )
+        reg_state = deps["get_registration_state"]()
+        payload = _registration_status_payload(reg_state)
+        payload.update(
+            {
+                "success": True,
+                "message": "Continuing capture as a new student by manual override.",
             }
         )
         return jsonify(payload)

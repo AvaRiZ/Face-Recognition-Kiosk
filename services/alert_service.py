@@ -11,15 +11,18 @@ class AlertService:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
 
-    def create_capacity_reached_alert(self, *, occupancy_count: int, capacity_limit: int) -> dict:
+    def _upsert_daily_alert(
+        self,
+        *,
+        alert_type: str,
+        level: str,
+        message: str,
+        occupancy_count: int,
+        capacity_limit: int,
+        occupancy_ratio: float,
+    ) -> int:
         now = datetime.now(timezone.utc)
-        ratio = (float(occupancy_count) / float(capacity_limit)) if capacity_limit > 0 else 0.0
         state_date = now.date().isoformat()
-        message = (
-            f"Capacity reached: occupancy {int(occupancy_count)}/{int(capacity_limit)}. "
-            "New entries are blocked until occupancy decreases."
-        )
-
         conn = db_connect(self.db_path)
         c = conn.cursor()
         c.execute(
@@ -29,7 +32,7 @@ class AlertService:
             ORDER BY id DESC
             LIMIT 1
             """,
-            ("capacity_reached", state_date),
+            (alert_type, state_date),
         )
         row = c.fetchone()
 
@@ -42,7 +45,15 @@ class AlertService:
                     occupancy_ratio = %s, is_active = TRUE, updated_at = %s
                 WHERE id = %s
                 """,
-                ("full", message, int(occupancy_count), int(capacity_limit), float(ratio), now, alert_id),
+                (
+                    str(level),
+                    str(message),
+                    int(occupancy_count),
+                    int(capacity_limit),
+                    float(occupancy_ratio),
+                    now,
+                    alert_id,
+                ),
             )
         else:
             c.execute(
@@ -53,21 +64,74 @@ class AlertService:
                 ) VALUES (%s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s)
                 RETURNING id
                 """,
-                ("capacity_reached", "full", message, int(occupancy_count), int(capacity_limit), float(ratio), state_date, now, now),
+                (
+                    str(alert_type),
+                    str(level),
+                    str(message),
+                    int(occupancy_count),
+                    int(capacity_limit),
+                    float(occupancy_ratio),
+                    state_date,
+                    now,
+                    now,
+                ),
             )
-            row = c.fetchone()
-            alert_id = int(row[0]) if row else 0
+            inserted = c.fetchone()
+            alert_id = int(inserted[0]) if inserted else 0
             if alert_id <= 0:
                 c.execute(
-                    "SELECT id FROM occupancy_alerts WHERE alert_type = %s AND state_date = %s ORDER BY id DESC LIMIT 1",
-                    ("capacity_reached", state_date),
+                    """
+                    SELECT id FROM occupancy_alerts
+                    WHERE alert_type = %s AND state_date = %s
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (alert_type, state_date),
                 )
                 fallback = c.fetchone()
                 alert_id = int(fallback[0]) if fallback else 0
 
         conn.commit()
         conn.close()
+        return int(alert_id)
+
+    def create_capacity_reached_alert(self, *, occupancy_count: int, capacity_limit: int) -> dict:
+        ratio = (float(occupancy_count) / float(capacity_limit)) if capacity_limit > 0 else 0.0
+        if capacity_limit > 0 and int(occupancy_count) > int(capacity_limit):
+            message = (
+                f"Capacity exceeded: occupancy {int(occupancy_count)}/{int(capacity_limit)}. "
+                "Capacity monitoring is active; review traffic and staffing."
+            )
+        else:
+            message = (
+                f"Capacity reached: occupancy {int(occupancy_count)}/{int(capacity_limit)}. "
+                "Capacity monitoring is active; review traffic and staffing."
+            )
+        alert_id = self._upsert_daily_alert(
+            alert_type="capacity_reached",
+            level="full",
+            message=message,
+            occupancy_count=int(occupancy_count),
+            capacity_limit=int(capacity_limit),
+            occupancy_ratio=float(ratio),
+        )
         return {"alert_id": alert_id, "alert_type": "capacity_reached", "level": "full", "message": message}
+
+    def create_capacity_warning_alert(self, *, occupancy_count: int, capacity_limit: int) -> dict:
+        ratio = (float(occupancy_count) / float(capacity_limit)) if capacity_limit > 0 else 0.0
+        message = (
+            f"Approaching capacity: occupancy {int(occupancy_count)}/{int(capacity_limit)} "
+            f"({ratio * 100:.0f}%). Monitor queue and staffing."
+        )
+        alert_id = self._upsert_daily_alert(
+            alert_type="capacity_warning",
+            level="warning",
+            message=message,
+            occupancy_count=int(occupancy_count),
+            capacity_limit=int(capacity_limit),
+            occupancy_ratio=float(ratio),
+        )
+        return {"alert_id": alert_id, "alert_type": "capacity_warning", "level": "warning", "message": message}
 
     def list_alerts(self, *, active_only: bool = True, limit: int = 50) -> list[dict]:
         conn = db_connect(self.db_path)

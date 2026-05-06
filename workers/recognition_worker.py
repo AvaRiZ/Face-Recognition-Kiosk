@@ -86,6 +86,22 @@ def _send_outbound_entry(api_client: ApiClient, entry: dict) -> bool:
     if kind == "embedding_update":
         response = api_client.post_json("/api/internal/embedding-updates", payload)
         return bool(response.get("success"))
+    if kind == "registration_sample":
+        sample_id = str(payload.get("sample_id") or "")
+        session_id = str(payload.get("session_id") or "")
+        pose = str(payload.get("pose") or "")
+        print(
+            "[REG-SAMPLE][SEND] "
+            f"sample_id={sample_id} session_id={session_id} pose={pose} "
+            f"queue_entry_id={entry.get('id')}"
+        )
+        response = api_client.post_json("/api/internal/registration-samples", payload)
+        print(
+            "[REG-SAMPLE][ACK] "
+            f"sample_id={sample_id} session_id={session_id} success={bool(response.get('success'))} "
+            f"duplicate={bool(response.get('duplicate'))} capture_count={response.get('capture_count')}"
+        )
+        return bool(response.get("success"))
     return True
 
 
@@ -114,6 +130,62 @@ def _apply_runtime_config(runtime: WorkerRuntime, payload: dict) -> None:
     if exit_source is not None:
         runtime.config.exit_cctv_stream_source = str(exit_source)
 
+    _apply_registration_session_state(runtime, payload)
+
+
+def _apply_registration_session_state(runtime: WorkerRuntime, payload: dict) -> None:
+    registration_session = payload.get("registration_session") or {}
+    if not isinstance(registration_session, dict):
+        return
+
+    local_reg = runtime.state.registration_state
+    remote_session_active = bool(registration_session.get("web_session_active"))
+    remote_manual_requested = bool(registration_session.get("manual_requested"))
+    remote_manual_active = bool(registration_session.get("manual_active"))
+    remote_in_progress = bool(registration_session.get("in_progress"))
+    remote_session_id = str(registration_session.get("session_id") or "").strip() or None
+
+    # Registration capture must only be driven by the entry worker.
+    if runtime.worker_role != "entry":
+        if local_reg.manual_requested or local_reg.manual_active:
+            runtime.state.stop_manual_registration()
+        if remote_session_id is not None:
+            local_reg.session_id = remote_session_id
+        return
+
+    local_session_id = str(getattr(local_reg, "session_id", "") or "").strip() or None
+    if (
+        remote_session_id is not None
+        and local_session_id is not None
+        and remote_session_id != local_session_id
+        and (
+        local_reg.manual_requested or local_reg.manual_active or local_reg.capture_count > 0
+        )
+    ):
+        runtime.state.cancel_web_registration_session()
+        local_reg = runtime.state.registration_state
+    if remote_session_id is not None:
+        local_reg.session_id = remote_session_id
+
+    remote_wants_capture = remote_session_active or remote_manual_requested or remote_manual_active
+    local_has_capture = local_reg.manual_requested or local_reg.manual_active
+
+    if remote_wants_capture and not local_has_capture:
+        runtime.state.start_web_registration_session()
+        if remote_session_id is not None:
+            runtime.state.registration_state.session_id = remote_session_id
+    elif not remote_wants_capture and local_has_capture and not local_reg.in_progress:
+        runtime.state.cancel_web_registration_session()
+        if remote_session_id is not None:
+            runtime.state.registration_state.session_id = remote_session_id
+
+    # When API has already finalized or reset registration, clear stale local
+    # in-progress gate so recognition can resume immediately on the worker.
+    if not remote_wants_capture and not remote_in_progress and local_reg.in_progress:
+        runtime.state.complete_registration()
+        if remote_session_id is not None:
+            runtime.state.registration_state.session_id = remote_session_id
+
 
 def _start_sync_loop(runtime: WorkerRuntime, poll_interval_seconds: float = 3.0):
     status = {"profiles_version": 0, "settings_version": 0}
@@ -141,6 +213,23 @@ def _start_sync_loop(runtime: WorkerRuntime, poll_interval_seconds: float = 3.0)
                     _apply_runtime_config(runtime, runtime_config_payload)
                     status["settings_version"] = api_settings_version
                     log_step(f"Applied runtime settings version={api_settings_version}")
+                else:
+                    # Registration session lifecycle changes do not bump settings_version.
+                    # Keep session state in sync on every poll so capture starts/stops immediately.
+                    _apply_registration_session_state(runtime, runtime_config_payload)
+
+                try:
+                    runtime.api_client.post_json(
+                        "/api/internal/worker-heartbeat",
+                        {
+                            "worker_role": runtime.worker_role,
+                            "station_id": runtime.station_id,
+                            "camera_id": runtime.camera_id,
+                            "observed_at": time.time(),
+                        },
+                    )
+                except Exception as exc:
+                    log_step(f"Worker heartbeat warning: {exc}", status="WARN")
             except Exception as exc:
                 log_step(f"Worker sync warning: {exc}", status="WARN")
             time.sleep(max(1.0, float(poll_interval_seconds)))
@@ -241,6 +330,7 @@ def build_runtime() -> WorkerRuntime:
         tracking_service=tracking_service,
         yolo_model=yolo_model,
         yolo_device=yolo_device,
+        worker_role=worker_role,
     )
     return WorkerRuntime(
         config=config,

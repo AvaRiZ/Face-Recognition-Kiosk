@@ -289,7 +289,7 @@ def run_ml_analytics(db_path):
     # ══════════════════════════════════════════════════════════
     c.execute("""
         SELECT u.sr_code, u.name, NULLIF(TRIM(u.course),'') AS program,
-               NULL AS gender, NULL AS year_level,
+               NULLIF(TRIM(u.gender),'') AS gender, NULL AS year_level,
                re.confidence, re.captured_at AS timestamp, 'live' AS source
         FROM recognition_events re
         LEFT JOIN users u ON re.user_id = u.user_id
@@ -916,7 +916,7 @@ def run_basic_analytics(db_path):
     # ══════════════════════════════════════════════════════════
     c.execute("""
         SELECT u.sr_code, u.name, NULLIF(TRIM(u.course),'') AS program,
-               NULL AS gender, NULL AS year_level,
+               NULLIF(TRIM(u.gender),'') AS gender, NULL AS year_level,
                re.confidence, re.captured_at AS timestamp, 'live' AS source
         FROM recognition_events re
         LEFT JOIN users u ON re.user_id = u.user_id

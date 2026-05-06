@@ -1424,7 +1424,7 @@ frontend/
 
 1. **`services/occupancy_service.py`** â€” Real-time occupancy calculation, capacity checks, snapshots.
 2. **`services/registration_service.py`** â€” User registration workflows (enrolled, visitor, unrecognized).
-3. **`app/entry_worker.py`** â€” Entry-specific recognition loop with capacity checks.
+3. **`app/entry_worker.py`** â€” Entry-specific recognition loop with occupancy monitoring signals.
 4. **`app/exit_worker.py`** â€” Exit-specific recognition loop with occupancy decrement.
 5. **`routes/occupancy_routes.py`** â€” Occupancy query and dashboard endpoints.
 6. **`routes/registration_routes.py`** â€” Manual registration, approval/denial flows.
@@ -1467,7 +1467,7 @@ frontend/
 - [x] Add `daily_occupancy_state` live table and `occupancy_snapshots` history table with migrations.
 - [x] Start `OccupancySnapshotScheduler` from host runtime (`app/host_stack.py`).
 - [x] Implement `GET /api/occupancy/current`, `GET /api/occupancy/history`, `GET /api/occupancy/summary`.
-- [x] Enforce entry capacity checks via `/api/internal/capacity-gate` from worker recognition flow.
+- [x] Expose entry capacity state via `/api/internal/capacity-gate` as a warning/monitoring signal.
 - [x] Refactor `recognition_events` schema from persisted `camera_id`/`station_id` to `entered_at`/`exited_at` (`20260502_0007`).
 - [x] Implement `POST /api/occupancy/adjust` for manual drift correction.
 - [x] Implement nightly reconciliation job for drift detection and operator alerting.
@@ -1539,7 +1539,7 @@ This session completed **Phase 2: Event-Driven Occupancy Tracking & Monitoring**
 **Event-Driven Occupancy Model:**
 - Real-time occupancy tracking via `daily_occupancy_state` table (one row per date, updated immediately on every event ingest)
 - No schedule lag: occupancy state reflects current count **instantly** after event ingestion
-- Entry worker queries current occupancy in < 100ms for capacity checks
+- Entry worker/ops dashboards query current occupancy in < 100ms for live monitoring
 
 **Dual-Layer Occupancy Architecture:**
 - **Live State** (`daily_occupancy_state`): Updated event-driven, serves real-time kiosk queries
@@ -1599,7 +1599,7 @@ This session completed **Phase 2: Event-Driven Occupancy Tracking & Monitoring**
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Entry Worker | âœ… Complete | WORKER_ROLE=entry, WORKER_CAMERA_ID=1, capacity checks integrated |
+| Entry Worker | âœ… Complete | WORKER_ROLE=entry, WORKER_CAMERA_ID=1, occupancy monitoring integrated |
 | Exit Worker | âœ… Complete | WORKER_ROLE=exit, WORKER_CAMERA_ID=2, no blocking exits |
 | Recognition Service | âœ… Complete | Unchanged; works with both workers |
 | Occupancy Service | âœ… Complete | Event-driven, real-time state + scheduled snapshots |
