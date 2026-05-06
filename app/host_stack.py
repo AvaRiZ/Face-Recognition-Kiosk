@@ -312,28 +312,30 @@ def main() -> None:
     runtime.cli.resume_detection()
     runtime.cli._set_stream_status("live", "Dual camera workers are running in separate processes.")
 
-    worker_processes = [
-        _start_worker_process(repo_root, "entry", "entry-station-1", 1, entry_stream_source),
-        _start_worker_process(repo_root, "exit", "exit-station-1", 2, exit_stream_source),
-    ]
+    worker_processes = {
+        "entry": _start_worker_process(repo_root, "entry", "entry-station-1", 1, entry_stream_source),
+        "exit": _start_worker_process(repo_root, "exit", "exit-station-1", 2, exit_stream_source),
+    }
 
     try:
         while True:
-            exit_codes = [proc.poll() for proc in worker_processes]
-            if any(code is not None for code in exit_codes):
-                for index, code in enumerate(exit_codes):
-                    if code is not None:
-                        log_step(f"Worker process {index + 1} exited with code {code}", status="WARN")
-                break
+            for worker_role, proc in list(worker_processes.items()):
+                code = proc.poll()
+                if code is not None:
+                    log_step(
+                        f"Worker '{worker_role}' exited with code {code}. Host API will continue running.",
+                        status="WARN",
+                    )
+                    worker_processes.pop(worker_role, None)
             time.sleep(1.0)
     except KeyboardInterrupt:
         log_step("Shutdown requested. Stopping worker processes...", status="WARN")
     finally:
         occupancy_scheduler.stop()
-        for proc in worker_processes:
+        for proc in worker_processes.values():
             if proc.poll() is None:
                 proc.terminate()
-        for proc in worker_processes:
+        for proc in worker_processes.values():
             try:
                 proc.wait(timeout=10)
             except Exception:

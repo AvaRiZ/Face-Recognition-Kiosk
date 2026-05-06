@@ -4,6 +4,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from ultralytics import YOLO
 
@@ -251,7 +252,10 @@ def build_runtime() -> WorkerRuntime:
 
     api_base_url = (os.environ.get("WORKER_API_BASE_URL") or "http://127.0.0.1:5000").strip()
     token = (os.environ.get("WORKER_INTERNAL_TOKEN") or "").strip()
-    queue_dir = (os.environ.get("WORKER_QUEUE_DIR") or "data/worker_queue").strip()
+    queue_dir = (os.environ.get("WORKER_QUEUE_DIR") or "").strip()
+    if not queue_dir:
+        local_appdata = Path(os.environ.get("LOCALAPPDATA", str(Path.cwd())))
+        queue_dir = str(local_appdata / "FaceRecognitionKiosk" / "worker_queue")
 
     api_client = ApiClient(base_url=api_base_url, token=token)
     queue = DurableOutboundQueue(queue_dir=queue_dir)
@@ -349,6 +353,15 @@ def build_runtime() -> WorkerRuntime:
 def main() -> None:
     runtime = build_runtime()
     api_url = (os.environ.get("WORKER_API_BASE_URL") or "http://127.0.0.1:5000").strip()
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleTitleW(
+                f"Library Face Access System - {runtime.worker_role.upper()} Worker"
+            )
+        except Exception:
+            pass
 
     log_header(f"Library {runtime.worker_role.title()} Recognition Worker")
     log_step(f"API target: {api_url}")
