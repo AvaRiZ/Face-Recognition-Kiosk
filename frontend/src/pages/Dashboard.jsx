@@ -692,10 +692,20 @@ function TopVisitorsTable({ data }) {
     );
   }
 
+  const normalizeTopVisitorSrCode = (value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized) return "Visitor";
+    const lowered = normalized.toLowerCase();
+    if (lowered === "n/a" || lowered === "na" || lowered === "unknown" || lowered === "-") {
+      return "Visitor";
+    }
+    return normalized;
+  };
+
   const normalizedData = data.map((visitor) => ({
     ...visitor,
     name: visitor?.name || "Unknown",
-    sr_code: visitor?.sr_code || "N/A",
+    sr_code: normalizeTopVisitorSrCode(visitor?.sr_code),
     visits: toNonNegativeNumber(visitor?.visits),
   }));
   const max = Math.max(...normalizedData.map((visitor) => visitor.visits), 1);

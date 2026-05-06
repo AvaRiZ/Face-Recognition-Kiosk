@@ -3096,10 +3096,21 @@ function getPeakHour(peakHours = []) {
 function getTopProgram(programDistribution = []) {
   if (!programDistribution.length) return { label: "No dominant program yet", value: 0 };
   const top = programDistribution[0];
+  const normalizedProgram = normalizeProgramLabel(top?.program);
   return {
-    label: top?.program || "Unknown",
+    label: normalizedProgram,
     value: top?.count || 0,
   };
+}
+
+function normalizeProgramLabel(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "Visitor";
+  const lowered = normalized.toLowerCase();
+  if (lowered === "unknown" || lowered === "n/a" || lowered === "na" || lowered === "-") {
+    return "Visitor";
+  }
+  return normalized;
 }
 
 function getYearLevelLabel(item) {
@@ -3136,6 +3147,9 @@ function normalizeYearLevelLabel(value) {
     "6th": "6th Year",
     "6th year": "6th Year",
     "sixth year": "6th Year",
+    "unknown:student": "Visitor",
+    "unknown student": "Visitor",
+    visitor: "Visitor",
     unknown: "Unknown",
   };
 
@@ -3874,7 +3888,7 @@ function AnalyticsReportsInner() {
         },
       },
       xaxis: {
-        categories: programDistribution.slice(0, 6).map((item) => item.program || "Unknown"),
+        categories: programDistribution.slice(0, 6).map((item) => normalizeProgramLabel(item.program)),
       },
       legend: { show: false },
     };

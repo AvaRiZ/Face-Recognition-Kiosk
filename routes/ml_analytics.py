@@ -159,23 +159,31 @@ def _normalize_program_series(df, program_lookup):
         "unmatched_codes": 0,
     }
 
-    def resolve_cell(value):
+    def _is_visitor_row(sr_code: str | None, user_type: str | None) -> bool:
+        normalized_user_type = str(user_type or "").strip().lower()
+        normalized_sr_code = str(sr_code or "").strip().lower()
+        visitor_like_sr = normalized_sr_code in {"visitor", "n/a", "na", "-", "unknown"}
+        return normalized_user_type == "visitor" or visitor_like_sr
+
+    def resolve_row(row):
+        value = row.get("program")
         resolved_program, resolution_status, _ = resolve_program_name(value, program_lookup)
         normalized_input = normalize_program_name(value)
         normalized_output = normalize_program_name(resolved_program)
+        is_visitor = _is_visitor_row(row.get("sr_code"), row.get("user_type"))
 
         if resolution_status == "catalog" and normalized_input and normalized_input != normalized_output:
             program_resolution["resolved_from_catalog"] += 1
-            return normalized_output or "Unknown"
+            return normalized_output or ("Visitor" if is_visitor else "Unknown")
         if resolution_status == "ambiguous" and is_program_code(normalized_input):
             program_resolution["ambiguous_codes"] += 1
-            return "Unknown"
+            return "Visitor" if is_visitor else "Unknown"
         if resolution_status == "unmatched" and is_program_code(normalized_input):
             program_resolution["unmatched_codes"] += 1
-            return "Unknown"
-        return normalized_output or "Unknown"
+            return "Visitor" if is_visitor else "Unknown"
+        return normalized_output or ("Visitor" if is_visitor else "Unknown")
 
-    df["program"] = df["program"].map(resolve_cell)
+    df["program"] = df.apply(resolve_row, axis=1)
     return program_resolution
 
 
@@ -195,7 +203,20 @@ def _derive_year_level_from_sr_code(sr_code: str | None) -> str:
     return _YEAR_LEVEL_LABELS.get(year_level, "")
 
 
-def _normalize_year_level_value(sr_code: str | None, raw_year_level: str | None) -> str:
+def _normalize_year_level_value(
+    sr_code: str | None,
+    raw_year_level: str | None,
+    *,
+    program: str | None = None,
+    user_type: str | None = None,
+) -> str:
+    normalized_user_type = str(user_type or "").strip().lower()
+    normalized_program = str(program or "").strip().lower()
+    normalized_sr_code = str(sr_code or "").strip().lower()
+    visitor_like_sr_code = normalized_sr_code in {"", "-", "n/a", "na", "visitor", "unknown"}
+    if normalized_user_type == "visitor" or normalized_program == "visitor" or visitor_like_sr_code:
+        return "Visitor"
+
     derived = _derive_year_level_from_sr_code(sr_code)
     if derived:
         return derived
@@ -230,6 +251,9 @@ def _normalize_year_level_value(sr_code: str | None, raw_year_level: str | None)
         "6th": "6th Year",
         "6th year": "6th Year",
         "sixth year": "6th Year",
+        "unknown:student": "Visitor",
+        "unknown student": "Visitor",
+        "visitor": "Visitor",
     }
     return aliases.get(lowered, normalized or "Unknown")
 
@@ -290,6 +314,7 @@ def run_ml_analytics(db_path):
     c.execute("""
         SELECT u.sr_code, u.name, NULLIF(TRIM(u.course),'') AS program,
                NULLIF(TRIM(u.gender),'') AS gender, NULL AS year_level,
+               COALESCE(NULLIF(TRIM(u.user_type), ''), '') AS user_type,
                re.confidence, re.captured_at AS timestamp, 'live' AS source
         FROM recognition_events re
         LEFT JOIN users u ON re.user_id = u.user_id
@@ -304,6 +329,7 @@ def run_ml_analytics(db_path):
                COALESCE(NULLIF(TRIM(u.course), ''), NULLIF(TRIM(i.program), '')) AS program,
                NULLIF(TRIM(i.gender),'') AS gender,
                NULLIF(TRIM(i.year_level),'') AS year_level,
+               COALESCE(NULLIF(TRIM(u.user_type), ''), '') AS user_type,
                0.85 AS confidence, i.timestamp, 'imported' AS source
         FROM imported_logs i
         LEFT JOIN users u ON u.sr_code = i.sr_code
@@ -344,7 +370,7 @@ def run_ml_analytics(db_path):
 
     after_conf = []
     for row in all_raw:
-        sr, name, prog, gender, yr, conf, ts, src = row
+        sr, name, prog, gender, yr, user_type, conf, ts, src = row
         ts_text = _timestamp_to_text(ts)
         if src == "live":
             cv = _coerce_confidence(conf)
@@ -354,11 +380,11 @@ def run_ml_analytics(db_path):
         else:
             cv = float(conf) if conf else 0.85
         after_conf.append((sr, name, prog or "", gender or "",
-                           yr or "", cv, ts_text, src))
+                           yr or "", user_type or "", cv, ts_text, src))
 
     after_hrs = []
     for row in after_conf:
-        sr, name, prog, gender, yr, cv, ts, src = row
+        sr, name, prog, gender, yr, user_type, cv, ts, src = row
         if ts and len(ts) == 10:
             ts = ts + " 08:00:00"
         try:
@@ -369,19 +395,19 @@ def run_ml_analytics(db_path):
         except Exception:
             removed_hrs += 1
             continue
-        after_hrs.append((sr, name, prog, gender, yr, cv, ts, src))
+        after_hrs.append((sr, name, prog, gender, yr, user_type, cv, ts, src))
 
     seen    = set()
     cleaned = []
     for row in sorted(after_hrs, key=lambda x: x[6]):
-        sr, name, prog, gender, yr, cv, ts, src = row
+        sr, name, prog, gender, yr, user_type, cv, ts, src = row
         day = (ts or "")[:10]
         key = (sr, day)
         if not sr or not day or key in seen:
             removed_dup += 1
             continue
         seen.add(key)
-        cleaned.append((sr, name, prog, gender, yr, cv, ts, src))
+        cleaned.append((sr, name, prog, gender, yr, user_type, cv, ts, src))
 
     total_cleaned = len(cleaned)
     data_quality  = {
@@ -400,7 +426,7 @@ def run_ml_analytics(db_path):
     # STAGE 3 — BUILD DATAFRAME
     # ══════════════════════════════════════════════════════════
     records = []
-    for sr, name, prog, gender, yr, cv, ts, src in cleaned:
+    for sr, name, prog, gender, yr, user_type, cv, ts, src in cleaned:
         day = (ts or "")[:10]
         try:
             d = date.fromisoformat(day)
@@ -412,6 +438,7 @@ def run_ml_analytics(db_path):
             "program":    prog or "Unknown",
             "gender":     (gender or "Unknown").strip().title(),
             "year_level": yr or "Unknown",
+            "user_type":  user_type or "",
             "confidence": cv,
             "date":       day,
             "hour":       int((ts or "")[11:13]) if ts and len(ts) >= 13 else 8,
@@ -428,8 +455,13 @@ def run_ml_analytics(db_path):
 
     program_resolution = _normalize_program_series(df, program_lookup)
     df["year_level"] = [
-        _normalize_year_level_value(sr_code, year_level)
-        for sr_code, year_level in zip(df["sr_code"], df["year_level"])
+        _normalize_year_level_value(sr_code, year_level, program=program, user_type=user_type)
+        for sr_code, year_level, program, user_type in zip(
+            df["sr_code"],
+            df["year_level"],
+            df["program"],
+            df["user_type"],
+        )
     ]
     daily_df    = df.groupby("date").size().reset_index(name="count")
     daily_df["date"] = pd.to_datetime(daily_df["date"])
@@ -917,6 +949,7 @@ def run_basic_analytics(db_path):
     c.execute("""
         SELECT u.sr_code, u.name, NULLIF(TRIM(u.course),'') AS program,
                NULLIF(TRIM(u.gender),'') AS gender, NULL AS year_level,
+               COALESCE(NULLIF(TRIM(u.user_type), ''), '') AS user_type,
                re.confidence, re.captured_at AS timestamp, 'live' AS source
         FROM recognition_events re
         LEFT JOIN users u ON re.user_id = u.user_id
@@ -931,6 +964,7 @@ def run_basic_analytics(db_path):
                COALESCE(NULLIF(TRIM(u.course), ''), NULLIF(TRIM(i.program), '')) AS program,
                NULLIF(TRIM(i.gender),'') AS gender,
                NULLIF(TRIM(i.year_level),'') AS year_level,
+               COALESCE(NULLIF(TRIM(u.user_type), ''), '') AS user_type,
                0.85 AS confidence, i.timestamp, 'imported' AS source
         FROM imported_logs i
         LEFT JOIN users u ON u.sr_code = i.sr_code
@@ -971,7 +1005,7 @@ def run_basic_analytics(db_path):
 
     after_conf = []
     for row in all_raw:
-        sr, name, prog, gender, yr, conf, ts, src = row
+        sr, name, prog, gender, yr, user_type, conf, ts, src = row
         ts_text = _timestamp_to_text(ts)
         if src == "live":
             cv = _coerce_confidence(conf)
@@ -981,11 +1015,11 @@ def run_basic_analytics(db_path):
         else:
             cv = float(conf) if conf else 0.85
         after_conf.append((sr, name, prog or "", gender or "",
-                           yr or "", cv, ts_text, src))
+                           yr or "", user_type or "", cv, ts_text, src))
 
     after_hrs = []
     for row in after_conf:
-        sr, name, prog, gender, yr, cv, ts, src = row
+        sr, name, prog, gender, yr, user_type, cv, ts, src = row
         if ts and len(ts) == 10:
             ts = ts + " 08:00:00"
         try:
@@ -995,13 +1029,13 @@ def run_basic_analytics(db_path):
                 continue
         except (ValueError, IndexError):
             pass
-        after_hrs.append((sr, name, prog, gender, yr, cv, ts, src))
+        after_hrs.append((sr, name, prog, gender, yr, user_type, cv, ts, src))
 
     # Remove duplicates: keep first scan per student per day
     seen = set()
     after_dup = []
     for row in after_hrs:
-        sr, name, prog, gender, yr, cv, ts, src = row
+        sr, name, prog, gender, yr, user_type, cv, ts, src = row
         day_key = (sr, ts[:10]) if ts else (sr, "")
         if day_key not in seen:
             seen.add(day_key)
@@ -1041,11 +1075,16 @@ def run_basic_analytics(db_path):
             "total_cleaned_logs": total_cleaned,
         })
 
-    df = pd.DataFrame(after_dup, columns=["sr_code", "name", "program", "gender", "year_level", "confidence", "timestamp", "source"])
+    df = pd.DataFrame(after_dup, columns=["sr_code", "name", "program", "gender", "year_level", "user_type", "confidence", "timestamp", "source"])
     program_resolution = _normalize_program_series(df, program_lookup)
     df["year_level"] = [
-        _normalize_year_level_value(sr_code, year_level)
-        for sr_code, year_level in zip(df["sr_code"], df["year_level"])
+        _normalize_year_level_value(sr_code, year_level, program=program, user_type=user_type)
+        for sr_code, year_level, program, user_type in zip(
+            df["sr_code"],
+            df["year_level"],
+            df["program"],
+            df["user_type"],
+        )
     ]
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.dropna(subset=["timestamp"])

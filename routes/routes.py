@@ -68,6 +68,39 @@ def _normalize_timestamp_for_json(value, default=""):
     return text or default
 
 
+def _normalize_user_type(value) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"enrolled", "unrecognized", "visitor", "staff"} else "unrecognized"
+
+
+def _display_profile_field(value, *, user_type: str, default: str = "-", visitor_default: str = "Visitor") -> str:
+    text = str(value or "").strip()
+    if text:
+        return text
+    return visitor_default if _normalize_user_type(user_type) == "visitor" else default
+
+
+def _parse_payload_json_object(raw_value) -> dict:
+    if raw_value is None:
+        return {}
+    if isinstance(raw_value, dict):
+        return dict(raw_value)
+    if isinstance(raw_value, memoryview):
+        raw_value = raw_value.tobytes()
+    if isinstance(raw_value, bytearray):
+        raw_value = bytes(raw_value)
+    if isinstance(raw_value, bytes):
+        raw_value = raw_value.decode("utf-8", errors="ignore")
+    text = str(raw_value or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def init_imported_logs_table(db_path):
     conn = db_connect(db_path)
     c = conn.cursor()
@@ -153,6 +186,58 @@ def create_routes_blueprint(deps):
         )
         conn.commit()
         conn.close()
+
+    def _snapshot_recognition_event_identity(
+        cursor,
+        *,
+        user_id: int,
+        name: str | None,
+        sr_code: str | None,
+        gender: str | None,
+        program: str | None,
+        user_type: str | None,
+    ) -> None:
+        normalized_user_type = _normalize_user_type(user_type)
+        fallback_sr = str(sr_code or "").strip()
+        fallback_name = _display_profile_field(name, user_type=normalized_user_type)
+        fallback_gender = _display_profile_field(gender, user_type=normalized_user_type)
+        fallback_program = _display_profile_field(program, user_type=normalized_user_type)
+
+        cursor.execute(
+            """
+            SELECT id, sr_code, payload_json
+            FROM recognition_events
+            WHERE user_id = %s
+            """,
+            (int(user_id),),
+        )
+        for event_row_id, event_sr_code, payload_raw in cursor.fetchall():
+            payload = _parse_payload_json_object(payload_raw)
+            resolved_sr_code = str(event_sr_code or "").strip() or fallback_sr
+            if not resolved_sr_code and normalized_user_type == "visitor":
+                resolved_sr_code = "Visitor"
+            payload.update(
+                {
+                    "identity_name": fallback_name,
+                    "identity_sr_code": resolved_sr_code or "-",
+                    "identity_user_type": normalized_user_type,
+                    "identity_gender": fallback_gender,
+                    "identity_program": fallback_program,
+                    "identity_snapshot_at": _utc_now_iso(),
+                }
+            )
+            cursor.execute(
+                """
+                UPDATE recognition_events
+                SET sr_code = %s, payload_json = %s
+                WHERE id = %s
+                """,
+                (
+                    resolved_sr_code or None,
+                    json.dumps(payload, ensure_ascii=True),
+                    int(event_row_id),
+                ),
+            )
 
     def _create_identity_user(
         *,
@@ -1090,7 +1175,7 @@ def create_routes_blueprint(deps):
         c.execute(
             """
             SELECT
-                COALESCE(NULLIF(TRIM(u.course), ''), 'Unassigned') AS program,
+                COALESCE(NULLIF(TRIM(u.course), ''), 'Visitor') AS program,
                 SUBSTR(CAST(re.captured_at AS TEXT), 6, 2) AS month_num,
                 COUNT(*) AS visit_count
             FROM recognition_events re
@@ -1300,12 +1385,18 @@ def create_routes_blueprint(deps):
         # ── Top 10 frequent visitors ───────────────────────────────
 
         c.execute("""
-                        SELECT u.name, u.sr_code, COUNT(re.id) as visits
+                        SELECT
+                            COALESCE(NULLIF(TRIM(u.name), ''), 'Visitor') AS name,
+                            COALESCE(NULLIF(TRIM(u.sr_code), ''), NULLIF(TRIM(re.sr_code), ''), 'Visitor') AS sr_code,
+                            COUNT(re.id) as visits
                         FROM recognition_events re
                         LEFT JOIN users u ON re.user_id = u.user_id
                         WHERE re.captured_at IS NOT NULL
                             AND DATE(re.captured_at) BETWEEN %s AND %s
-                        GROUP BY re.user_id, u.name, u.sr_code
+                        GROUP BY
+                            re.user_id,
+                            COALESCE(NULLIF(TRIM(u.name), ''), 'Visitor'),
+                            COALESCE(NULLIF(TRIM(u.sr_code), ''), NULLIF(TRIM(re.sr_code), ''), 'Visitor')
             ORDER BY visits DESC
             LIMIT 10
         """, range_params)
@@ -2693,7 +2784,7 @@ def create_routes_blueprint(deps):
 
         c.execute(
             f"""
-            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated, archived_at
+            SELECT user_id, name, sr_code, gender, course AS program, created_at, last_updated, archived_at, user_type
             FROM users
             WHERE {where_sql}
             ORDER BY {order_by_sql}
@@ -2704,13 +2795,14 @@ def create_routes_blueprint(deps):
         rows = [
             {
                 "user_id": row[0],
-                "name": row[1] or "-",
-                "sr_code": row[2] or "-",
-                "gender": row[3] or "-",
-                "program": row[4] or "-",
+                "name": _display_profile_field(row[1], user_type=row[8]),
+                "sr_code": _display_profile_field(row[2], user_type=row[8]),
+                "gender": _display_profile_field(row[3], user_type=row[8]),
+                "program": _display_profile_field(row[4], user_type=row[8]),
                 "created_at": _normalize_timestamp_for_json(row[5], "-"),
                 "last_updated": _normalize_timestamp_for_json(row[6], "-"),
                 "archived_at": _normalize_timestamp_for_json(row[7], "-"),
+                "user_type": _normalize_user_type(row[8]),
             }
             for row in c.fetchall()
         ]
@@ -2862,7 +2954,14 @@ def create_routes_blueprint(deps):
     def api_profiles_delete(user_id):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
-        c.execute("SELECT name, sr_code, archived_at FROM users WHERE user_id = %s", (user_id,))
+        c.execute(
+            """
+            SELECT name, sr_code, archived_at, gender, course, user_type
+            FROM users
+            WHERE user_id = %s
+            """,
+            (user_id,),
+        )
         row = c.fetchone()
         if not row:
             conn.close()
@@ -2871,11 +2970,23 @@ def create_routes_blueprint(deps):
         name = row[0] or "-"
         sr_code = row[1] or "-"
         archived_at = row[2]
+        gender = row[3] or ""
+        program = row[4] or ""
+        user_type = row[5] or "unrecognized"
         if archived_at is None or not str(archived_at).strip():
             conn.close()
             return jsonify({"success": False, "message": "Active profiles must be archived before deletion."}), 409
 
         try:
+            _snapshot_recognition_event_identity(
+                c,
+                user_id=int(user_id),
+                name=name,
+                sr_code=sr_code,
+                gender=gender,
+                program=program,
+                user_type=user_type,
+            )
             c.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
             conn.commit()
         except Exception as exc:
@@ -2926,22 +3037,49 @@ def create_routes_blueprint(deps):
         user_ids = payload.get("user_ids") or []
         if not user_ids:
             return jsonify({"success": False, "message": "No profiles selected for archiving."}), 400
+        normalized_user_ids = []
+        for raw_user_id in user_ids:
+            try:
+                normalized_user_ids.append(int(raw_user_id))
+            except (TypeError, ValueError):
+                continue
+        normalized_user_ids = sorted(set(normalized_user_ids))
+        if not normalized_user_ids:
+            return jsonify({"success": False, "message": "No valid profile IDs were provided."}), 400
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         c.execute(
             f"""
+            SELECT user_id, name, sr_code, gender, course, user_type
+            FROM users
+            WHERE user_id IN ({",".join("%s" for _ in normalized_user_ids)})
+            """,
+            tuple(normalized_user_ids),
+        )
+        for row in c.fetchall():
+            _snapshot_recognition_event_identity(
+                c,
+                user_id=int(row[0]),
+                name=row[1],
+                sr_code=row[2],
+                gender=row[3],
+                program=row[4],
+                user_type=row[5],
+            )
+        c.execute(
+            f"""
             UPDATE users
             SET archived_at = CURRENT_TIMESTAMP
-            WHERE user_id IN ({",".join("%s" for _ in user_ids)})
+            WHERE user_id IN ({",".join("%s" for _ in normalized_user_ids)})
             """,
-            user_ids,
+            tuple(normalized_user_ids),
         )
         conn.commit()
         conn.close()
 
         bump_profiles_version(deps["db_path"])
-        log_action("ARCHIVE_PROFILES", target=",".join(map(str, user_ids)))
+        log_action("ARCHIVE_PROFILES", target=",".join(map(str, normalized_user_ids)))
         return jsonify({"success": True})
 
     @bp.route("/api/archived-profiles", methods=["GET"], endpoint="api_archived_profiles")
@@ -3401,13 +3539,14 @@ def create_routes_blueprint(deps):
                     e.id,
                     COALESCE(e.event_id, '') AS event_id,
                     e.user_id,
-                    COALESCE(u.name, '-') AS name,
-                    COALESCE(e.sr_code, u.sr_code, '-') AS sr_code,
+                    COALESCE(u.name, '') AS name,
+                    COALESCE(e.sr_code, u.sr_code, '') AS sr_code,
                     COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
                     COALESCE(e.confidence, 0.0) AS confidence,
                     COALESCE(NULLIF(TRIM(e.event_type), ''), 'entry') AS event_type,
                     COALESCE(e.captured_at, e.ingested_at) AS event_time,
-                    COALESCE(e.decision, 'allowed') AS decision
+                    COALESCE(e.decision, 'allowed') AS decision,
+                    COALESCE(e.payload_json, '') AS payload_json
                 FROM recognition_events e
                 LEFT JOIN users u ON e.user_id = u.user_id
                 ORDER BY e.ingested_at DESC, e.id DESC
@@ -3442,7 +3581,7 @@ def create_routes_blueprint(deps):
 
         rows = []
         for raw in raw_logs:
-            if source_mode == "enhanced" and len(raw) >= 10:
+            if source_mode == "enhanced" and len(raw) >= 11:
                 (
                     event_row_id,
                     event_id,
@@ -3454,11 +3593,26 @@ def create_routes_blueprint(deps):
                     event_type,
                     event_time,
                     decision,
+                    payload_json,
                 ) = raw
+                payload = _parse_payload_json_object(payload_json)
                 event_type = str(event_type or "").strip().lower() or "entry"
                 if event_type not in {"entry", "exit"}:
                     event_type = "unknown"
-                normalized_user_type = str(user_type or "unrecognized").strip().lower() or "unrecognized"
+                snapshot_user_type = str(payload.get("identity_user_type") or payload.get("user_type") or "").strip()
+                normalized_user_type = _normalize_user_type(snapshot_user_type or user_type)
+                snapshot_name = (
+                    payload.get("identity_name")
+                    or payload.get("user_name")
+                    or payload.get("name")
+                )
+                snapshot_sr_code = (
+                    payload.get("identity_sr_code")
+                    or payload.get("user_sr_code")
+                    or payload.get("sr_code")
+                )
+                name = _display_profile_field(name or snapshot_name, user_type=normalized_user_type)
+                sr_code = _display_profile_field(sr_code or snapshot_sr_code, user_type=normalized_user_type)
                 normalized_decision = str(decision or "allowed").strip().lower() or "allowed"
             else:
                 if len(raw) == 4:
@@ -3471,6 +3625,8 @@ def create_routes_blueprint(deps):
                 event_type = "entry"
                 normalized_user_type = "enrolled"
                 normalized_decision = "allowed"
+                name = _display_profile_field(name, user_type=normalized_user_type)
+                sr_code = _display_profile_field(sr_code, user_type=normalized_user_type)
 
             value = _coerce_confidence(confidence) or 0.0
             conf_pct = int(value * 100.0)
@@ -3502,8 +3658,8 @@ def create_routes_blueprint(deps):
                 "id": event_row_id,
                 "event_id": event_id,
                 "user_id": user_id,
-                "name": name or "-",
-                "sr_code": sr_code or "-",
+                "name": name,
+                "sr_code": sr_code,
                 "user_type": normalized_user_type,
                 "event_type": event_type,
                 "camera_id": camera_id,

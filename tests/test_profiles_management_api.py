@@ -125,7 +125,7 @@ class _FakeProfilesCursor:
             self._rows = [(len(filtered),)]
             return
 
-        if normalized.startswith("select user_id, name, sr_code, gender, course as program, created_at, last_updated, archived_at from users where"):
+        if normalized.startswith("select user_id, name, sr_code, gender, course as program, created_at, last_updated, archived_at, user_type from users where"):
             limit = int(values[-2])
             offset = int(values[-1])
             filtered = _filter_rows(self.store["rows"], normalized, values[:-2])
@@ -141,6 +141,7 @@ class _FakeProfilesCursor:
                     row["created_at"],
                     row["last_updated"],
                     row["archived_at"],
+                    row["user_type"],
                 )
                 for row in page_rows
             ]
@@ -177,10 +178,18 @@ class _FakeProfilesCursor:
                     break
             return
 
-        if normalized.startswith("select name, sr_code, archived_at from users where user_id = %s"):
+        if normalized.startswith("select name, sr_code, archived_at, gender, course, user_type from users where user_id = %s"):
             user_id = int(values[0])
             row = next((entry for entry in self.store["rows"] if int(entry.get("user_id") or 0) == user_id), None)
-            self._rows = [(row["name"], row["sr_code"], row["archived_at"])] if row else []
+            self._rows = [(row["name"], row["sr_code"], row["archived_at"], row["gender"], row["course"], row["user_type"])] if row else []
+            return
+
+        if normalized.startswith("select id, sr_code, payload_json from recognition_events where user_id = %s"):
+            self._rows = []
+            return
+
+        if normalized.startswith("update recognition_events set sr_code = %s, payload_json = %s where id = %s"):
+            self.rowcount = 0
             return
 
         if normalized.startswith("delete from users where user_id = %s"):
@@ -261,6 +270,7 @@ class ProfileManagementApiTests(unittest.TestCase):
                     "created_at": "2026-01-01 08:00:00",
                     "last_updated": "2026-01-02 08:00:00",
                     "archived_at": None,
+                    "user_type": "enrolled",
                 },
                 {
                     "user_id": 2,
@@ -271,6 +281,7 @@ class ProfileManagementApiTests(unittest.TestCase):
                     "created_at": "2026-01-03 08:00:00",
                     "last_updated": "2026-01-03 12:00:00",
                     "archived_at": "2026-02-01 10:00:00",
+                    "user_type": "enrolled",
                 },
                 {
                     "user_id": 3,
@@ -281,6 +292,7 @@ class ProfileManagementApiTests(unittest.TestCase):
                     "created_at": "2026-01-04 08:00:00",
                     "last_updated": "2026-01-04 10:00:00",
                     "archived_at": None,
+                    "user_type": "enrolled",
                 },
             ]
         }
