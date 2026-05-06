@@ -36,14 +36,104 @@ function normalizeRolePermissions(role, apiPermissions) {
 }
 
 function roleSummary(role) {
-  if (role === 'super_admin') {
-    return 'Full control: recognition thresholds, capacity settings, retention, and hardware configuration.';
-  }
-  if (role === 'library_admin') {
-    return 'Operational control: update capacity, warning thresholds, and candidate search depth.';
-  }
-  return 'Read-only view: monitor thresholds, occupancy settings, and recent configuration changes.';
+  if (role === 'super_admin') return 'Full control over all system settings and operations.';
+  if (role === 'library_admin') return 'Manage capacity, warning thresholds, and candidate search depth.';
+  return 'Read-only access to monitor system configuration.';
 }
+
+function RoleBadge({ role }) {
+  const map = {
+    super_admin: { label: 'Super Admin', cls: 'bg-danger' },
+    library_admin: { label: 'Library Admin', cls: 'bg-primary' }
+  };
+  const cfg = map[role] || { label: 'Viewer', cls: 'bg-secondary' };
+  return <span className={`badge ${cfg.cls} ms-2`}>{cfg.label}</span>;
+}
+
+function StatCard({ value, label, accent }) {
+  return (
+    <div
+      className="rounded-3 p-3 d-flex flex-column align-items-center justify-content-center text-center h-100"
+      style={{ background: 'var(--bs-tertiary-bg)', border: `2px solid ${accent || 'var(--bs-border-color)'}` }}
+    >
+      <div className="fw-bold fs-3 lh-1 mb-1" style={{ color: accent || 'inherit' }}>{value}</div>
+      <div className="small text-muted">{label}</div>
+    </div>
+  );
+}
+
+function SliderField({ id, label, value, onChange, min, max, step = '0.01', disabled, helpText, displayValue }) {
+  return (
+    <div>
+      <div className="d-flex justify-content-between align-items-center mb-1">
+        <label htmlFor={id} className="form-label mb-0 fw-medium">{label}</label>
+        <span
+          className="badge rounded-pill px-2 py-1"
+          style={{ background: 'var(--bs-primary)', color: '#fff', fontVariantNumeric: 'tabular-nums', minWidth: '3.5rem' }}
+        >
+          {displayValue ?? value}
+        </span>
+      </div>
+      <input
+        type="range"
+        id={id}
+        className="form-range"
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        value={value}
+        onChange={onChange}
+      />
+      {helpText && <div className="form-text">{helpText}</div>}
+    </div>
+  );
+}
+
+function NumberField({ id, label, value, onChange, min, max, step = '1', disabled, helpText }) {
+  return (
+    <div>
+      <label htmlFor={id} className="form-label fw-medium">{label}</label>
+      <input
+        type="number"
+        id={id}
+        className="form-control"
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        value={value}
+        onChange={onChange}
+      />
+      {helpText && <div className="form-text">{helpText}</div>}
+    </div>
+  );
+}
+
+function TextField({ id, label, value, onChange, disabled, placeholder, helpText }) {
+  return (
+    <div>
+      <label htmlFor={id} className="form-label fw-medium">{label}</label>
+      <input
+        type="text"
+        id={id}
+        className="form-control font-monospace"
+        disabled={disabled}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+      />
+      {helpText && <div className="form-text">{helpText}</div>}
+    </div>
+  );
+}
+
+/* ── Tab definitions ── */
+const TAB_OVERVIEW = 'overview';
+const TAB_OCCUPANCY = 'occupancy';
+const TAB_RECOGNITION = 'recognition';
+const TAB_ADVANCED = 'advanced';
+const TAB_AUDIT = 'audit';
 
 export default function SettingsPage() {
   const { session } = useSession();
@@ -53,6 +143,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [loadError, setLoadError] = React.useState('');
+  const [activeTab, setActiveTab] = React.useState(TAB_OVERVIEW);
 
   const [threshold, setThreshold] = React.useState('0.3');
   const [qualityThreshold, setQualityThreshold] = React.useState('0.2');
@@ -101,9 +192,7 @@ export default function SettingsPage() {
     }
   }, [applySettingsPayload]);
 
-  React.useEffect(() => {
-    loadSettings();
-  }, [loadSettings]);
+  React.useEffect(() => { loadSettings(); }, [loadSettings]);
 
   async function handleSubmit(ev) {
     ev.preventDefault();
@@ -111,7 +200,6 @@ export default function SettingsPage() {
       await showError('Read-Only Access', 'Your role does not have permission to update settings.');
       return;
     }
-
     const payload = {};
     if (permissions.can_edit_operational) {
       payload.max_occupancy = maxOccupancy;
@@ -130,7 +218,6 @@ export default function SettingsPage() {
       payload.entry_cctv_stream_source = entryCctvStreamSource;
       payload.exit_cctv_stream_source = exitCctvStreamSource;
     }
-
     setSaving(true);
     try {
       const response = await fetchJson('/api/settings/recognition', {
@@ -147,22 +234,10 @@ export default function SettingsPage() {
   }
 
   async function resetDatabase() {
-    const firstConfirmation = await confirmAction({
-      title: 'Reset Database?',
-      text: 'This will delete all registered users and face data. This action cannot be undone.',
-      confirmButtonText: 'Continue',
-      confirmButtonColor: '#dc3545'
-    });
-    if (!firstConfirmation) return;
-
-    const secondConfirmation = await confirmAction({
-      title: 'Final Confirmation',
-      text: 'Confirm again to permanently reset the database.',
-      confirmButtonText: 'Confirm Reset',
-      confirmButtonColor: '#dc3545'
-    });
-    if (!secondConfirmation) return;
-
+    const ok1 = await confirmAction({ title: 'Reset Database?', text: 'This will delete all registered users and face data. This action cannot be undone.', confirmButtonText: 'Continue', confirmButtonColor: '#dc3545' });
+    if (!ok1) return;
+    const ok2 = await confirmAction({ title: 'Final Confirmation', text: 'Confirm again to permanently reset the database.', confirmButtonText: 'Confirm Reset', confirmButtonColor: '#dc3545' });
+    if (!ok2) return;
     try {
       await fetchJson('/api/reset_database', { method: 'POST' });
       await showSuccess('Completed', 'Database reset successfully. The system will restart.');
@@ -173,22 +248,10 @@ export default function SettingsPage() {
   }
 
   async function clearRecognitionLog() {
-    const firstConfirmation = await confirmAction({
-      title: 'Clear Recognition Events?',
-      text: 'This will clear all recognition history. This action cannot be undone.',
-      confirmButtonText: 'Continue',
-      confirmButtonColor: '#fd7e14'
-    });
-    if (!firstConfirmation) return;
-
-    const secondConfirmation = await confirmAction({
-      title: 'Final Confirmation',
-      text: 'Confirm again to permanently clear all recognition events.',
-      confirmButtonText: 'Confirm Clear',
-      confirmButtonColor: '#fd7e14'
-    });
-    if (!secondConfirmation) return;
-
+    const ok1 = await confirmAction({ title: 'Clear Recognition Events?', text: 'This will clear all recognition history. This action cannot be undone.', confirmButtonText: 'Continue', confirmButtonColor: '#fd7e14' });
+    if (!ok1) return;
+    const ok2 = await confirmAction({ title: 'Final Confirmation', text: 'Confirm again to permanently clear all recognition events.', confirmButtonText: 'Confirm Clear', confirmButtonColor: '#fd7e14' });
+    if (!ok2) return;
     try {
       await fetchJson('/api/clear_log', { method: 'POST' });
       await showSuccess('Completed', 'Recognition events cleared successfully.');
@@ -198,30 +261,7 @@ export default function SettingsPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '30vh' }}>
-        <div className="spinner-border text-primary" role="status"></div>
-      </div>
-    );
-  }
-
-  if (loadError) {
-    return (
-      <section className="section">
-        <div className="pagetitle">
-          <h1>System Settings</h1>
-        </div>
-        <div className="alert alert-danger mb-3" role="alert">
-          Failed to load settings: {loadError}
-        </div>
-        <button type="button" className="btn btn-outline-primary" onClick={loadSettings}>
-          Retry
-        </button>
-      </section>
-    );
-  }
-
+  /* ── Derived flags ── */
   const canEditThresholds = Boolean(permissions.can_edit_thresholds);
   const canEditOperational = Boolean(permissions.can_edit_operational);
   const canSave = Boolean(permissions.can_save);
@@ -230,424 +270,378 @@ export default function SettingsPage() {
   const auditRows = Array.isArray(data?.audit_rows) ? data.audit_rows : [];
   const lastChange = data?.last_change || null;
 
+  /* ── Build tab list based on permissions ── */
+  const tabs = [
+    { id: TAB_OVERVIEW, label: 'Overview', icon: 'bi-speedometer2' },
+    { id: TAB_OCCUPANCY, label: 'Occupancy', icon: 'bi-people-fill' },
+    { id: TAB_RECOGNITION, label: 'Recognition', icon: 'bi-eye-fill' },
+    canManageAdvancedOps && { id: TAB_ADVANCED, label: 'Advanced', icon: 'bi-gear-wide-connected' },
+    canViewAudit && { id: TAB_AUDIT, label: 'Audit Log', icon: 'bi-journal-text' }
+  ].filter(Boolean);
+
+  /* ── Loading / error states ── */
+  if (loading) {
+    return (
+      <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '30vh' }}>
+        <div className="spinner-border text-primary" role="status" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <section className="section">
+        <div className="pagetitle"><h1>System Settings</h1></div>
+        <div className="alert alert-danger mb-3" role="alert">Failed to load settings: {loadError}</div>
+        <button type="button" className="btn btn-outline-primary" onClick={loadSettings}>Retry</button>
+      </section>
+    );
+  }
+
+  /* ── Save footer (shared across form tabs) ── */
+  const SaveFooter = () => (
+    <div className="d-flex align-items-center gap-2 pt-3 mt-2" style={{ borderTop: '1px solid var(--bs-border-color)' }}>
+      <button type="submit" className="btn btn-primary px-4" disabled={!canSave || saving}>
+        {saving
+          ? <><span className="spinner-border spinner-border-sm me-2" />Saving…</>
+          : <><i className="bi bi-floppy me-2" />Save Settings</>}
+      </button>
+      {!canSave && <span className="badge bg-secondary"><i className="bi bi-lock me-1" />Read-only role</span>}
+    </div>
+  );
+
   return (
     <section className="section">
-      <div className="pagetitle">
-        <h1>System Settings</h1>
-        <p className="text-muted mb-0">{roleSummary(role)}</p>
+      {/* ── Page header ── */}
+      <div className="pagetitle d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+        <div>
+          <h1 className="mb-0">
+            System Settings
+            <RoleBadge role={role} />
+          </h1>
+          <p className="text-muted small mb-0 mt-1">{roleSummary(role)}</p>
+        </div>
       </div>
 
-      <div className="row g-3">
-        <div className="col-12">
-          <div className="card">
-            <div className="card-body">
-              <h5 className="card-title">System Statistics</h5>
-              <div className="row g-3">
-                <div className="col-md-3">
-                  <div className="border rounded p-3 text-center h-100">
-                    <div className="h3 mb-1">{data?.user_count ?? 0}</div>
-                    <small className="text-muted">Registered Users</small>
-                  </div>
+      {/* ── Tab nav ── */}
+      <ul className="nav nav-tabs mb-0" style={{ borderBottom: '2px solid var(--bs-border-color)' }}>
+        {tabs.map(tab => (
+          <li className="nav-item" key={tab.id}>
+            <button
+              type="button"
+              className={`nav-link d-flex align-items-center gap-2${activeTab === tab.id ? ' active fw-semibold' : ''}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <i className={`bi ${tab.icon}`} />
+              <span className="d-none d-sm-inline">{tab.label}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {/* ── Tab panels ── */}
+      <div className="card rounded-top-0" style={{ borderTop: 'none' }}>
+        <div className="card-body p-4">
+
+          {/* ── Overview tab ── */}
+          {activeTab === TAB_OVERVIEW && (
+            <div>
+              <h6 className="text-uppercase text-muted fw-semibold mb-3" style={{ letterSpacing: '.07em', fontSize: '.7rem' }}>
+                Live Snapshot
+              </h6>
+              <div className="row g-3 mb-4">
+                <div className="col-6 col-md-3">
+                  <StatCard value={data?.user_count ?? 0} label="Registered Users" accent="#0d6efd" />
                 </div>
-                <div className="col-md-3">
-                  <div className="border rounded p-3 text-center h-100">
-                    <div className="h3 mb-1">{asFixedNumber(threshold, 3)}</div>
-                    <small className="text-muted">Current Threshold</small>
-                  </div>
+                <div className="col-6 col-md-3">
+                  <StatCard value={asFixedNumber(threshold, 3)} label="Recognition Threshold" accent="#198754" />
                 </div>
-                <div className="col-md-3">
-                  <div className="border rounded p-3 text-center h-100">
-                    <div className="h3 mb-1">{asFixedNumber(qualityThreshold, 2)}</div>
-                    <small className="text-muted">Min Face Quality</small>
-                  </div>
+                <div className="col-6 col-md-3">
+                  <StatCard value={asFixedNumber(qualityThreshold, 2)} label="Min Face Quality" accent="#fd7e14" />
                 </div>
-                <div className="col-md-3">
-                  <div className="border rounded p-3 text-center h-100">
-                    <div className="h3 mb-1">{maxOccupancy}</div>
-                    <small className="text-muted">Max Occupancy</small>
-                  </div>
+                <div className="col-6 col-md-3">
+                  <StatCard value={maxOccupancy} label="Max Occupancy" accent="#6f42c1" />
                 </div>
+              </div>
+
+              <h6 className="text-uppercase text-muted fw-semibold mb-3" style={{ letterSpacing: '.07em', fontSize: '.7rem' }}>
+                Access Summary
+              </h6>
+              <div className="row g-2">
+                {[
+                  { label: 'Edit Thresholds', ok: canEditThresholds },
+                  { label: 'Edit Capacity', ok: canEditOperational },
+                  { label: 'Advanced Ops', ok: canManageAdvancedOps },
+                  { label: 'View Audit', ok: canViewAudit },
+                  { label: 'Save Changes', ok: canSave }
+                ].map(({ label, ok }) => (
+                  <div key={label} className="col-auto">
+                    <span className={`badge d-flex align-items-center gap-1 px-3 py-2 ${ok ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border border-secondary-subtle'}`}>
+                      <i className={`bi ${ok ? 'bi-check-circle-fill' : 'bi-dash-circle'}`} />
+                      {label}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
-          </div>
-        </div>
+          )}
 
-        <div className="col-12">
-          <form className="row g-3" onSubmit={handleSubmit}>
-            <div className="col-12">
-              <div className="card">
-                <div className="card-body">
-                  <h5 className="card-title">Occupancy & Capacity</h5>
-                  <div className="row g-4">
-                    <div className="col-12">
-                      <label htmlFor="max_occupancy" className="form-label">
-                        Max Library Occupancy
-                      </label>
-                      <input
-                        type="number"
-                        id="max_occupancy"
-                        name="max_occupancy"
-                        className="form-control"
-                        min={bounds.max_occupancy?.min ?? DEFAULT_BOUNDS.max_occupancy.min}
-                        max={bounds.max_occupancy?.max ?? DEFAULT_BOUNDS.max_occupancy.max}
-                        step="1"
-                        disabled={!canEditOperational}
-                        value={maxOccupancy}
-                        onChange={(ev) => setMaxOccupancy(ev.target.value)}
-                      />
-                      <div className="form-text">
-                        Range: {bounds.max_occupancy?.min ?? DEFAULT_BOUNDS.max_occupancy.min} to{' '}
-                        {bounds.max_occupancy?.max ?? DEFAULT_BOUNDS.max_occupancy.max}. Used by occupancy analytics and
-                        alerts.
-                      </div>
-                    </div>
+          {/* ── Occupancy tab ── */}
+          {activeTab === TAB_OCCUPANCY && (
+            <form onSubmit={handleSubmit}>
+              <div className="row g-4">
+                <div className="col-12 col-lg-6">
+                  <NumberField
+                    id="max_occupancy"
+                    label="Max Library Occupancy"
+                    value={maxOccupancy}
+                    onChange={ev => setMaxOccupancy(ev.target.value)}
+                    min={bounds.max_occupancy?.min ?? DEFAULT_BOUNDS.max_occupancy.min}
+                    max={bounds.max_occupancy?.max ?? DEFAULT_BOUNDS.max_occupancy.max}
+                    disabled={!canEditOperational}
+                    helpText={`Range: ${bounds.max_occupancy?.min ?? DEFAULT_BOUNDS.max_occupancy.min}–${bounds.max_occupancy?.max ?? DEFAULT_BOUNDS.max_occupancy.max}. Used by occupancy analytics and alerts.`}
+                  />
+                </div>
 
-                    <div className="col-12">
-                      <label htmlFor="occupancy_warning_threshold" className="form-label">
-                        Occupancy Warning Threshold:{' '}
-                        <span className="badge bg-light text-dark">{asFixedNumber(occupancyWarningThreshold, 2)}</span>
-                      </label>
-                      <input
-                        type="range"
-                        id="occupancy_warning_threshold"
-                        name="occupancy_warning_threshold"
-                        className="form-range"
-                        min={bounds.occupancy_warning_threshold?.min ?? DEFAULT_BOUNDS.occupancy_warning_threshold.min}
-                        max={bounds.occupancy_warning_threshold?.max ?? DEFAULT_BOUNDS.occupancy_warning_threshold.max}
-                        step="0.01"
-                        disabled={!canEditOperational}
-                        value={occupancyWarningThreshold}
-                        onChange={(ev) => setOccupancyWarningThreshold(ev.target.value)}
-                      />
-                      <div className="form-text">
-                        Alerts fire when occupancy reaches this ratio of max capacity.
-                      </div>
-                    </div>
+                <div className="col-12 col-lg-6">
+                  <NumberField
+                    id="occupancy_snapshot_interval_seconds"
+                    label="Snapshot Interval (seconds)"
+                    value={occupancySnapshotIntervalSeconds}
+                    onChange={ev => setOccupancySnapshotIntervalSeconds(ev.target.value)}
+                    min={bounds.occupancy_snapshot_interval_seconds?.min ?? DEFAULT_BOUNDS.occupancy_snapshot_interval_seconds.min}
+                    max={bounds.occupancy_snapshot_interval_seconds?.max ?? DEFAULT_BOUNDS.occupancy_snapshot_interval_seconds.max}
+                    disabled={!canEditOperational}
+                    helpText={`Range: ${bounds.occupancy_snapshot_interval_seconds?.min ?? DEFAULT_BOUNDS.occupancy_snapshot_interval_seconds.min}–${bounds.occupancy_snapshot_interval_seconds?.max ?? DEFAULT_BOUNDS.occupancy_snapshot_interval_seconds.max}.`}
+                  />
+                </div>
 
-                    <div className="col-12">
-                      <label htmlFor="occupancy_snapshot_interval_seconds" className="form-label">
-                        Snapshot Interval (seconds)
-                      </label>
-                      <input
-                        type="number"
-                        id="occupancy_snapshot_interval_seconds"
-                        name="occupancy_snapshot_interval_seconds"
-                        className="form-control"
-                        min={
-                          bounds.occupancy_snapshot_interval_seconds?.min ??
-                          DEFAULT_BOUNDS.occupancy_snapshot_interval_seconds.min
-                        }
-                        max={
-                          bounds.occupancy_snapshot_interval_seconds?.max ??
-                          DEFAULT_BOUNDS.occupancy_snapshot_interval_seconds.max
-                        }
-                        step="1"
-                        disabled={!canEditOperational}
-                        value={occupancySnapshotIntervalSeconds}
-                        onChange={(ev) => setOccupancySnapshotIntervalSeconds(ev.target.value)}
-                      />
-                      <div className="form-text">
-                        Range: {bounds.occupancy_snapshot_interval_seconds?.min ?? DEFAULT_BOUNDS.occupancy_snapshot_interval_seconds.min}
-                        {' '}to {bounds.occupancy_snapshot_interval_seconds?.max ?? DEFAULT_BOUNDS.occupancy_snapshot_interval_seconds.max}.
-                      </div>
-                    </div>
-                  </div>
+                <div className="col-12">
+                  <SliderField
+                    id="occupancy_warning_threshold"
+                    label="Occupancy Warning Threshold"
+                    value={occupancyWarningThreshold}
+                    displayValue={asFixedNumber(occupancyWarningThreshold, 2)}
+                    onChange={ev => setOccupancyWarningThreshold(ev.target.value)}
+                    min={bounds.occupancy_warning_threshold?.min ?? DEFAULT_BOUNDS.occupancy_warning_threshold.min}
+                    max={bounds.occupancy_warning_threshold?.max ?? DEFAULT_BOUNDS.occupancy_warning_threshold.max}
+                    disabled={!canEditOperational}
+                    helpText="Alerts fire when occupancy reaches this ratio of max capacity."
+                  />
                 </div>
               </div>
-            </div>
+              <SaveFooter />
+            </form>
+          )}
 
-            <div className="col-12">
-              <div className="card">
-                <div className="card-body">
-                  <h5 className="card-title">Recognition Tuning</h5>
-                  <div className="row g-4">
-                    <div className="col-12">
-                      <label htmlFor="vector_index_top_k" className="form-label">
-                        Vector Index Top-K
-                      </label>
-                      <input
-                        type="number"
-                        id="vector_index_top_k"
-                        name="vector_index_top_k"
-                        className="form-control"
-                        min={bounds.vector_index_top_k?.min ?? DEFAULT_BOUNDS.vector_index_top_k.min}
-                        max={bounds.vector_index_top_k?.max ?? DEFAULT_BOUNDS.vector_index_top_k.max}
-                        step="1"
-                        disabled={!canEditOperational}
-                        value={vectorIndexTopK}
-                        onChange={(ev) => setVectorIndexTopK(ev.target.value)}
-                      />
-                      <div className="form-text">
-                        Range: {bounds.vector_index_top_k?.min ?? DEFAULT_BOUNDS.vector_index_top_k.min} to{' '}
-                        {bounds.vector_index_top_k?.max ?? DEFAULT_BOUNDS.vector_index_top_k.max}. Candidate embeddings
-                        checked per model.
-                      </div>
-                    </div>
+          {/* ── Recognition tab ── */}
+          {activeTab === TAB_RECOGNITION && (
+            <form onSubmit={handleSubmit}>
+              <div className="row g-4">
+                <div className="col-12 col-lg-6">
+                  <NumberField
+                    id="vector_index_top_k"
+                    label="Vector Index Top-K"
+                    value={vectorIndexTopK}
+                    onChange={ev => setVectorIndexTopK(ev.target.value)}
+                    min={bounds.vector_index_top_k?.min ?? DEFAULT_BOUNDS.vector_index_top_k.min}
+                    max={bounds.vector_index_top_k?.max ?? DEFAULT_BOUNDS.vector_index_top_k.max}
+                    disabled={!canEditOperational}
+                    helpText={`Range: ${bounds.vector_index_top_k?.min ?? DEFAULT_BOUNDS.vector_index_top_k.min}–${bounds.vector_index_top_k?.max ?? DEFAULT_BOUNDS.vector_index_top_k.max}. Candidate embeddings checked per model.`}
+                  />
+                </div>
 
-                    <div className="col-12">
-                      <label htmlFor="threshold" className="form-label">
-                        Recognition Threshold:{' '}
-                        <span className="badge bg-light text-dark">{asFixedNumber(threshold, 3)}</span>
-                      </label>
-                      <input
-                        type="range"
-                        id="threshold"
-                        name="threshold"
-                        className="form-range"
-                        min={bounds.threshold?.min ?? DEFAULT_BOUNDS.threshold.min}
-                        max={bounds.threshold?.max ?? DEFAULT_BOUNDS.threshold.max}
-                        step="0.01"
-                        disabled={!canEditThresholds}
-                        value={threshold}
-                        onChange={(ev) => setThreshold(ev.target.value)}
-                      />
-                      <div className="form-text">
-                        Higher values = stricter (requires higher confidence). Lower values = more lenient.
-                      </div>
-                    </div>
+                <div className="col-12">
+                  <hr className="my-1" />
+                  <p className="small text-muted mb-3 mt-2">Threshold sliders below require <strong>Super Admin</strong> access.</p>
+                </div>
 
-                    <div className="col-12">
-                      <label htmlFor="quality_threshold" className="form-label">
-                        Minimum Face Quality:{' '}
-                        <span className="badge bg-light text-dark">{asFixedNumber(qualityThreshold, 2)}</span>
-                      </label>
-                      <input
-                        type="range"
-                        id="quality_threshold"
-                        name="quality_threshold"
-                        className="form-range"
-                        min={bounds.quality_threshold?.min ?? DEFAULT_BOUNDS.quality_threshold.min}
-                        max={bounds.quality_threshold?.max ?? DEFAULT_BOUNDS.quality_threshold.max}
-                        step="0.01"
-                        disabled={!canEditThresholds}
-                        value={qualityThreshold}
-                        onChange={(ev) => setQualityThreshold(ev.target.value)}
-                      />
-                    </div>
+                <div className="col-12">
+                  <SliderField
+                    id="threshold"
+                    label="Recognition Threshold"
+                    value={threshold}
+                    displayValue={asFixedNumber(threshold, 3)}
+                    onChange={ev => setThreshold(ev.target.value)}
+                    min={bounds.threshold?.min ?? DEFAULT_BOUNDS.threshold.min}
+                    max={bounds.threshold?.max ?? DEFAULT_BOUNDS.threshold.max}
+                    disabled={!canEditThresholds}
+                    helpText="Higher = stricter (requires higher confidence). Lower = more lenient."
+                  />
+                </div>
 
-                    <div className="col-12">
-                      <label htmlFor="recognition_confidence_threshold" className="form-label">
-                        Recognition Confidence Gate:{' '}
-                        <span className="badge bg-light text-dark">
-                          {asFixedNumber(recognitionConfidenceThreshold, 3)}
-                        </span>
-                      </label>
-                      <input
-                        type="range"
-                        id="recognition_confidence_threshold"
-                        name="recognition_confidence_threshold"
-                        className="form-range"
-                        min={
-                          bounds.recognition_confidence_threshold?.min ??
-                          DEFAULT_BOUNDS.recognition_confidence_threshold.min
-                        }
-                        max={
-                          bounds.recognition_confidence_threshold?.max ??
-                          DEFAULT_BOUNDS.recognition_confidence_threshold.max
-                        }
-                        step="0.01"
-                        disabled={!canEditThresholds}
-                        value={recognitionConfidenceThreshold}
-                        onChange={(ev) => setRecognitionConfidenceThreshold(ev.target.value)}
-                      />
-                      <div className="form-text">
-                        Used to require higher confidence before logging an entry or exit.
-                      </div>
-                    </div>
-                  </div>
+                <div className="col-12">
+                  <SliderField
+                    id="quality_threshold"
+                    label="Minimum Face Quality"
+                    value={qualityThreshold}
+                    displayValue={asFixedNumber(qualityThreshold, 2)}
+                    onChange={ev => setQualityThreshold(ev.target.value)}
+                    min={bounds.quality_threshold?.min ?? DEFAULT_BOUNDS.quality_threshold.min}
+                    max={bounds.quality_threshold?.max ?? DEFAULT_BOUNDS.quality_threshold.max}
+                    disabled={!canEditThresholds}
+                  />
+                </div>
+
+                <div className="col-12">
+                  <SliderField
+                    id="recognition_confidence_threshold"
+                    label="Recognition Confidence Gate"
+                    value={recognitionConfidenceThreshold}
+                    displayValue={asFixedNumber(recognitionConfidenceThreshold, 3)}
+                    onChange={ev => setRecognitionConfidenceThreshold(ev.target.value)}
+                    min={bounds.recognition_confidence_threshold?.min ?? DEFAULT_BOUNDS.recognition_confidence_threshold.min}
+                    max={bounds.recognition_confidence_threshold?.max ?? DEFAULT_BOUNDS.recognition_confidence_threshold.max}
+                    disabled={!canEditThresholds}
+                    helpText="Minimum confidence required before logging an entry or exit event."
+                  />
                 </div>
               </div>
-            </div>
+              <SaveFooter />
+            </form>
+          )}
 
-            {canManageAdvancedOps ? (
-              <div className="col-12">
-                <div className="card">
-                  <div className="card-body">
-                    <h5 className="card-title">Data Retention</h5>
-                    <div className="row g-4">
-                      <div className="col-12">
-                        <label htmlFor="face_snapshot_retention_days" className="form-label">
-                          Face Snapshot Retention (days)
-                        </label>
-                        <input
-                          type="number"
-                          id="face_snapshot_retention_days"
-                          name="face_snapshot_retention_days"
-                          className="form-control"
-                          min={
-                            bounds.face_snapshot_retention_days?.min ??
-                            DEFAULT_BOUNDS.face_snapshot_retention_days.min
-                          }
-                          max={
-                            bounds.face_snapshot_retention_days?.max ??
-                            DEFAULT_BOUNDS.face_snapshot_retention_days.max
-                          }
-                          step="1"
-                          disabled={!canManageAdvancedOps}
-                          value={faceSnapshotRetentionDays}
-                          onChange={(ev) => setFaceSnapshotRetentionDays(ev.target.value)}
-                        />
-                      </div>
-
-                      <div className="col-12">
-                        <label htmlFor="recognition_event_retention_days" className="form-label">
-                          Recognition Event Retention (days)
-                        </label>
-                        <input
-                          type="number"
-                          id="recognition_event_retention_days"
-                          name="recognition_event_retention_days"
-                          className="form-control"
-                          min={
-                            bounds.recognition_event_retention_days?.min ??
-                            DEFAULT_BOUNDS.recognition_event_retention_days.min
-                          }
-                          max={
-                            bounds.recognition_event_retention_days?.max ??
-                            DEFAULT_BOUNDS.recognition_event_retention_days.max
-                          }
-                          step="1"
-                          disabled={!canManageAdvancedOps}
-                          value={recognitionEventRetentionDays}
-                          onChange={(ev) => setRecognitionEventRetentionDays(ev.target.value)}
-                        />
-                        <div className="form-text">
-                          Older snapshots and event logs are purged automatically on the host.
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+          {/* ── Advanced tab ── */}
+          {activeTab === TAB_ADVANCED && canManageAdvancedOps && (
+            <form onSubmit={handleSubmit}>
+              <h6 className="text-uppercase text-muted fw-semibold mb-3" style={{ letterSpacing: '.07em', fontSize: '.7rem' }}>
+                Data Retention
+              </h6>
+              <div className="row g-4 mb-4">
+                <div className="col-12 col-lg-6">
+                  <NumberField
+                    id="face_snapshot_retention_days"
+                    label="Face Snapshot Retention (days)"
+                    value={faceSnapshotRetentionDays}
+                    onChange={ev => setFaceSnapshotRetentionDays(ev.target.value)}
+                    min={bounds.face_snapshot_retention_days?.min ?? DEFAULT_BOUNDS.face_snapshot_retention_days.min}
+                    max={bounds.face_snapshot_retention_days?.max ?? DEFAULT_BOUNDS.face_snapshot_retention_days.max}
+                    disabled={!canManageAdvancedOps}
+                  />
+                </div>
+                <div className="col-12 col-lg-6">
+                  <NumberField
+                    id="recognition_event_retention_days"
+                    label="Recognition Event Retention (days)"
+                    value={recognitionEventRetentionDays}
+                    onChange={ev => setRecognitionEventRetentionDays(ev.target.value)}
+                    min={bounds.recognition_event_retention_days?.min ?? DEFAULT_BOUNDS.recognition_event_retention_days.min}
+                    max={bounds.recognition_event_retention_days?.max ?? DEFAULT_BOUNDS.recognition_event_retention_days.max}
+                    disabled={!canManageAdvancedOps}
+                    helpText="Older snapshots and event logs are purged automatically."
+                  />
                 </div>
               </div>
-            ) : null}
 
-            {canManageAdvancedOps ? (
-              <div className="col-12">
-                <div className="card">
-                  <div className="card-body">
-                    <h5 className="card-title">Hardware & Camera Sources</h5>
-                    <div className="row g-4">
-                      <div className="col-12">
-                        <label htmlFor="entry_cctv_stream_source" className="form-label">
-                          Entry Camera Stream Source
-                        </label>
-                        <input
-                          type="text"
-                          id="entry_cctv_stream_source"
-                          name="entry_cctv_stream_source"
-                          className="form-control"
-                          disabled={!canManageAdvancedOps}
-                          value={entryCctvStreamSource}
-                          onChange={(ev) => setEntryCctvStreamSource(ev.target.value)}
-                          placeholder="0, 1, or rtsp://..."
-                        />
-                      </div>
-
-                      <div className="col-12">
-                        <label htmlFor="exit_cctv_stream_source" className="form-label">
-                          Exit Camera Stream Source
-                        </label>
-                        <input
-                          type="text"
-                          id="exit_cctv_stream_source"
-                          name="exit_cctv_stream_source"
-                          className="form-control"
-                          disabled={!canManageAdvancedOps}
-                          value={exitCctvStreamSource}
-                          onChange={(ev) => setExitCctvStreamSource(ev.target.value)}
-                          placeholder="0, 1, or rtsp://..."
-                        />
-                        <div className="form-text">
-                          Changes take effect after restarting the entry/exit workers.
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+              <h6 className="text-uppercase text-muted fw-semibold mb-3" style={{ letterSpacing: '.07em', fontSize: '.7rem' }}>
+                Camera Sources
+              </h6>
+              <div className="row g-4 mb-4">
+                <div className="col-12 col-lg-6">
+                  <TextField
+                    id="entry_cctv_stream_source"
+                    label="Entry Camera Stream"
+                    value={entryCctvStreamSource}
+                    onChange={ev => setEntryCctvStreamSource(ev.target.value)}
+                    disabled={!canManageAdvancedOps}
+                    placeholder="0, 1, or rtsp://…"
+                  />
+                </div>
+                <div className="col-12 col-lg-6">
+                  <TextField
+                    id="exit_cctv_stream_source"
+                    label="Exit Camera Stream"
+                    value={exitCctvStreamSource}
+                    onChange={ev => setExitCctvStreamSource(ev.target.value)}
+                    disabled={!canManageAdvancedOps}
+                    placeholder="0, 1, or rtsp://…"
+                    helpText="Changes take effect after restarting the entry/exit workers."
+                  />
                 </div>
               </div>
-            ) : null}
 
-            <div className="col-12 d-flex gap-2 flex-wrap align-items-center">
-              <button type="submit" className="btn btn-primary" disabled={!canSave || saving}>
-                {saving ? 'Saving...' : 'Save Settings'}
-              </button>
-              {!canSave ? <span className="badge bg-secondary">Read-only role</span> : null}
-            </div>
-          </form>
-        </div>
+              <SaveFooter />
 
-        {canManageAdvancedOps ? (
-          <div className="col-12">
-            <div className="card border-danger">
-              <div className="card-body">
-                <h5 className="card-title text-danger">Advanced Operations</h5>
-                <p className="text-muted">
-                  <strong>Warning:</strong> These operations cannot be undone and require two confirmation steps.
+              {/* Danger zone */}
+              <div
+                className="mt-4 p-3 rounded-3"
+                style={{ background: 'var(--bs-danger-bg-subtle)', border: '1px solid var(--bs-danger-border-subtle)' }}
+              >
+                <h6 className="text-danger fw-semibold mb-1">
+                  <i className="bi bi-exclamation-triangle-fill me-2" />Danger Zone
+                </h6>
+                <p className="small text-muted mb-3">
+                  These operations are <strong>irreversible</strong> and require two confirmation steps.
                 </p>
                 <div className="d-flex gap-2 flex-wrap">
-                  <button onClick={resetDatabase} className="btn btn-danger" type="button">
-                    Reset Database
+                  <button onClick={resetDatabase} className="btn btn-danger btn-sm" type="button">
+                    <i className="bi bi-trash3 me-1" />Reset Database
                   </button>
-                  <button onClick={clearRecognitionLog} className="btn btn-warning" type="button">
-                    Clear Recognition Events
+                  <button onClick={clearRecognitionLog} className="btn btn-warning btn-sm" type="button">
+                    <i className="bi bi-eraser me-1" />Clear Recognition Events
                   </button>
                 </div>
               </div>
-            </div>
-          </div>
-        ) : null}
+            </form>
+          )}
 
-        {canViewAudit ? (
-          <div className="col-12">
-            <div className="card">
-              <div className="card-body">
-                <h5 className="card-title">Settings Audit</h5>
-                {lastChange ? (
-                  <div className="alert alert-light border mb-3">
-                    <div className="fw-semibold">Last Change</div>
+          {/* ── Audit tab ── */}
+          {activeTab === TAB_AUDIT && canViewAudit && (
+            <div>
+              {lastChange ? (
+                <div
+                  className="rounded-3 p-3 mb-4 d-flex gap-3 align-items-start"
+                  style={{ background: 'var(--bs-info-bg-subtle)', border: '1px solid var(--bs-info-border-subtle)' }}
+                >
+                  <i className="bi bi-clock-history text-info fs-5 mt-1 flex-shrink-0" />
+                  <div>
+                    <div className="fw-semibold small">Last Change</div>
                     <div className="small text-muted">
-                      {lastChange.username || 'Unknown user'} • {lastChange.timestamp || 'Unknown time'}
+                      {lastChange.username || 'Unknown user'} &middot; {lastChange.timestamp || 'Unknown time'}
                     </div>
                     <div className="small mt-1">{lastChange.target || 'No detail recorded.'}</div>
                   </div>
-                ) : (
-                  <div className="text-muted small mb-3">No settings changes have been recorded yet.</div>
-                )}
-
-                <div className="table-responsive">
-                  <table className="table table-sm align-middle">
-                    <thead>
-                      <tr>
-                        <th>ID</th>
-                        <th>Changed By</th>
-                        <th>Timestamp</th>
-                        <th>Details</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {auditRows.length ? (
-                        auditRows.map((row) => (
-                          <tr key={row.audit_id}>
-                            <td>{row.audit_id}</td>
-                            <td>{row.username || '-'}</td>
-                            <td>{row.timestamp || '-'}</td>
-                            <td>{row.target || '-'}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan="4" className="text-center text-muted">
-                            No audit entries found.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
                 </div>
+              ) : (
+                <div className="text-muted small mb-4">No settings changes have been recorded yet.</div>
+              )}
+
+              <div className="table-responsive">
+                <table className="table table-sm table-hover align-middle">
+                  <thead className="table-light">
+                    <tr>
+                      <th style={{ width: '5rem' }}>ID</th>
+                      <th>Changed By</th>
+                      <th>Timestamp</th>
+                      <th>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditRows.length ? auditRows.map(row => (
+                      <tr key={row.audit_id}>
+                        <td className="text-muted small font-monospace">{row.audit_id}</td>
+                        <td>
+                          <i className="bi bi-person-circle me-1 text-muted" />
+                          {row.username || '—'}
+                        </td>
+                        <td className="small text-muted">{row.timestamp || '—'}</td>
+                        <td className="small">{row.target || '—'}</td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan="4" className="text-center text-muted py-4">
+                          <i className="bi bi-journal-x d-block fs-3 mb-1 opacity-25" />
+                          No audit entries found.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
-          </div>
-        ) : null}
+          )}
+
+        </div>
       </div>
     </section>
   );

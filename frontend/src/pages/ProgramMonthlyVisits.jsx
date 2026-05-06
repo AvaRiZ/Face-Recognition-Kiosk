@@ -1,6 +1,7 @@
 import React from 'react';
 import { getErrorMessage, showError, showSuccess } from '../alerts.js';
 import { fetchJson } from '../api.js';
+import { ALL_PROGRAM_NAMES } from '../data/programCatalog.js';
 import { downloadFile } from '../downloads.js';
 
 const ALL_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -35,7 +36,7 @@ export default function ProgramMonthlyVisitsPage() {
   const [currentPage, setCurrentPage] = React.useState(1);
   const [selectedYear, setSelectedYear] = React.useState(String(currentYear()));
   const [sortOrder, setSortOrder] = React.useState('most');
-  const [showZeroVisits, setShowZeroVisits] = React.useState(true);
+  const [showZeroVisits, setShowZeroVisits] = React.useState(false);
 
   const loadData = React.useCallback((year) => {
     setLoading(true);
@@ -94,13 +95,11 @@ export default function ProgramMonthlyVisitsPage() {
           .slice(0, visibleMonthCount)
           .reduce((sum, v) => sum + Number(v || 0), 0);
 
-        if (showZeroVisits) {
-          // show ONLY programs with zero visits
-          return visibleTotal === 0;
+        if (!showZeroVisits && visibleTotal === 0) {
+          return false;
         }
 
-        // normal mode: show only programs with visits
-        return visibleTotal > 0;
+        return true;
       })
       .filter((row) => !searchValue || row.program.toLowerCase().includes(searchValue))
       .slice();
@@ -285,7 +284,7 @@ export default function ProgramMonthlyVisitsPage() {
                     onChange={(ev) => setShowZeroVisits(ev.target.checked)}
                   />
                   <label className="form-check-label small text-muted mb-0" htmlFor="showZeroVisits">
-                    Show zero visits
+                    Include zero visits
                   </label>
                 </div>
               </div>
