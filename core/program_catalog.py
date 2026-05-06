@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from collections import defaultdict
 from typing import Iterable
 
@@ -208,7 +209,11 @@ def iter_program_catalog_records():
 
 
 def normalize_program_name(program_name: str | None) -> str:
-    return " ".join((program_name or "").split())
+    if program_name is None:
+        return ""
+    if isinstance(program_name, float) and math.isnan(program_name):
+        return ""
+    return " ".join(str(program_name).split())
 
 
 def program_lookup_key(program_name: str | None) -> str:
