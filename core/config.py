@@ -78,7 +78,7 @@ class AppConfig:
     #   reason a face was marked poor.
     # - Enable `quality_debug_show_all_scores` while tuning thresholds so you
     #   can inspect every component score and raw metric value.
-    quality_debug_enabled: bool = True
+    quality_debug_enabled: bool = False
     quality_debug_show_primary_issue: bool = True
     quality_debug_show_all_scores: bool = True
 
@@ -129,7 +129,7 @@ class AppConfig:
     exit_cctv_stream_source: str = "1"
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
-    cli_top_bar_enabled: bool = True
+    cli_top_bar_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Occupancy and capacity management

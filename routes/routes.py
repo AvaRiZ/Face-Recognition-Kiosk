@@ -1499,19 +1499,19 @@ def create_routes_blueprint(deps):
 
     @bp.route("/registered-profiles", endpoint="registered_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def registered_profiles():
         return _spa_index()
 
     @bp.route("/archive-profiles", endpoint="registered_profiles_archive")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def registered_profiles_archive():
         return _spa_index()
 
     @bp.route("/archive-profiles/submit", methods=["POST"], endpoint="registered_profiles_archive_submit")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def registered_profiles_archive_submit():
         user_ids = request.form.getlist("user_ids")
         if not user_ids:
@@ -1537,13 +1537,13 @@ def create_routes_blueprint(deps):
 
     @bp.route("/archived-profiles", endpoint="archived_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def archived_profiles():
         return _spa_index()
 
     @bp.route("/archived-profiles/restore", methods=["POST"], endpoint="archived_profiles_restore")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def archived_profiles_restore():
         user_ids = request.form.getlist("user_ids")
         if not user_ids:
@@ -2591,7 +2591,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/profiles", methods=["GET"], endpoint="api_profiles_list")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_list():
         status = _normalize_profile_status(request.args.get("status"))
         query = (request.args.get("q") or "").strip().lower()
@@ -2695,7 +2695,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/registered-profiles", methods=["GET"], endpoint="api_registered_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_registered_profiles():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -2723,7 +2723,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/profiles", methods=["POST"], endpoint="api_profiles_create")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_create():
         payload = request.get_json(silent=True) or {}
         name = (payload.get("name") or "").strip()
@@ -2761,7 +2761,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/profiles/<int:user_id>", methods=["PUT"], endpoint="api_profiles_update")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_update(user_id):
         payload = request.get_json(silent=True) or {}
         name = (payload.get("name") or "").strip()
@@ -2811,7 +2811,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/profiles/<int:user_id>", methods=["DELETE"], endpoint="api_profiles_delete")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_delete(user_id):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -2863,7 +2863,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/archive-profiles", methods=["GET"], endpoint="api_archive_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_archive_profiles():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -2892,7 +2892,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/archive-profiles/submit", methods=["POST"], endpoint="api_archive_profiles_submit")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_archive_profiles_submit():
         payload = request.get_json(silent=True) or {}
         user_ids = payload.get("user_ids") or []
@@ -2945,7 +2945,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/archived-profiles", methods=["GET"], endpoint="api_archived_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_archived_profiles():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -2975,7 +2975,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/archived-profiles/restore", methods=["POST"], endpoint="api_archived_profiles_restore")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_archived_profiles_restore():
         payload = request.get_json(silent=True) or {}
         user_ids = payload.get("user_ids") or []

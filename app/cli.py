@@ -245,9 +245,66 @@ class CLIApplication:
         }
         return pose_map.get((pose or "").lower(), "Hold Still")
 
+    def _worker_role_label(self) -> str:
+        return "ENTRY" if self._registration_allowed_on_this_worker() else "EXIT"
+
+    def _worker_mode_label(self) -> str:
+        if self._registration_allowed_on_this_worker():
+            return "Rec+Reg"
+        return "Rec Only"
+
+    def _build_footer_guidance(self, reg_state) -> tuple[str, str, tuple[int, int, int]]:
+        recognized_user = self.state.recognized_user or {}
+        if recognized_user:
+            user_name = str(recognized_user.get("name") or "Unknown user").strip() or "Unknown user"
+            confidence_text = str(recognized_user.get("confidence") or "").strip()
+            status_line = f"Recognized: {user_name}"
+            if confidence_text:
+                status_line = f"{status_line} ({confidence_text})"
+            return status_line, "Pass", (0, 255, 0)
+
+        if not self._registration_allowed_on_this_worker():
+            return (
+                "Exit scan active",
+                "Center face",
+                (255, 255, 255),
+            )
+
+        if reg_state.in_progress:
+            return (
+                "Capture complete",
+                "Open /register",
+                (0, 165, 255),
+            )
+
+        if reg_state.manual_active:
+            expected_pose = self.state.get_current_registration_pose() or "front"
+            pose_label = self._pose_instruction_text(expected_pose)
+            return (
+                f"Capturing {reg_state.capture_count}/{reg_state.max_captures}",
+                f"Pose: {pose_label}",
+                (0, 165, 255),
+            )
+
+        if reg_state.manual_requested:
+            return (
+                "Waiting for lock",
+                "One face in frame",
+                (0, 165, 255),
+            )
+
+        if reg_state.phase == "expired":
+            return (
+                "Session expired",
+                "Restart in /register",
+                (0, 165, 255),
+            )
+
+        return "Scanning...", "Center face", (255, 255, 255)
+
     def _build_identity_label(self, track_state, reg_state, is_selected_for_registration: bool):
         if track_state is None:
-            return "Untracked", (180, 180, 180)
+            return "No track", (180, 180, 180)
 
         if track_state.recognized and track_state.user:
             confidence_text = track_state.user.get("confidence")
@@ -258,28 +315,28 @@ class CLIApplication:
 
         if is_selected_for_registration and reg_state.manual_active:
             if track_state.last_quality_score < self.config.face_quality_threshold:
-                return "Unknown (low quality)", (0, 140, 255)
+                return "Target: Improve quality", (0, 140, 255)
             expected_pose = self.state.get_current_registration_pose()
             if expected_pose and track_state.last_pose and track_state.last_pose != expected_pose:
-                return "Unknown (pose mismatch)", (0, 165, 255)
+                expected_pose_text = self._pose_instruction_text(expected_pose)
+                return f"Target: {expected_pose_text}", (0, 165, 255)
+            return "Target: Hold still", (255, 215, 0)
+
+        if is_selected_for_registration and reg_state.manual_requested:
+            return "Candidate", (255, 215, 0)
 
         if track_state.last_recognition_confidence is not None:
             threshold = track_state.last_recognition_threshold or self.config.recognition_confidence_threshold
             if track_state.last_recognition_confidence < threshold:
-                return "Recognition uncertain", (0, 215, 255)
+                return "Uncertain", (0, 215, 255)
 
         if track_state.failed_good_quality_attempts >= self.config.unknown_person_attempt_threshold:
-            return "Unknown person", (0, 165, 255)
+            return "No match", (0, 165, 255)
 
         if track_state.last_quality_score < self.config.face_quality_threshold:
-            return "Unknown (low quality)", (0, 140, 255)
+            return "Low quality", (0, 140, 255)
 
-        if is_selected_for_registration and reg_state.manual_active:
-            expected_pose = self.state.get_current_registration_pose()
-            if expected_pose and track_state.last_pose != expected_pose:
-                return "Unknown (pose mismatch)", (0, 165, 255)
-
-        return "Tracking", (180, 180, 180)
+        return "Detected", (180, 180, 180)
 
     def _is_registration_lock_candidate(self, track_state) -> bool:
         if track_state is None:
@@ -437,26 +494,34 @@ class CLIApplication:
             y += line_gap
 
     def _draw_registration_guidance(self, frame, frame_height: int, selected_track_id: int | None):
+        if not self._registration_allowed_on_this_worker():
+            return
+
         reg_state = self.state.registration_state
-        if selected_track_id is None or not (reg_state.manual_requested or reg_state.manual_active):
+        if not (reg_state.manual_requested or reg_state.manual_active):
             return
 
-        track_state = self.state.get_track_state(selected_track_id)
-        if track_state is None:
-            return
+        lines = []
+        if reg_state.manual_active and selected_track_id is not None:
+            track_state = self.state.get_track_state(selected_track_id)
+            if track_state is None:
+                return
 
-        expected_pose = self.state.get_current_registration_pose() or "front"
-        lines = [f"Expected pose: {self._pose_instruction_text(expected_pose)}"]
+            expected_pose = self.state.get_current_registration_pose() or "front"
+            lines.append(f"T{selected_track_id} | {self._pose_instruction_text(expected_pose)}")
+            lines.append(f"{reg_state.capture_count}/{reg_state.max_captures}")
 
-        distance_feedback = self._distance_feedback(track_state.last_area)
-        if distance_feedback:
-            lines.append(distance_feedback)
+            distance_feedback = self._distance_feedback(track_state.last_area)
+            if distance_feedback:
+                lines.append(distance_feedback)
+        else:
+            lines = [
+                "Registration active",
+                "Waiting for lock",
+            ]
 
-        if track_state.last_pose and track_state.last_pose != expected_pose:
-            lines.append(f"Detected pose: {self._pose_instruction_text(track_state.last_pose)}")
-            lines.append(f"Please: {self._pose_instruction_text(expected_pose)}")
-
-        self._draw_text_block(frame, lines, 10, frame_height - 110, (0, 220, 255), scale=0.7, thickness=2)
+        panel_top = max(90, frame_height - 150)
+        self._draw_text_block(frame, lines, 10, panel_top, (0, 220, 255), scale=0.6, thickness=2, line_gap=22)
 
     def process_cctv_stream(self, stream_source=None, frame_width=1280, frame_height=720, window_title: str | None = None):
         if stream_source is None:
@@ -471,8 +536,12 @@ class CLIApplication:
         print("\n" + "=" * 50)
         print("CCTV FACE RECOGNITION SYSTEM")
         print("=" * 50)
+        worker_mode = "recognition + registration capture" if self._registration_allowed_on_this_worker() else "recognition only"
+        print(f"Worker role: {self._worker_role_label()} ({worker_mode})")
         print("Press 'q' to quit")
         print("Press 'd' to toggle quality debug")
+        if not self._registration_allowed_on_this_worker():
+            print("Registration capture is available on the ENTRY worker only.")
         print("=" * 50)
 
         fps_counter = 0
@@ -687,6 +756,11 @@ class CLIApplication:
                     track_state.last_recognition_time = current_time
                     track_state.last_recognition_confidence = result.get("match_confidence")
                     track_state.last_recognition_threshold = result.get("match_threshold")
+                    local_capture_count = None
+                    if registration_capture_allowed and status == "registration_captured":
+                        registration_sample = result.get("registration_sample")
+                        if registration_sample is not None:
+                            local_capture_count = int(self.state.capture_registration_sample(registration_sample))
 
                     if status == "recognized":
                         track_state.recognized = True
@@ -720,12 +794,15 @@ class CLIApplication:
                                     f"Capture quality too low ({issue_label}). Keep face centered and well lit.",
                                 )
                             elif status == "registration_captured":
-                                expected_pose = result.get("expected_pose") or (self.state.get_current_registration_pose() or "front")
-                                capture_count = self.state.registration_state.capture_count
+                                capture_count = (
+                                    int(local_capture_count)
+                                    if local_capture_count is not None
+                                    else int(self.state.registration_state.capture_count)
+                                )
                                 max_captures = self.state.registration_state.max_captures
                                 self.state.set_registration_status_reason(
                                     "capture_in_progress",
-                                    f"Captured sample for {expected_pose}. Progress {capture_count}/{max_captures}.",
+                                    f"Captured {capture_count}/{max_captures}.",
                                 )
                             elif status == "uncertain":
                                 self.state.set_registration_status_reason(
@@ -797,7 +874,7 @@ class CLIApplication:
                 if is_selected:
                     cv2.putText(
                         frame,
-                        "SELECTED",
+                        "REG TARGET",
                         (x1, max(20, y1 - 30)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.7,
@@ -806,7 +883,7 @@ class CLIApplication:
                     )
 
                 track_text = f"T{track_id}"
-                stability_text = "STABLE" if track_state.last_stable else "MOVING"
+                stability_text = "Stable" if track_state.last_stable else "Moving"
                 issue_text = ""
                 if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
                     primary_issue = track_state.last_quality_debug.get("primary_issue_label")
@@ -814,7 +891,7 @@ class CLIApplication:
                         issue_text = f" {primary_issue}"
                 cv2.putText(
                     frame,
-                    f"{track_text} {stability_text} Q:{track_state.last_quality_score:.1f}{issue_text}",
+                    f"{track_text} | {stability_text} | Q:{track_state.last_quality_score:.1f}{issue_text}",
                     (x1, max(20, y1 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
@@ -822,7 +899,7 @@ class CLIApplication:
                     1,
                 )
 
-                label_y = min(y2 + 20, frame_height - 10)
+                label_y = min(y2 + 20, frame_height - 90)
                 cv2.putText(
                     frame,
                     label_text,
@@ -870,13 +947,17 @@ class CLIApplication:
             overlay = frame.copy()
             if self.config.cli_top_bar_enabled:
                 cv2.rectangle(overlay, (0, 0), (frame_width, 70), (0, 0, 0), -1)
-            cv2.rectangle(overlay, (0, frame_height - 50), (frame_width, frame_height), (0, 0, 0), -1)
+            footer_height = 82
+            cv2.rectangle(overlay, (0, frame_height - footer_height), (frame_width, frame_height), (0, 0, 0), -1)
             cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
             if self.config.cli_top_bar_enabled:
+                stream_state = str(self.get_stream_status().get("state") or "unknown").upper()
                 cv2.putText(
                     frame,
-                    "Controls: [D] Debug  [Q] Quit",
+                    (
+                        f"{self._worker_role_label()} | {self._worker_mode_label()} | D Debug | Q Quit"
+                    ),
                     (10, 25),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.55,
@@ -886,8 +967,8 @@ class CLIApplication:
                 cv2.putText(
                     frame,
                     (
-                        f"DB Users: {self.state.user_count}   FPS: {current_fps}   "
-                        f"Val Frames: {saved_real_val_frames}   "
+                        f"Users: {self.state.user_count}   FPS: {current_fps}   "
+                        f"Stream: {stream_state}   "
                         f"Debug: {'ON' if self.config.quality_debug_enabled else 'OFF'}"
                     ),
                     (10, 50),
@@ -899,42 +980,25 @@ class CLIApplication:
 
             self._draw_registration_guidance(frame, frame_height, selected_track_id)
 
-            if self.state.recognized_user:
-                status_text = (
-                    f"Recognized: {self.state.recognized_user['name']} "
-                    f"({self.state.recognized_user['confidence']})"
-                )
-                status_color = (0, 255, 0)
-            elif reg_state.in_progress:
-                status_text = (
-                    "Unregistered student detected - captured samples are ready. "
-                    "Open the registration page to complete registration."
-                )
-                status_color = (0, 165, 255)
-            elif reg_state.manual_active:
-                status_text = (
-                    f"Registration capture in progress: {reg_state.capture_count}/{reg_state.max_captures}"
-                )
-                status_color = (0, 165, 255)
-            elif reg_state.manual_requested:
-                status_text = (
-                    "Web registration session started - hold still for capture"
-                    if reg_state.web_session_active
-                    else "First-time registration requested - hold still for capture"
-                )
-                status_color = (0, 165, 255)
-            else:
-                status_text = "Scanning for faces..."
-                status_color = (255, 255, 255)
+            status_text, next_step_text, status_color = self._build_footer_guidance(reg_state)
 
             cv2.putText(
                 frame,
                 status_text,
-                (10, frame_height - 20),
+                (10, frame_height - 46),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
+                0.62,
                 status_color,
                 2,
+            )
+            cv2.putText(
+                frame,
+                next_step_text,
+                (10, frame_height - 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.57,
+                (230, 230, 230),
+                1,
             )
 
             cv2.imshow(display_title, frame)

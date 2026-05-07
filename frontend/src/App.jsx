@@ -89,7 +89,14 @@ export default function App() {
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="profile-management" element={<ProfileManagementPage />} />
+          <Route
+            path="profile-management"
+            element={(
+              <RoleProtectedRoute roles={['super_admin', 'library_admin', 'library_staff']}>
+                <ProfileManagementPage />
+              </RoleProtectedRoute>
+            )}
+          />
           <Route path="registered-profiles" element={<Navigate to="/profile-management" replace />} />
           <Route path="archive-profiles" element={<Navigate to="/profile-management?status=active" replace />} />
           <Route path="archived-profiles" element={<Navigate to="/profile-management?status=archived" replace />} />

@@ -168,7 +168,7 @@ const STATUS_REASON_VIEWS = {
   capture_in_progress: {
     title: 'Capture in progress',
     message: 'A registration capture is already in progress.',
-    action: 'Keep the student in frame until capture completes, or cancel/reset if needed.'
+    action: 'Keep the student in frame until capture completes, or cancel the session if needed.'
   },
   capture_complete: {
     title: 'Capture complete',
@@ -660,41 +660,6 @@ export default function RegisterPage() {
     setTouchedFields((prev) => ({ ...prev, [key]: true }));
   }
 
-  const handleReset = React.useCallback(async () => {
-    const confirmed = await confirmAction({
-      title: 'Reset Captured Samples?',
-      text: 'This will clear the current registration capture set for the student in progress.',
-      confirmButtonText: 'Reset Samples',
-      confirmButtonColor: '#dc3545'
-    });
-    if (!confirmed) {
-      return;
-    }
-
-    setCaptureError('');
-    setFieldErrors({});
-    setTouchedFields({});
-    setResult(null);
-
-    try {
-      const response = await fetch('/api/registrations/active', {
-        method: 'DELETE',
-        credentials: 'include'
-      });
-      const payload = await response.json();
-      if (!response.ok || payload.success === false) {
-        setCaptureError(payload.message || 'Unable to reset the capture session.');
-        return;
-      }
-      setInfo((prev) => ({ ...prev, ...payload }));
-      await showSuccess('Samples Reset', payload.message || 'The current registration samples were cleared successfully.');
-    } catch (error) {
-      const message = getErrorMessage(error, 'Unable to reset the current capture session.');
-      setCaptureError(message);
-      await showError('Reset Failed', message);
-    }
-  }, []);
-
   const handleStartSession = React.useCallback(async () => {
     setCaptureError('');
     setResult(null);
@@ -970,9 +935,6 @@ export default function RegisterPage() {
     && secondsUntilExpiry <= EXPIRING_SOON_THRESHOLD_SECONDS;
 
   const formLocked = !readyToSubmit;
-  const canResetSamples = !submitting && !sessionControlBusy && (sampleCount > 0 || captureInProgress || readyToSubmit);
-  const resetHelperText = 'Use reset only when the wrong student was captured or the sample set is incomplete.';
-
   const activeStep = result?.profile
     ? 3
     : readyToSubmit
@@ -1264,7 +1226,7 @@ export default function RegisterPage() {
                               <li>Use the format Last Name, First Name.</li>
                               <li>{isVisitor ? 'Visitor registration does not require SR Code, college, or program.' : 'SR Code must follow the format 23-12345.'}</li>
                               {!isVisitor ? <li>Program search is available without selecting college first.</li> : null}
-                              <li>Reset samples only if the wrong person was captured or the set is incomplete.</li>
+                              <li>Cancel the session and restart if the wrong person was captured.</li>
                             </ul>
                           </div>
                         </div>
@@ -1465,13 +1427,6 @@ export default function RegisterPage() {
                               </button>
                             ) : null}
 
-                            <button className="btn btn-outline-secondary" type="button" onClick={handleReset} disabled={!canResetSamples}>
-                              <i className="bi bi-arrow-counterclockwise me-2"></i>
-                              Reset Samples
-                            </button>
-                          </div>
-                          <div className="text-muted mt-2" style={{ fontSize: '14px' }}>
-                            {resetHelperText}
                           </div>
                         </div>
                       </form>

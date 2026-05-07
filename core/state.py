@@ -427,12 +427,18 @@ class AppStateManager:
         self._touch_registration_session()
         return state.capture_count
 
-    def clear_captured_samples(self) -> None:
+    def clear_captured_samples(self) -> bool:
+        state = self._registration_state
+        if state.phase not in {"capturing", "ready"}:
+            return False
         self._reset_registration_collections()
+        state.phase = "capturing"
+        self._touch_registration_session()
         self.set_registration_status_reason(
             "samples_cleared",
             "Captured registration samples were cleared.",
         )
+        return True
 
     def complete_registration(self) -> None:
         self.cancel_registration_session(
