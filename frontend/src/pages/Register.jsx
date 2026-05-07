@@ -102,8 +102,21 @@ const PROGRAM_TO_COLLEGE = Object.entries(DEFAULT_COLLEGE_PROGRAM_MAP).reduce((a
   return acc;
 }, {});
 
-const DEFAULT_COLLEGE_OPTIONS = Object.keys(DEFAULT_COLLEGE_PROGRAM_MAP);
 const OTHER_COLLEGE_LABEL = 'Other / Unassigned';
+const PROGRAM_KEYWORD_COLLEGE_RULES = [
+  {
+    pattern: /\b(computer engineering|computer eng'g|computer engr|computer eng)\b/i,
+    college: 'College of Engineering'
+  },
+  {
+    pattern: /\b(bs architecture|architecture)\b/i,
+    college: 'College of Architecture, Fine Arts and Design'
+  },
+  {
+    pattern: /\b(information technology|info tech|^it$)\b/i,
+    college: 'College of Informatics and Computing Sciences'
+  }
+];
 
 const INITIAL_INFO = {
   capture_count: 0,
@@ -274,6 +287,26 @@ function FlowStepper({ activeStep }) {
 
 function normalizeSpaces(value) {
   return value.trim().replace(/\s+/g, ' ');
+}
+
+function resolveCollegeFromProgram(programValue, programCollegeLookup) {
+  const normalizedProgram = normalizeSpaces(programValue || '');
+  if (!normalizedProgram) {
+    return '';
+  }
+
+  const normalizedKey = normalizedProgram.toLowerCase();
+  const directMatch = programCollegeLookup[normalizedKey];
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const keywordMatch = PROGRAM_KEYWORD_COLLEGE_RULES.find((rule) => rule.pattern.test(normalizedProgram));
+  if (keywordMatch) {
+    return keywordMatch.college;
+  }
+
+  return OTHER_COLLEGE_LABEL;
 }
 
 function formatCountdown(secondsRemaining) {
@@ -468,7 +501,6 @@ export default function RegisterPage() {
   const [sessionAction, setSessionAction] = React.useState('');
   const [result, setResult] = React.useState(null);
   const [programOptionsByCollege, setProgramOptionsByCollege] = React.useState(DEFAULT_COLLEGE_PROGRAM_MAP);
-  const [collegeOptions, setCollegeOptions] = React.useState(DEFAULT_COLLEGE_OPTIONS);
   const [registrationType, setRegistrationType] = React.useState(REGISTRATION_TYPES.student);
   const [form, setForm] = React.useState(INITIAL_FORM);
   const isVisitor = registrationType === REGISTRATION_TYPES.visitor;
@@ -550,7 +582,6 @@ export default function RegisterPage() {
         );
 
         setProgramOptionsByCollege(normalizedGroups);
-        setCollegeOptions(Object.keys(normalizedGroups));
       } catch {
         // Keep fallback options.
       }
@@ -625,10 +656,7 @@ export default function RegisterPage() {
     setForm((prev) => {
       const next = { ...prev, [key]: value };
       if (key === 'program') {
-        const mappedCollege = programCollegeLookup[normalizeSpaces(value).toLowerCase()];
-        if (mappedCollege) {
-          next.college = mappedCollege;
-        }
+        next.college = resolveCollegeFromProgram(value, programCollegeLookup);
       }
       return next;
     });
@@ -1366,31 +1394,7 @@ export default function RegisterPage() {
 
                         {!isVisitor ? (
                           <>
-                            <div className="col-md-6">
-                              <label htmlFor="college" className="form-label" style={{ fontSize: '14px' }}>
-                                College
-                              </label>
-                              <select
-                                id="college"
-                                name="college"
-                                className={`form-select ${fieldErrors.college ? 'is-invalid' : ''}`}
-                                value={form.college}
-                                onChange={(ev) => updateForm('college', ev.target.value)}
-                                onBlur={() => handleFieldBlur('college')}
-                                disabled={formLocked}
-                                required={!isVisitor}
-                              >
-                                <option value="">Select college</option>
-                                {collegeOptions.map((college) => (
-                                  <option key={college} value={college}>
-                                    {college}
-                                  </option>
-                                ))}
-                              </select>
-                              {fieldErrors.college ? <div className="invalid-feedback">{fieldErrors.college}</div> : null}
-                            </div>
-
-                            <div className="col-md-6">
+                            <div className="col-md-12">
                               <label htmlFor="program" className="form-label" style={{ fontSize: '14px' }}>
                                 Program
                               </label>
@@ -1414,7 +1418,7 @@ export default function RegisterPage() {
                                 ))}
                               </datalist>
                               <div className="form-text" style={{ fontSize: '14px' }}>
-                                Program is searchable across all colleges. Known programs auto-fill the matching college.
+                                Program is searchable across all departments. Known programs auto-fill the matching department.
                               </div>
                             </div>
                           </>
