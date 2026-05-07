@@ -78,7 +78,7 @@ class AppConfig:
     #   reason a face was marked poor.
     # - Enable `quality_debug_show_all_scores` while tuning thresholds so you
     #   can inspect every component score and raw metric value.
-    quality_debug_enabled: bool = False
+    quality_debug_enabled: bool = True
     quality_debug_show_primary_issue: bool = True
     quality_debug_show_all_scores: bool = True
 
@@ -129,7 +129,7 @@ class AppConfig:
     exit_cctv_stream_source: str = "0"
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
-    cli_top_bar_enabled: bool = False
+    cli_top_bar_enabled: bool = True
 
     # ------------------------------------------------------------------
     # Occupancy and capacity management
@@ -169,8 +169,8 @@ class AppConfig:
     # Tuning:
     # - Raise these if false detections are slipping through.
     # - Lower these if the detector is generally conservative but still right.
-    quality_detection_confidence_min: float = 0.50
-    quality_detection_confidence_good: float = 0.70
+    quality_detection_confidence_min: float = 0.70
+    quality_detection_confidence_good: float = 0.80
 
     # ------------------------------------------------------------------
     # Quality scoring: sharpness / blur
@@ -179,8 +179,8 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_sharpness_min` to be stricter against blur.
     # - Lower it if motion blur is common but recognition still works.
-    quality_sharpness_min: float = 15.0
-    quality_sharpness_good: float = 30.0
+    quality_sharpness_min: float = 30.0
+    quality_sharpness_good: float = 80.0
 
     # ------------------------------------------------------------------
     # Quality scoring: brightness / exposure
@@ -192,7 +192,7 @@ class AppConfig:
     # - Lower it if your environment is dim and faces are still usable.
     # - Lower `quality_brightness_max` if overexposed faces should fail sooner.
     # - Widen the `good_min` to `good_max` band if lighting is more variable.
-    quality_brightness_min: float = 50.0
+    quality_brightness_min: float = 60.0
     quality_brightness_good_min: float = 70.0
     quality_brightness_good_max: float = 185.0
     quality_brightness_max: float = 215.0
@@ -202,8 +202,8 @@ class AppConfig:
     # Tuning:
     # - Raise these to prefer richer contrast and facial detail.
     # - Lower them if your camera feed is naturally low-contrast.
-    quality_dynamic_range_min: float = 25.0
-    quality_dynamic_range_good: float = 65.0
+    quality_dynamic_range_min: float = 75.0
+    quality_dynamic_range_good: float = 100.0
 
     # ------------------------------------------------------------------
     # Quality scoring: landmark-based pose / truncation
@@ -232,12 +232,12 @@ class AppConfig:
     # These are used to classify the current head pose as front/left/right
     # using landmark yaw measured as nose offset from eye midpoint.
     registration_pose_front_max_yaw_ratio: float = 0.20
-    registration_pose_side_min_yaw_ratio: float = 0.40
+    registration_pose_side_min_yaw_ratio: float = 0.35
 
     # Registration distance gate (face-size proxy).
     # The closest detected face is selected for registration; this threshold
     # ensures that selected face is close enough to camera before capture.
-    registration_min_face_area: int = 240 * 240
+    registration_min_face_area: int = 230 * 230
 
     # ------------------------------------------------------------------
     # Device configuration
