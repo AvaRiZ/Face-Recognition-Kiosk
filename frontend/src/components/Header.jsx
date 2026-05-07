@@ -29,7 +29,7 @@ export default function Header({ onToggleSidebar, sidebarCollapsed = false }) {
     let cancelled = false;
     async function loadRegistrationInfo() {
       try {
-        const response = await fetch('/api/register-info', { credentials: 'include' });
+        const response = await fetch('/api/registrations/active', { credentials: 'include' });
         if (!response.ok) {
           if (!cancelled && (response.status === 401 || response.status === 403)) {
             setRegistrationInfo(null);
@@ -56,15 +56,14 @@ export default function Header({ onToggleSidebar, sidebarCollapsed = false }) {
   const registrationActive = Boolean(
     registrationInfo
     && (
-      registrationInfo.ready_to_submit
-      || registrationInfo.has_pending_registration
-      || registrationInfo.is_in_progress
-      || registrationInfo.web_session_active
+      registrationInfo.phase === 'capturing'
+      || registrationInfo.phase === 'ready'
+      || registrationInfo.ready_to_submit
     )
   );
   const isRegistrationPage = location.pathname === '/register';
   const registrationCtaVisible = registrationActive && !isRegistrationPage;
-  const registrationCtaLabel = registrationInfo?.ready_to_submit ? 'Open Registration (Ready)' : 'Open Registration';
+  const registrationCtaLabel = registrationInfo?.phase === 'ready' ? 'Open Registration (Ready)' : 'Open Registration';
   const registrationReason = (registrationInfo?.status_reason_message || '').trim();
 
   async function handleLogout(ev) {

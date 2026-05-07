@@ -122,11 +122,11 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Entry camera stream source (accessible to entry-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    entry_cctv_stream_source: str = "2"
+    entry_cctv_stream_source: str = "0"
 
     # Exit camera stream source (accessible to exit-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    exit_cctv_stream_source: str = "0"
+    exit_cctv_stream_source: str = "1"
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
     cli_top_bar_enabled: bool = True

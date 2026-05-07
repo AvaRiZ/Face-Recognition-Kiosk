@@ -245,63 +245,6 @@ def create_internal_blueprint(deps):
                 return float(value)
         return None
 
-    def _safe_insert_user_registration_audit(
-        *,
-        user_id: int | None,
-        event_id: str,
-        registration_type: str,
-        flow_type: str,
-        status: str,
-        notes: str,
-    ) -> None:
-        audit_conn = None
-        try:
-            audit_conn = db_connect(deps["db_path"])
-            audit_cursor = audit_conn.cursor()
-            audit_cursor.execute(
-                """
-                INSERT INTO user_registrations (
-                    user_id, event_id, registration_type, flow_type, status, performed_by, notes
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    user_id,
-                    event_id,
-                    registration_type,
-                    flow_type,
-                    status,
-                    "system",
-                    notes,
-                ),
-            )
-            audit_conn.commit()
-        except Exception:
-            pass
-        finally:
-            if audit_conn is not None:
-                try:
-                    audit_conn.close()
-                except Exception:
-                    pass
-
-    def _is_visitor_user(user_id: int) -> bool:
-        conn = None
-        try:
-            conn = db_connect(deps["db_path"])
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (int(user_id),))
-            row = cursor.fetchone()
-            return bool(row and str(row[0] or "").strip().lower() == "visitor")
-        except Exception:
-            return False
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
     def _get_occupancy_view() -> tuple[dict, float]:
         config = deps["config"]
         warning_threshold = _resolve_warning_threshold(deps["db_path"], config.occupancy_warning_threshold)
@@ -357,17 +300,18 @@ def create_internal_blueprint(deps):
     def runtime_config():
         threshold, quality_threshold = deps["get_thresholds"]()
         config = deps["config"]
-        reg_state = deps["get_registration_state"]() if deps.get("get_registration_state") else None
-        registration_session = {
-            "web_session_active": bool(getattr(reg_state, "web_session_active", False)),
-            "manual_requested": bool(getattr(reg_state, "manual_requested", False)),
-            "manual_active": bool(getattr(reg_state, "manual_active", False)),
-            "in_progress": bool(getattr(reg_state, "in_progress", False)),
-            "session_id": str(getattr(reg_state, "session_id", "") or "") or None,
-            "capture_count": int(getattr(reg_state, "capture_count", 0)),
-            "status_reason_code": str(getattr(reg_state, "status_reason_code", "") or ""),
-            "status_reason_message": str(getattr(reg_state, "status_reason_message", "") or ""),
-        }
+        registration_control_getter = deps.get("get_registration_control")
+        if callable(registration_control_getter):
+            registration_control = registration_control_getter()
+        else:
+            reg_state = deps["get_registration_state"]() if deps.get("get_registration_state") else None
+            registration_control = {
+                "session_id": str(getattr(reg_state, "session_id", "") or "") or None,
+                "phase": str(getattr(reg_state, "phase", "idle") or "idle"),
+                "expected_pose": str(getattr(reg_state, "current_pose", "") or "") or None,
+                "force_new_identity": bool(getattr(reg_state, "force_new_identity", False)),
+                "registration_kind": str(getattr(reg_state, "registration_kind", "student") or "student"),
+            }
         return jsonify(
             {
                 "settings_version": get_settings_version(deps["db_path"]),
@@ -377,7 +321,7 @@ def create_internal_blueprint(deps):
                 "recognition_confidence_threshold": float(config.recognition_confidence_threshold),
                 "entry_cctv_stream_source": str(config.entry_cctv_stream_source),
                 "exit_cctv_stream_source": str(config.exit_cctv_stream_source),
-                "registration_session": registration_session,
+                "registration_control": registration_control,
                 "entry_worker_online": _entry_worker_online(),
                 "entry_worker_last_seen_at": _entry_worker_last_seen_at(),
             }
@@ -412,7 +356,7 @@ def create_internal_blueprint(deps):
             }
         )
 
-    @bp.route("/registration-samples", methods=["POST"], endpoint="registration_samples_ingest")
+    @bp.route("/registrations/samples", methods=["POST"], endpoint="registrations_samples_ingest")
     def registration_samples_ingest():
         payload = request.get_json(silent=True) or {}
         sample_id = str(payload.get("sample_id") or "").strip()
@@ -460,9 +404,13 @@ def create_internal_blueprint(deps):
 
         reg_state = reg_state_getter()
         active_session_id = str(getattr(reg_state, "session_id", "") or "").strip()
+        current_phase = str(getattr(reg_state, "phase", "idle") or "idle").strip().lower()
         if not active_session_id:
             _log_reject("no_active_session", 409)
             return _json_error("No active registration session is available for sample ingestion.", 409)
+        if current_phase != "capturing":
+            _log_reject("session_not_capturing", 409)
+            return _json_error("Registration session is not accepting new samples.", 409)
         if session_id != active_session_id:
             print(
                 "[REG-SAMPLE][SESSION-MISMATCH] "
@@ -503,7 +451,7 @@ def create_internal_blueprint(deps):
             "[REG-SAMPLE][INGESTED] "
             f"sample_id={sample_id} session_id={session_id} pose={pose} "
             f"capture_count={capture_count}/{int(getattr(reg_state, 'max_captures', 0))} "
-            f"in_progress={bool(getattr(reg_state, 'in_progress', False))}"
+            f"phase={str(getattr(reg_state, 'phase', 'idle') or 'idle')}"
         )
         return jsonify(
             {
@@ -513,8 +461,8 @@ def create_internal_blueprint(deps):
                 "session_id": session_id,
                 "capture_count": capture_count,
                 "max_captures": int(getattr(reg_state, "max_captures", 0)),
-                "in_progress": bool(getattr(reg_state, "in_progress", False)),
-                "has_pending_registration": bool(getattr(reg_state, "pending_registration", None)),
+                "phase": str(getattr(reg_state, "phase", "idle") or "idle"),
+                "ready_to_submit": bool(getattr(reg_state, "ready_to_submit", False)),
                 "worker_role": worker_role,
                 "station_id": station_id,
                 "camera_id": camera_id,
@@ -646,15 +594,6 @@ def create_internal_blueprint(deps):
             conn.close()
 
         if inserted and decision == "allowed":
-            if event_type == "exit" and user_id and _is_visitor_user(int(user_id)):
-                _safe_insert_user_registration_audit(
-                    user_id=int(user_id),
-                    event_id=event_id,
-                    registration_type="visitor",
-                    flow_type="manual_entry",
-                    status="approved",
-                    notes="Visitor exit recorded by exit worker.",
-                )
             occupancy_state = occupancy_state or _build_daily_occupancy_state(
                 None,
                 fallback_state_date=captured_at.date().isoformat(),
@@ -691,14 +630,6 @@ def create_internal_blueprint(deps):
             metadata = payload.get("snapshot_metadata")
             if not isinstance(metadata, dict):
                 metadata = {}
-            _safe_insert_user_registration_audit(
-                user_id=user_id,
-                event_id=event_id,
-                registration_type="unrecognized",
-                flow_type="manual_entry",
-                status="pending",
-                notes="Pending librarian approval for unrecognized detection.",
-            )
             occ_view, _warning_threshold = _get_occupancy_view()
             capacity_warning = bool(occ_view["capacity_warning"])
             emit_unrecognized_detection(

@@ -119,22 +119,16 @@ const PROGRAM_KEYWORD_COLLEGE_RULES = [
 ];
 
 const INITIAL_INFO = {
-  capture_count: 0,
-  max_captures: 30,
-  has_pending_registration: false,
-  is_in_progress: false,
-  web_session_active: false,
-  allow_unknown_override: false,
-  session_expired: false,
+  active: false,
+  session_id: null,
+  phase: 'idle',
+  registration_kind: 'student',
+  force_new_identity: false,
   ready_to_submit: false,
   status_reason_code: null,
   status_reason_message: '',
   status_updated_at: null,
-  session_timeout_seconds: 0,
-  session_started_at: null,
-  last_activity_at: null,
-  session_expires_at: null,
-  seconds_until_expiry: null,
+  expires_in_seconds: null,
   required_poses: [],
   current_pose: null,
   current_pose_index: 0,
@@ -145,11 +139,7 @@ const INITIAL_INFO = {
     retained: 0,
     retained_required: 0
   },
-  sample_previews: [],
-  camera_stream: {
-    state: 'unknown',
-    message: 'Camera status unavailable.'
-  }
+  preview_samples: []
 };
 
 const INITIAL_FORM = { name: '', sr_code: '', gender: '', college: '', program: '' };
@@ -404,20 +394,20 @@ function validateRegistrationForm(form, registrationType) {
   return { errors, normalized };
 }
 
-function deriveUiState({ captureError, info, readyToSubmit, webSessionActive, captureInProgress }) {
+function deriveUiState({ captureError, info, readyToSubmit, captureInProgress }) {
   if (captureError) {
     return 'error';
   }
-  if (info.session_expired) {
+  if (info.phase === 'expired') {
     return 'expired';
   }
   if (readyToSubmit) {
     return 'ready_to_submit';
   }
-  if (webSessionActive && !captureInProgress) {
+  if (info.phase === 'capturing' && !captureInProgress) {
     return 'waiting_lock';
   }
-  if (webSessionActive || captureInProgress) {
+  if (info.phase === 'capturing') {
     return 'capturing';
   }
   return 'idle';
@@ -510,7 +500,7 @@ export default function RegisterPage() {
 
     async function loadInfo() {
       try {
-        const response = await fetch('/api/register-info', { credentials: 'include' });
+        const response = await fetch('/api/registrations/active', { credentials: 'include' });
         if (!response.ok) {
           return;
         }
@@ -633,7 +623,7 @@ export default function RegisterPage() {
       const next = { ...prev };
       let changed = false;
       touchedKeys.forEach((key) => {
-        const message = validateField(key, form);
+        const message = validateField(key, form, registrationType);
         if (message) {
           if (next[key] !== message) {
             next[key] = message;
@@ -648,7 +638,7 @@ export default function RegisterPage() {
       });
       return changed ? next : prev;
     });
-  }, [form, touchedFields]);
+  }, [form, touchedFields, registrationType]);
 
   function updateForm(key, value) {
     setCaptureError('');
@@ -687,8 +677,8 @@ export default function RegisterPage() {
     setResult(null);
 
     try {
-      const response = await fetch('/api/register-reset', {
-        method: 'POST',
+      const response = await fetch('/api/registrations/active', {
+        method: 'DELETE',
         credentials: 'include'
       });
       const payload = await response.json();
@@ -711,9 +701,16 @@ export default function RegisterPage() {
     setSessionAction('start');
 
     try {
-      const response = await fetch('/api/register-session/start', {
+      const response = await fetch('/api/registrations/active', {
         method: 'POST',
-        credentials: 'include'
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: JSON.stringify({
+          registration_kind: registrationType
+        })
       });
       const payload = await response.json();
       if (!response.ok || payload.success === false) {
@@ -738,8 +735,8 @@ export default function RegisterPage() {
     setSessionAction('cancel');
 
     try {
-      const response = await fetch('/api/register-session/cancel', {
-        method: 'POST',
+      const response = await fetch('/api/registrations/active', {
+        method: 'DELETE',
         credentials: 'include'
       });
       const payload = await response.json();
@@ -764,7 +761,7 @@ export default function RegisterPage() {
     setResult(null);
     setSessionAction('override');
     try {
-      const response = await fetch('/api/register-session/continue-unknown', {
+      const response = await fetch('/api/registrations/active/override', {
         method: 'POST',
         credentials: 'include'
       });
@@ -790,7 +787,7 @@ export default function RegisterPage() {
     setCaptureError('');
     setResult(null);
 
-    if (!info.ready_to_submit || !info.has_pending_registration) {
+    if (!info.ready_to_submit || info.phase !== 'ready') {
       setCaptureError('Registration capture is not complete yet. Finish all required face samples before saving.');
       return;
     }
@@ -812,7 +809,7 @@ export default function RegisterPage() {
     const summary = [
       `${registrationType === REGISTRATION_TYPES.visitor ? 'Visitor' : 'Student'}: ${normalized.name}`,
       `Gender: ${normalized.gender}`,
-      `Retained Samples: ${info.total_progress?.retained ?? info.sample_previews?.length ?? 0} / ${info.total_progress?.retained_required ?? 0}`,
+      `Retained Samples: ${info.total_progress?.retained ?? info.preview_samples?.length ?? 0} / ${info.total_progress?.retained_required ?? 0}`,
       `Capture Ready: ${info.ready_to_submit ? 'Yes' : 'No'}`
     ];
     if (registrationType !== REGISTRATION_TYPES.visitor) {
@@ -832,24 +829,21 @@ export default function RegisterPage() {
 
     setSubmitting(true);
 
-    const formData = new FormData();
-    formData.append('user_type', registrationType);
-    formData.append('name', normalized.name);
-    if (registrationType !== REGISTRATION_TYPES.visitor) {
-      formData.append('sr_code', normalized.sr_code);
-      formData.append('program', normalized.program);
-      formData.append('college', normalized.college);
-    }
-    formData.append('gender', normalized.gender);
-
     try {
-      const response = await fetch('/register', {
+      const response = await fetch('/api/registrations/active/submit', {
         method: 'POST',
         credentials: 'include',
-        body: formData,
         headers: {
+          'Content-Type': 'application/json',
           Accept: 'application/json'
-        }
+        },
+        body: JSON.stringify({
+          registration_kind: registrationType,
+          name: normalized.name,
+          sr_code: registrationType !== REGISTRATION_TYPES.visitor ? normalized.sr_code : (normalized.sr_code || null),
+          gender: normalized.gender,
+          program: registrationType !== REGISTRATION_TYPES.visitor ? normalized.program : normalized.program
+        })
       });
 
       let payload;
@@ -857,7 +851,7 @@ export default function RegisterPage() {
         payload = await response.json();
       } catch (jsonError) {
         const responseText = await response.text();
-        console.error('Unexpected non-JSON /register response:', response.status, responseText);
+        console.error('Unexpected non-JSON /api/registrations/active/submit response:', response.status, responseText);
         const message = response.status >= 500 ? 'Server error while saving registration.' : 'Unexpected server response while saving registration.';
         setCaptureError(message);
         await showError('Registration Failed', message);
@@ -880,13 +874,10 @@ export default function RegisterPage() {
       setInfo((prev) => ({
         ...prev,
         ...payload,
-        capture_count: 0,
-        has_pending_registration: false,
-        is_in_progress: false,
+        phase: 'idle',
         ready_to_submit: false,
-        web_session_active: false,
-        session_expired: false,
-        sample_previews: [],
+        active: false,
+        preview_samples: [],
         total_progress: {
           ...(prev.total_progress || {}),
           captured: 0,
@@ -906,14 +897,17 @@ export default function RegisterPage() {
     }
   }
 
-  const readyToSubmit = Boolean(info.ready_to_submit && info.has_pending_registration);
-  const webSessionActive = Boolean(info.web_session_active);
-  const captureInProgress = !readyToSubmit && Boolean(info.capture_count > 0 || info.is_in_progress);
+  const phase = (info.phase || 'idle').toLowerCase();
+  const totalCaptured = Number(info.total_progress?.captured || 0);
+  const totalRequired = Number(info.total_progress?.required || 0);
+  const readyToSubmit = Boolean(info.ready_to_submit && phase === 'ready');
+  const sessionActive = phase === 'capturing' || phase === 'ready';
+  const captureInProgress = phase === 'capturing' && totalCaptured > 0;
   const sessionControlBusy = sessionAction === 'start' || sessionAction === 'cancel' || sessionAction === 'override';
-  const canStartSession = !readyToSubmit && !webSessionActive && !captureInProgress && !submitting && !sessionControlBusy;
-  const canCancelSession = (webSessionActive || captureInProgress) && !submitting && !sessionControlBusy;
-  const sampleCount = info.sample_previews?.length || 0;
-  const visibleSamplePreviews = React.useMemo(() => (info.sample_previews || []).slice(0, 8), [info.sample_previews]);
+  const canStartSession = (phase === 'idle' || phase === 'expired') && !submitting && !sessionControlBusy;
+  const canCancelSession = sessionActive && !submitting && !sessionControlBusy;
+  const sampleCount = info.preview_samples?.length || 0;
+  const visibleSamplePreviews = React.useMemo(() => (info.preview_samples || []).slice(0, 8), [info.preview_samples]);
   const firstPreview = visibleSamplePreviews[0] || null;
 
   const currentPose = info.current_pose || null;
@@ -925,14 +919,13 @@ export default function RegisterPage() {
     : 0;
   const totalPoses = Array.isArray(info.required_poses) ? info.required_poses.length : 0;
 
-  const progressPercent = info.max_captures
-    ? Math.min(100, Math.round((info.capture_count / info.max_captures) * 100))
+  const progressPercent = totalRequired
+    ? Math.min(100, Math.round((totalCaptured / totalRequired) * 100))
     : 0;
   const uiState = deriveUiState({
     captureError,
     info,
     readyToSubmit,
-    webSessionActive,
     captureInProgress
   });
   const statePresentation = getStatePresentation({
@@ -949,40 +942,29 @@ export default function RegisterPage() {
   const reasonMessage = reasonView?.message || statusReasonMessage;
   const reasonAction = reasonView?.action || '';
   const canContinueUnknown = statusReasonCode === 'possible_existing_match'
-    && !info.allow_unknown_override
+    && !info.force_new_identity
     && !submitting
     && !sessionControlBusy
-    && (webSessionActive || captureInProgress);
-
-  const cameraState = (info.camera_stream?.state || 'unknown').toLowerCase();
-  const cameraMessage = info.camera_stream?.message || '';
-  const frameAgeSeconds = typeof info.camera_stream?.last_frame_age_seconds === 'number'
-    ? Math.round(info.camera_stream.last_frame_age_seconds)
-    : null;
-  const streamStale = frameAgeSeconds != null && frameAgeSeconds > 4;
+    && phase === 'capturing';
 
   let healthVariant = 'text-bg-success';
-  let healthLabel = 'Detection Live';
-  let healthIcon = 'bi bi-broadcast';
-  if (info.detection_paused) {
+  let healthLabel = 'Session Idle';
+  let healthIcon = 'bi bi-circle';
+  if (phase === 'capturing') {
+    healthVariant = 'text-bg-primary';
+    healthLabel = 'Capture Active';
+    healthIcon = 'bi bi-person-video3';
+  } else if (phase === 'ready') {
+    healthVariant = 'text-bg-success';
+    healthLabel = 'Ready to Submit';
+    healthIcon = 'bi bi-check2-circle';
+  } else if (phase === 'expired') {
     healthVariant = 'text-bg-warning';
-    healthLabel = 'Detection Paused';
-    healthIcon = 'bi bi-pause-circle';
-  } else if (cameraState === 'live' || cameraState === 'connected') {
-    healthVariant = streamStale ? 'text-bg-warning' : 'text-bg-success';
-    healthLabel = streamStale ? 'Stream Stale' : 'Detection Live';
-    healthIcon = streamStale ? 'bi bi-exclamation-circle' : 'bi bi-camera-video';
-  } else if (cameraState === 'connecting' || cameraState === 'reconnecting') {
-    healthVariant = 'text-bg-warning';
-    healthLabel = 'Reconnecting';
-    healthIcon = 'bi bi-arrow-repeat';
-  } else {
-    healthVariant = 'text-bg-danger';
-    healthLabel = 'Stream Offline';
-    healthIcon = 'bi bi-slash-circle';
+    healthLabel = 'Session Expired';
+    healthIcon = 'bi bi-hourglass-split';
   }
 
-  const secondsUntilExpiry = typeof info.seconds_until_expiry === 'number' ? info.seconds_until_expiry : null;
+  const secondsUntilExpiry = typeof info.expires_in_seconds === 'number' ? info.expires_in_seconds : null;
   const expiringSoon = secondsUntilExpiry != null
     && secondsUntilExpiry > 0
     && secondsUntilExpiry <= EXPIRING_SOON_THRESHOLD_SECONDS;
@@ -995,11 +977,11 @@ export default function RegisterPage() {
     ? 3
     : readyToSubmit
       ? 2
-      : (webSessionActive || captureInProgress)
+      : sessionActive
         ? 1
         : 0;
 
-  const primaryAction = readyToSubmit ? 'submit' : (webSessionActive || captureInProgress ? 'cancel' : 'start');
+  const primaryAction = readyToSubmit ? 'submit' : (sessionActive ? 'cancel' : 'start');
   const primaryActionBusy = (primaryAction === 'start' && sessionAction === 'start')
     || (primaryAction === 'cancel' && sessionAction === 'cancel')
     || (primaryAction === 'submit' && submitting);
@@ -1106,8 +1088,7 @@ export default function RegisterPage() {
                       </div>
 
                       <div className="small text-muted mt-3" style={{ fontSize: '14px' }}>
-                        {cameraMessage || 'Camera status is being monitored.'}
-                        {frameAgeSeconds != null ? ` Last frame ${frameAgeSeconds}s ago.` : ''}
+                        Registration session state is synchronized with the entry worker in real time.
                       </div>
 
                       {reasonMessage ? (
@@ -1186,7 +1167,7 @@ export default function RegisterPage() {
 
                       <div className="row g-3 mt-2">
                         <div className="col-md-4">
-                          <MetricPill icon="bi bi-camera" label="Captured" value={`${info.capture_count}/${info.max_captures}`} />
+                          <MetricPill icon="bi bi-camera" label="Captured" value={`${totalCaptured}/${totalRequired || 0}`} />
                         </div>
                         <div className="col-md-4">
                           <MetricPill icon="bi bi-arrows-angle-expand" label="Completed Poses" value={`${completedPoses}/${totalPoses || 0}`} />

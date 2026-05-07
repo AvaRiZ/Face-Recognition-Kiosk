@@ -6,6 +6,16 @@ import urllib.request
 from typing import Any
 
 
+class ApiRequestError(RuntimeError):
+    def __init__(self, *, method: str, path: str, status: int, message: str, payload: Any):
+        self.method = str(method or "").upper()
+        self.path = str(path or "")
+        self.status = int(status)
+        self.message = str(message or "")
+        self.payload = payload
+        super().__init__(f"{self.method} {self.path} failed ({self.status}): {self.message}")
+
+
 class ApiClient:
     def __init__(self, base_url: str, token: str | None = None, timeout_seconds: float = 8.0):
         self.base_url = base_url.rstrip("/")
@@ -41,7 +51,7 @@ class ApiClient:
         status, payload = self._request("GET", path)
         if status < 200 or status >= 300:
             message = payload.get("message") if isinstance(payload, dict) else str(payload)
-            raise RuntimeError(f"GET {path} failed ({status}): {message}")
+            raise ApiRequestError(method="GET", path=path, status=status, message=message, payload=payload)
         if not isinstance(payload, dict):
             raise RuntimeError(f"GET {path} returned invalid payload.")
         return payload
@@ -50,7 +60,7 @@ class ApiClient:
         status, body = self._request("POST", path, payload=payload)
         if status < 200 or status >= 300:
             message = body.get("message") if isinstance(body, dict) else str(body)
-            raise RuntimeError(f"POST {path} failed ({status}): {message}")
+            raise ApiRequestError(method="POST", path=path, status=status, message=message, payload=body)
         if not isinstance(body, dict):
             raise RuntimeError(f"POST {path} returned invalid payload.")
         return body

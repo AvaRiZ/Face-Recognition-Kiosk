@@ -527,6 +527,12 @@ class CLIApplication:
                 print("Registration session expired due to inactivity.")
             frame_index += 1
 
+            if self.state.consume_tracking_refresh_request():
+                last_visible_track_ids = []
+                last_face_crops = []
+                last_face_qualities = []
+                registration_prompted = False
+
             if (
                 self.config.real_val_capture_enabled
                 and saved_real_val_frames < self.config.real_val_capture_max_frames
