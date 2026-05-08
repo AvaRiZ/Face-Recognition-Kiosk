@@ -9,6 +9,8 @@ import time
 import base64
 import calendar
 import json
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
 import warnings
@@ -30,9 +32,12 @@ from auth import (
 )
 from core.models import User
 from core.program_catalog import (
+    DEFAULT_COLLEGE_PROGRAM_MAP,
+    OTHER_COLLEGE_LABEL,
     build_program_lookup,
     is_program_code,
     normalize_program_name,
+    program_code_for,
     resolve_program_name,
 )
 from db import connect as db_connect, table_columns
@@ -78,6 +83,29 @@ def _display_profile_field(value, *, user_type: str, default: str = "-", visitor
     if text:
         return text
     return visitor_default if _normalize_user_type(user_type) == "visitor" else default
+
+
+def _excel_column_label(column_number: int) -> str:
+    if column_number < 1:
+        raise ValueError("Excel column numbers must be positive.")
+
+    label = ""
+    current = column_number
+    while current:
+        current, remainder = divmod(current - 1, 26)
+        label = chr(65 + remainder) + label
+    return label
+
+
+def _excel_column_number(cell_ref: str) -> int:
+    match = re.match(r"([A-Z]+)", str(cell_ref or ""))
+    if not match:
+        return 0
+
+    value = 0
+    for char in match.group(1):
+        value = (value * 26) + (ord(char) - 64)
+    return value
 
 
 def _parse_payload_json_object(raw_value) -> dict:
@@ -1226,6 +1254,869 @@ def create_routes_blueprint(deps):
             "overall_row": overall_row,
         }
 
+    def _available_visit_years(cursor):
+        cursor.execute(
+            """
+            SELECT DISTINCT EXTRACT(YEAR FROM COALESCE(captured_at, ingested_at))::int AS year
+            FROM recognition_events
+            WHERE COALESCE(captured_at, ingested_at) IS NOT NULL
+            ORDER BY year DESC
+            """
+        )
+        years = []
+        for (raw_year,) in cursor.fetchall():
+            try:
+                years.append(int(raw_year))
+            except (TypeError, ValueError):
+                continue
+        return years
+
+    def _resolve_daily_visit_category(raw_program, user_type, program_lookup, program_code_map):
+        normalized_program = normalize_program_name(raw_program)
+        normalized_user_type = _normalize_user_type(user_type)
+
+        if normalized_program:
+            resolved_program, resolution_status, _ = resolve_program_name(normalized_program, program_lookup)
+            canonical_program = normalize_program_name(resolved_program)
+            if resolution_status in {"catalog", "registered"} and canonical_program:
+                return normalize_program_name(program_code_map.get(canonical_program)) or canonical_program
+            return normalized_program
+
+        if normalized_user_type == "visitor":
+            return "Visitor"
+        if normalized_user_type == "staff":
+            return "Staff"
+        return "Unassigned"
+
+    def _monthly_daily_visits_data(selected_year=None, selected_month=None):
+        current_date = date.today()
+        try:
+            year = int(selected_year or current_date.year)
+        except (TypeError, ValueError):
+            year = current_date.year
+
+        try:
+            month = int(selected_month or current_date.month)
+        except (TypeError, ValueError):
+            month = current_date.month
+
+        if month < 1 or month > 12:
+            month = current_date.month
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+
+        c.execute(
+            """
+            SELECT program_name, program_code
+            FROM programs
+            WHERE program_name IS NOT NULL AND TRIM(program_name) <> ''
+            """
+        )
+        known_program_rows = [
+            (normalize_program_name(program_name), normalize_program_name(program_code))
+            for program_name, program_code in c.fetchall()
+            if normalize_program_name(program_name)
+        ]
+        program_lookup = build_program_lookup(known_program_rows)
+        program_code_map = {
+            program_name: (program_code or program_code_for(program_name))
+            for program_name, program_code in known_program_rows
+        }
+
+        available_years = _available_visit_years(c)
+        if year not in available_years:
+            if available_years:
+                year = available_years[0]
+            else:
+                available_years = [current_date.year]
+                year = current_date.year
+
+        days_in_month = calendar.monthrange(year, month)[1]
+
+        c.execute(
+            """
+            SELECT
+                re.user_id,
+                COALESCE(NULLIF(TRIM(u.sr_code), ''), NULLIF(TRIM(re.sr_code), ''), '') AS identity_code,
+                NULLIF(TRIM(u.course), '') AS raw_program,
+                COALESCE(NULLIF(TRIM(u.user_type), ''), '') AS user_type,
+                COALESCE(re.captured_at, re.ingested_at) AS event_time,
+                COALESCE(NULLIF(TRIM(re.event_id), ''), '') AS event_id
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE COALESCE(re.captured_at, re.ingested_at) IS NOT NULL
+              AND EXTRACT(YEAR FROM COALESCE(re.captured_at, re.ingested_at)) = %s
+              AND EXTRACT(MONTH FROM COALESCE(re.captured_at, re.ingested_at)) = %s
+            ORDER BY COALESCE(re.captured_at, re.ingested_at) ASC, re.id ASC
+            """,
+            (year, month),
+        )
+        raw_events = c.fetchall()
+        conn.close()
+
+        seen_daily_identities = set()
+        grouped = {}
+        for user_id, identity_code, raw_program, user_type, event_time, event_id in raw_events:
+            day_key = _normalize_date_key(event_time)
+            if not day_key:
+                continue
+
+            identity_value = ""
+            if user_id is not None:
+                identity_value = str(user_id).strip()
+            if not identity_value:
+                identity_value = str(identity_code or "").strip()
+            if not identity_value:
+                identity_value = str(event_id or "").strip()
+            if not identity_value:
+                continue
+
+            visit_key = (identity_value, day_key)
+            if visit_key in seen_daily_identities:
+                continue
+            seen_daily_identities.add(visit_key)
+
+            try:
+                day_number = int(day_key[-2:])
+            except (TypeError, ValueError):
+                continue
+            if day_number < 1 or day_number > days_in_month:
+                continue
+
+            category_name = _resolve_daily_visit_category(raw_program, user_type, program_lookup, program_code_map)
+            grouped.setdefault(category_name, [0] * days_in_month)[day_number - 1] += 1
+
+        rows = []
+        overall_daily = [0] * days_in_month
+        for category_name in sorted(grouped):
+            daily_counts = list(grouped.get(category_name, [0] * days_in_month))
+            total_count = sum(daily_counts)
+            for idx, count in enumerate(daily_counts):
+                overall_daily[idx] += count
+            rows.append(
+                {
+                    "category": category_name,
+                    "days": daily_counts,
+                    "overall_total": total_count,
+                }
+            )
+
+        overall_row = {
+            "category": "Overall Total",
+            "days": overall_daily,
+            "overall_total": sum(overall_daily),
+        }
+
+        return {
+            "year": year,
+            "month": month,
+            "month_label": calendar.month_name[month],
+            "years": available_years,
+            "day_numbers": list(range(1, days_in_month + 1)),
+            "rows": rows,
+            "overall_row": overall_row,
+            "month_options": [
+                {"value": index, "label": calendar.month_name[index]}
+                for index in range(1, 13)
+            ],
+        }
+
+    def _xlsx_cell_child(cell, tag_name):
+        namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+        return cell.find(f"{namespace}{tag_name}")
+
+    def _set_xlsx_text_cell(cell, text):
+        namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+        cell.attrib["t"] = "inlineStr"
+        for child in list(cell):
+            cell.remove(child)
+        inline_string = ET.Element(f"{namespace}is")
+        text_node = ET.SubElement(inline_string, f"{namespace}t")
+        text_node.text = str(text)
+        cell.append(inline_string)
+
+    def _set_xlsx_number_cell(cell, value):
+        namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+        cell.attrib.pop("t", None)
+        for child in list(cell):
+            cell.remove(child)
+        value_node = ET.Element(f"{namespace}v")
+        value_node.text = str(int(value) if isinstance(value, bool) or isinstance(value, int) else value)
+        cell.append(value_node)
+
+    def _clear_xlsx_cell_value(cell):
+        cell.attrib.pop("t", None)
+        for child in list(cell):
+            cell.remove(child)
+
+    def _remove_xlsx_row_cells(row):
+        for cell in list(row):
+            row.remove(cell)
+
+    def _clone_xlsx_row(row, row_number):
+        cloned_row = ET.fromstring(ET.tostring(row))
+        cloned_row.attrib["r"] = str(row_number)
+        for cell in cloned_row.findall("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"):
+            cell_ref = str(cell.attrib.get("r") or "")
+            match = re.match(r"([A-Z]+)", cell_ref)
+            if not match:
+                continue
+            cell.attrib["r"] = f"{match.group(1)}{row_number}"
+        return cloned_row
+
+    def _sort_xlsx_row_cells(row):
+        cells = list(row)
+        cells.sort(key=lambda cell: _excel_column_number(cell.attrib.get("r")))
+        for cell in cells:
+            row.remove(cell)
+        for cell in cells:
+            row.append(cell)
+
+    def _ensure_xlsx_cell(row, cell_ref, style_id=None):
+        namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+        for cell in row.findall(f"{namespace}c"):
+            if cell.attrib.get("r") == cell_ref:
+                if style_id is not None:
+                    cell.attrib["s"] = str(style_id)
+                return cell
+
+        cell = ET.Element(f"{namespace}c", {"r": cell_ref})
+        if style_id is not None:
+            cell.attrib["s"] = str(style_id)
+        row.append(cell)
+        _sort_xlsx_row_cells(row)
+        return cell
+
+    def _build_monthly_daily_visits_workbook(payload):
+        from flask import make_response
+
+        template_path = Path("static/report_templates/DAILY LIBRARY USERS PER MONTH TEMPLATE.xlsx")
+        if not template_path.exists():
+            raise FileNotFoundError("Monthly daily visits Excel template is missing.")
+
+        rows = payload.get("rows") or []
+
+        month_label = str(payload.get("month_label") or "").upper()
+        year_label = str(payload.get("year") or "")
+        day_numbers = list(payload.get("day_numbers") or [])
+        total_column_number = len(day_numbers) + 2
+        total_column_label = _excel_column_label(total_column_number)
+
+        with zipfile.ZipFile(template_path, "r") as template_zip:
+            sheet_xml = template_zip.read("xl/worksheets/sheet1.xml")
+            styles_xml = template_zip.read("xl/styles.xml")
+            workbook_xml = template_zip.read("xl/workbook.xml")
+            worksheet = ET.fromstring(sheet_xml)
+            styles_root = ET.fromstring(styles_xml)
+            workbook_root = ET.fromstring(workbook_xml)
+            namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+            sheet_data = worksheet.find(f"{namespace}sheetData")
+            if sheet_data is None:
+                raise ValueError("Excel template worksheet is missing sheet data.")
+            fonts = styles_root.find(f"{namespace}fonts")
+            cell_xfs = styles_root.find(f"{namespace}cellXfs")
+            if fonts is None or cell_xfs is None:
+                raise ValueError("Excel template styles are missing required font definitions.")
+            workbook_sheets = workbook_root.find(f"{namespace}sheets")
+            if workbook_sheets is None or not list(workbook_sheets):
+                raise ValueError("Excel template workbook is missing sheet definitions.")
+
+            export_sheet_name = f"{payload['month_label']} {payload['year']}"[:31]
+            workbook_sheets[0].attrib["name"] = export_sheet_name
+
+            font_cache = {}
+            style_cache = {}
+
+            def clone_font(base_font_id, *, bold=None, size=None, font_name=None):
+                cache_key = (base_font_id, bold, size, font_name)
+                if cache_key in font_cache:
+                    return font_cache[cache_key]
+
+                base_font = fonts[int(base_font_id)]
+                cloned_font = ET.fromstring(ET.tostring(base_font))
+                bold_node = cloned_font.find(f"{namespace}b")
+                if bold is True and bold_node is None:
+                    cloned_font.insert(0, ET.Element(f"{namespace}b"))
+                elif bold is False and bold_node is not None:
+                    cloned_font.remove(bold_node)
+
+                if size is not None:
+                    size_node = cloned_font.find(f"{namespace}sz")
+                    if size_node is None:
+                        size_node = ET.SubElement(cloned_font, f"{namespace}sz")
+                    size_node.attrib["val"] = str(size)
+
+                if font_name is not None:
+                    name_node = cloned_font.find(f"{namespace}name")
+                    if name_node is None:
+                        name_node = ET.SubElement(cloned_font, f"{namespace}name")
+                    name_node.attrib["val"] = str(font_name)
+                    scheme_node = cloned_font.find(f"{namespace}scheme")
+                    if scheme_node is not None:
+                        cloned_font.remove(scheme_node)
+
+                fonts.append(cloned_font)
+                fonts.attrib["count"] = str(len(fonts))
+                font_id = len(fonts) - 1
+                font_cache[cache_key] = font_id
+                return font_id
+
+            def clone_style(
+                base_style_id,
+                *,
+                bold=None,
+                wrap_text=None,
+                horizontal=None,
+                vertical=None,
+                font_size=None,
+                font_name=None,
+                num_fmt_id=None,
+            ):
+                cache_key = (base_style_id, bold, wrap_text, horizontal, vertical, font_size, font_name, num_fmt_id)
+                if cache_key in style_cache:
+                    return style_cache[cache_key]
+
+                base_style = cell_xfs[int(base_style_id)]
+                cloned_style = ET.fromstring(ET.tostring(base_style))
+
+                if bold is not None or font_size is not None or font_name is not None:
+                    next_font_id = clone_font(
+                        int(cloned_style.attrib.get("fontId", "0")),
+                        bold=bold,
+                        size=font_size,
+                        font_name=font_name,
+                    )
+                    cloned_style.attrib["fontId"] = str(next_font_id)
+                    cloned_style.attrib["applyFont"] = "1"
+
+                if wrap_text is not None or horizontal is not None or vertical is not None:
+                    alignment = cloned_style.find(f"{namespace}alignment")
+                    if alignment is None:
+                        alignment = ET.SubElement(cloned_style, f"{namespace}alignment")
+                    if wrap_text is not None:
+                        alignment.attrib["wrapText"] = "1" if wrap_text else "0"
+                    if horizontal is not None:
+                        alignment.attrib["horizontal"] = str(horizontal)
+                    if vertical is not None:
+                        alignment.attrib["vertical"] = str(vertical)
+                    cloned_style.attrib["applyAlignment"] = "1"
+
+                if num_fmt_id is not None:
+                    cloned_style.attrib["numFmtId"] = str(num_fmt_id)
+                    if str(num_fmt_id) == "0":
+                        cloned_style.attrib.pop("applyNumberFormat", None)
+                    else:
+                        cloned_style.attrib["applyNumberFormat"] = "1"
+
+                cell_xfs.append(cloned_style)
+                cell_xfs.attrib["count"] = str(len(cell_xfs))
+                style_id = len(cell_xfs) - 1
+                style_cache[cache_key] = style_id
+                return style_id
+
+            rows_by_number = {
+                int(row.attrib.get("r") or 0): row
+                for row in sheet_data.findall(f"{namespace}row")
+            }
+
+            merge_cells = worksheet.find(f"{namespace}mergeCells")
+            if merge_cells is not None:
+                for merge_cell in merge_cells.findall(f"{namespace}mergeCell"):
+                    ref = merge_cell.attrib.get("ref", "")
+                    if ref.startswith("A") and ":Z" in ref:
+                        merge_cell.attrib["ref"] = re.sub(r":Z(\d+)$", rf":{total_column_label}\1", ref)
+
+            cols = worksheet.find(f"{namespace}cols")
+            if cols is not None:
+                existing_max = 0
+                total_column_config = None
+                for col in cols.findall(f"{namespace}col"):
+                    try:
+                        min_col = int(col.attrib.get("min") or 0)
+                        max_col = int(col.attrib.get("max") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    existing_max = max(existing_max, max_col)
+                    if min_col <= total_column_number <= max_col:
+                        total_column_config = col
+
+                if existing_max < total_column_number:
+                    for col_number in range(existing_max + 1, total_column_number):
+                        ET.SubElement(
+                            cols,
+                            f"{namespace}col",
+                            {
+                                "min": str(col_number),
+                                "max": str(col_number),
+                                "width": "6.5",
+                                "customWidth": "1",
+                            },
+                        )
+                    total_column_config = ET.SubElement(
+                        cols,
+                        f"{namespace}col",
+                        {
+                            "min": str(total_column_number),
+                            "max": str(total_column_number),
+                            "width": "10.5",
+                            "customWidth": "1",
+                        },
+                    )
+
+                if total_column_config is not None:
+                    total_column_config.attrib["width"] = "10.5"
+                    total_column_config.attrib["customWidth"] = "1"
+
+            title_cell = _ensure_xlsx_cell(rows_by_number[7], "A7")
+            _set_xlsx_text_cell(title_cell, f"LIBRARY USERS for the MONTH of {month_label} {year_label}")
+            title_row = rows_by_number[7]
+            title_day_style = _ensure_xlsx_cell(title_row, "Y7").attrib.get("s")
+            title_total_style = _ensure_xlsx_cell(title_row, "Z7").attrib.get("s")
+            for column_number in range(26, total_column_number):
+                title_fill_cell = _ensure_xlsx_cell(
+                    title_row,
+                    f"{_excel_column_label(column_number)}7",
+                    title_day_style,
+                )
+                _clear_xlsx_cell_value(title_fill_cell)
+            title_total_cell = _ensure_xlsx_cell(title_row, f"{total_column_label}7", title_total_style)
+            _clear_xlsx_cell_value(title_total_cell)
+
+            header_row = rows_by_number[8]
+            label_header_style = _ensure_xlsx_cell(header_row, "A8").attrib.get("s")
+            label_header_cell = _ensure_xlsx_cell(header_row, "A8", label_header_style)
+            _set_xlsx_text_cell(label_header_cell, "COLLEGE/PROGRAM/OFFICE")
+            day_header_style = _ensure_xlsx_cell(header_row, "Y8").attrib.get("s")
+            total_header_style = _ensure_xlsx_cell(header_row, "Z8").attrib.get("s")
+            for day_number in day_numbers:
+                column_label = _excel_column_label(day_number + 1)
+                header_cell = _ensure_xlsx_cell(header_row, f"{column_label}8", day_header_style)
+                _set_xlsx_number_cell(header_cell, day_number)
+            total_header_cell = _ensure_xlsx_cell(header_row, f"{total_column_label}8", total_header_style)
+            _set_xlsx_text_cell(total_header_cell, "TOTAL")
+
+            data_row_template = _clone_xlsx_row(rows_by_number[9], 9)
+            total_row_template = _clone_xlsx_row(rows_by_number[36], 36)
+
+            for existing_row in list(sheet_data.findall(f"{namespace}row")):
+                try:
+                    row_number = int(existing_row.attrib.get("r") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if row_number >= 9:
+                    sheet_data.remove(existing_row)
+
+            data_label_style = clone_style(
+                int(_ensure_xlsx_cell(data_row_template, "A9").attrib.get("s") or 14),
+                wrap_text=True,
+                horizontal="center",
+                vertical="center",
+                font_size=11,
+                font_name="Times New Roman",
+            )
+            total_label_style = clone_style(
+                int(_ensure_xlsx_cell(total_row_template, "A36").attrib.get("s") or 31),
+                bold=True,
+                wrap_text=True,
+                horizontal="center",
+                vertical="center",
+                font_size=11,
+                font_name="Times New Roman",
+            )
+            total_column_style = clone_style(
+                int(_ensure_xlsx_cell(data_row_template, "Z9").attrib.get("s") or 16),
+                bold=True,
+                horizontal="center",
+                vertical="center",
+                font_size=11,
+                font_name="Times New Roman",
+                num_fmt_id=0,
+            )
+            overall_row = payload.get("overall_row") or {"category": "Overall Total", "days": [], "overall_total": 0}
+            overall_row_number = 9 + len(rows)
+
+            total_row_style_cache = {}
+            data_row_style_cache = {}
+
+            def set_row_height(row, label_text):
+                text_length = len(str(label_text or "").strip())
+                approx_lines = max(1, math.ceil(text_length / 22)) if text_length else 1
+                height = min(max(20, approx_lines * 15), 90)
+                row.attrib["ht"] = str(height)
+                row.attrib["customHeight"] = "1"
+
+            def data_style_for_column(column_label):
+                if column_label in data_row_style_cache:
+                    return data_row_style_cache[column_label]
+
+                template_ref = f"{column_label}9"
+                template_cell = None
+                for cell in data_row_template.findall(f"{namespace}c"):
+                    if cell.attrib.get("r") == template_ref:
+                        template_cell = cell
+                        break
+                base_style_id = int(template_cell.attrib.get("s") or 16) if template_cell is not None else 16
+                wrapped = column_label == "A"
+                style_id = clone_style(
+                    base_style_id,
+                    wrap_text=True if wrapped else None,
+                    horizontal="center",
+                    vertical="center",
+                    font_size=11,
+                    font_name="Times New Roman",
+                    num_fmt_id=0 if not wrapped else None,
+                )
+                data_row_style_cache[column_label] = style_id
+                return style_id
+
+            def overall_style_for_column(column_label):
+                if column_label in total_row_style_cache:
+                    return total_row_style_cache[column_label]
+
+                template_ref = f"{column_label}9"
+                template_cell = None
+                for cell in data_row_template.findall(f"{namespace}c"):
+                    if cell.attrib.get("r") == template_ref:
+                        template_cell = cell
+                        break
+                base_style_id = int(template_cell.attrib.get("s") or 16) if template_cell is not None else 16
+                wrapped = column_label == "A"
+                style_id = clone_style(
+                    base_style_id,
+                    bold=True,
+                    wrap_text=True if wrapped else None,
+                    horizontal="center",
+                    vertical="center",
+                    font_size=11,
+                    font_name="Times New Roman",
+                    num_fmt_id=0 if not wrapped else None,
+                )
+                total_row_style_cache[column_label] = style_id
+                return style_id
+
+            for row_number in range(9, overall_row_number + 1):
+                row_index = row_number - 9
+                is_total_row = row_number == overall_row_number
+                sheet_row = _clone_xlsx_row(total_row_template if is_total_row else data_row_template, row_number)
+                sheet_data.append(sheet_row)
+
+                if is_total_row:
+                    label_text = str(overall_row.get("category") or "Overall Total")
+                    raw_days = list(overall_row.get("days") or [])
+                    day_values = [
+                        int(raw_days[index] or 0) if index < len(raw_days) else 0
+                        for index in range(len(day_numbers))
+                    ]
+                    row_total_value = int(overall_row.get("overall_total") or 0)
+
+                    label_cell = _ensure_xlsx_cell(sheet_row, f"A{row_number}", total_label_style)
+                    _set_xlsx_text_cell(label_cell, label_text)
+                    set_row_height(sheet_row, label_text)
+
+                    for day_index, day_value in enumerate(day_values, start=1):
+                        column_label = _excel_column_label(day_index + 1)
+                        style_id = overall_style_for_column(column_label)
+                        day_cell = _ensure_xlsx_cell(sheet_row, f"{column_label}{row_number}", style_id)
+                        _set_xlsx_number_cell(day_cell, day_value)
+
+                    total_cell = _ensure_xlsx_cell(
+                        sheet_row,
+                        f"{total_column_label}{row_number}",
+                        overall_style_for_column(total_column_label),
+                    )
+                    _set_xlsx_number_cell(total_cell, row_total_value)
+                else:
+                    source_row = rows[row_index] or {}
+                    label_text = str(source_row.get("category") or "")
+                    raw_days = list(source_row.get("days") or [])
+                    day_values = [
+                        int(raw_days[index] or 0) if index < len(raw_days) else 0
+                        for index in range(len(day_numbers))
+                    ]
+                    row_total_value = int(source_row.get("overall_total") or 0)
+
+                    label_cell = _ensure_xlsx_cell(sheet_row, f"A{row_number}", data_label_style)
+                    _set_xlsx_text_cell(label_cell, label_text)
+                    set_row_height(sheet_row, label_text)
+
+                    for day_index, day_value in enumerate(day_values, start=1):
+                        column_label = _excel_column_label(day_index + 1)
+                        day_cell = _ensure_xlsx_cell(
+                            sheet_row,
+                            f"{column_label}{row_number}",
+                            data_style_for_column(column_label),
+                        )
+                        _set_xlsx_number_cell(day_cell, day_value)
+
+                    total_cell = _ensure_xlsx_cell(sheet_row, f"{total_column_label}{row_number}", total_column_style)
+                    _set_xlsx_number_cell(total_cell, row_total_value)
+
+                for extra_column_number in range(total_column_number + 1, 34):
+                    extra_cell = _ensure_xlsx_cell(sheet_row, f"{_excel_column_label(extra_column_number)}{row_number}")
+                    _clear_xlsx_cell_value(extra_cell)
+
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as exported_zip:
+                for info in template_zip.infolist():
+                    if info.filename == "xl/worksheets/sheet1.xml":
+                        exported_zip.writestr(info, ET.tostring(worksheet, encoding="utf-8", xml_declaration=True))
+                    elif info.filename == "xl/workbook.xml":
+                        exported_zip.writestr(info, ET.tostring(workbook_root, encoding="utf-8", xml_declaration=True))
+                    elif info.filename == "xl/styles.xml":
+                        exported_zip.writestr(info, ET.tostring(styles_root, encoding="utf-8", xml_declaration=True))
+                    else:
+                        exported_zip.writestr(info, template_zip.read(info.filename))
+
+        output.seek(0)
+        response = make_response(output.getvalue())
+        filename = f"daily_library_users_{payload['year']}_{payload['month']:02d}.xlsx"
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        response.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return response
+
+    def _build_entry_exit_logs_workbook(log_rows, *, selected_date=None, filename_date=None):
+        from flask import make_response
+
+        template_path = Path("static/report_templates/LIBRARY USERS VISITS TEMPLATE.xlsx")
+        if not template_path.exists():
+            raise FileNotFoundError("Entry and exit logs Excel template is missing.")
+
+        normalized_selected_date = str(selected_date or "").strip()
+
+        with zipfile.ZipFile(template_path, "r") as template_zip:
+            content_types_xml = template_zip.read("[Content_Types].xml")
+            sheet_xml = template_zip.read("xl/worksheets/sheet1.xml")
+            sheet_rels_xml = template_zip.read("xl/worksheets/_rels/sheet1.xml.rels")
+            workbook_xml = template_zip.read("xl/workbook.xml")
+            workbook_rels_xml = template_zip.read("xl/_rels/workbook.xml.rels")
+            content_types_root = ET.fromstring(content_types_xml)
+            worksheet = ET.fromstring(sheet_xml)
+            worksheet_rels_root = ET.fromstring(sheet_rels_xml)
+            workbook_root = ET.fromstring(workbook_xml)
+            workbook_rels_root = ET.fromstring(workbook_rels_xml)
+            namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+            package_namespace = "{http://schemas.openxmlformats.org/package/2006/content-types}"
+            rels_namespace = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+            sheet_data = worksheet.find(f"{namespace}sheetData")
+            if sheet_data is None:
+                raise ValueError("Excel template worksheet is missing sheet data.")
+
+            workbook_sheets = workbook_root.find(f"{namespace}sheets")
+            if workbook_sheets is None or not list(workbook_sheets):
+                raise ValueError("Excel template workbook is missing sheet definitions.")
+
+            rows_by_number = {
+                int(row.attrib.get("r") or 0): row
+                for row in sheet_data.findall(f"{namespace}row")
+            }
+            required_rows = {9, 10, 36, 37, 38, 39}
+            missing_rows = sorted(row_number for row_number in required_rows if row_number not in rows_by_number)
+            if missing_rows:
+                raise ValueError(f"Excel template is missing required row(s): {missing_rows}")
+
+            first_data_row_template = _clone_xlsx_row(rows_by_number[9], 9)
+            data_row_template = _clone_xlsx_row(rows_by_number[10], 10)
+            footer_row_templates = [
+                _clone_xlsx_row(rows_by_number[37], 37),
+                _clone_xlsx_row(rows_by_number[38], 38),
+                _clone_xlsx_row(rows_by_number[39], 39),
+            ]
+            name_column_style = _ensure_xlsx_cell(first_data_row_template, "D9").attrib.get("s")
+
+            def set_template_cell_value(sheet_row, column_label, row_number, value):
+                cell = _ensure_xlsx_cell(sheet_row, f"{column_label}{row_number}")
+                if value is None or str(value).strip() == "":
+                    _clear_xlsx_cell_value(cell)
+                    return
+                if column_label == "A" and isinstance(value, (int, float)):
+                    _set_xlsx_number_cell(cell, int(value))
+                    return
+                _set_xlsx_text_cell(cell, str(value))
+
+            def set_row_height(sheet_row, log_row):
+                max_length = max(
+                    len(str(log_row.get("name") or "").strip()),
+                    len(str(log_row.get("college_office") or "").strip()),
+                    len(str(log_row.get("program") or "").strip()),
+                )
+                approx_lines = max(1, math.ceil(max_length / 22)) if max_length else 1
+                height = min(max(20, approx_lines * 15), 60)
+                sheet_row.attrib["ht"] = str(height)
+                sheet_row.attrib["customHeight"] = "1"
+
+            def render_sheet(log_rows_for_sheet, sheet_name):
+                worksheet_copy = ET.fromstring(ET.tostring(worksheet))
+                sheet_data_copy = worksheet_copy.find(f"{namespace}sheetData")
+                if sheet_data_copy is None:
+                    raise ValueError("Excel template worksheet is missing sheet data.")
+
+                for existing_row in list(sheet_data_copy.findall(f"{namespace}row")):
+                    try:
+                        row_number = int(existing_row.attrib.get("r") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if row_number >= 9:
+                        sheet_data_copy.remove(existing_row)
+
+                for row_index, log_row in enumerate(log_rows_for_sheet, start=1):
+                    row_number = 8 + row_index
+                    row_template = first_data_row_template if row_index == 1 else data_row_template
+                    sheet_row = _clone_xlsx_row(row_template, row_number)
+                    sheet_data_copy.append(sheet_row)
+                    set_row_height(sheet_row, log_row)
+
+                    set_template_cell_value(sheet_row, "A", row_number, row_index)
+                    set_template_cell_value(sheet_row, "B", row_number, log_row.get("date"))
+                    set_template_cell_value(sheet_row, "C", row_number, log_row.get("sr_code"))
+                    name_cell = _ensure_xlsx_cell(sheet_row, f"D{row_number}", name_column_style)
+                    if log_row.get("name") is None or str(log_row.get("name")).strip() == "":
+                        _clear_xlsx_cell_value(name_cell)
+                    else:
+                        _set_xlsx_text_cell(name_cell, str(log_row.get("name")))
+                    set_template_cell_value(sheet_row, "E", row_number, log_row.get("sex"))
+                    set_template_cell_value(sheet_row, "F", row_number, log_row.get("college_office"))
+                    set_template_cell_value(sheet_row, "G", row_number, log_row.get("program"))
+                    set_template_cell_value(sheet_row, "H", row_number, log_row.get("entry_timestamp"))
+                    set_template_cell_value(sheet_row, "I", row_number, log_row.get("exit_timestamp"))
+
+                footer_start_row = 9 + len(log_rows_for_sheet)
+                for offset, footer_template in enumerate(footer_row_templates):
+                    sheet_data_copy.append(_clone_xlsx_row(footer_template, footer_start_row + offset))
+
+                merge_cells = worksheet_copy.find(f"{namespace}mergeCells")
+                if merge_cells is not None:
+                    footer_row_offset = footer_start_row - 37
+                    for merge_cell in merge_cells.findall(f"{namespace}mergeCell"):
+                        ref = str(merge_cell.attrib.get("ref") or "")
+                        match = re.match(r"^([A-Z]+)(\d+):([A-Z]+)(\d+)$", ref)
+                        if not match:
+                            continue
+                        start_column, start_row, end_column, end_row = match.groups()
+                        start_row_number = int(start_row)
+                        end_row_number = int(end_row)
+                        if start_row_number >= 37 and end_row_number >= 37:
+                            merge_cell.attrib["ref"] = (
+                                f"{start_column}{start_row_number + footer_row_offset}:"
+                                f"{end_column}{end_row_number + footer_row_offset}"
+                            )
+
+                dimension = worksheet_copy.find(f"{namespace}dimension")
+                if dimension is not None:
+                    dimension.attrib["ref"] = f"A1:I{footer_start_row + len(footer_row_templates) - 1}"
+
+                return {
+                    "name": str(sheet_name or "Attendance Log")[:31],
+                    "worksheet": worksheet_copy,
+                }
+
+            if normalized_selected_date:
+                rendered_sheets = [
+                    render_sheet(log_rows, f"Attendance {normalized_selected_date}")
+                ]
+            else:
+                grouped_rows = {}
+                for log_row in log_rows:
+                    date_key = str(log_row.get("date") or "").strip() or "Undated"
+                    grouped_rows.setdefault(date_key, []).append(log_row)
+                rendered_sheets = [
+                    render_sheet(grouped_rows[date_key], date_key)
+                    for date_key in sorted(grouped_rows.keys(), reverse=True)
+                ] or [render_sheet([], "Attendance Log")]
+
+            for existing_sheet in list(workbook_sheets):
+                workbook_sheets.remove(existing_sheet)
+
+            worksheet_relationships = [
+                rel
+                for rel in workbook_rels_root.findall(f"{rels_namespace}Relationship")
+                if rel.attrib.get("Type") == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+            ]
+            for rel in worksheet_relationships:
+                workbook_rels_root.remove(rel)
+
+            for override in list(content_types_root.findall(f"{package_namespace}Override")):
+                if str(override.attrib.get("PartName") or "").startswith("/xl/worksheets/sheet"):
+                    content_types_root.remove(override)
+
+            existing_rel_ids = []
+            for rel in workbook_rels_root.findall(f"{rels_namespace}Relationship"):
+                rel_id = str(rel.attrib.get("Id") or "")
+                match = re.match(r"rId(\d+)$", rel_id)
+                if match:
+                    existing_rel_ids.append(int(match.group(1)))
+            next_rel_id = max(existing_rel_ids, default=0) + 1
+
+            for index, rendered_sheet in enumerate(rendered_sheets, start=1):
+                rel_id = f"rId{next_rel_id}"
+                next_rel_id += 1
+                sheet_file = f"sheet{index}.xml"
+
+                ET.SubElement(
+                    workbook_sheets,
+                    f"{namespace}sheet",
+                    {
+                        "name": rendered_sheet["name"],
+                        "sheetId": str(index),
+                        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id": rel_id,
+                    },
+                )
+                ET.SubElement(
+                    workbook_rels_root,
+                    f"{rels_namespace}Relationship",
+                    {
+                        "Id": rel_id,
+                        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
+                        "Target": f"worksheets/{sheet_file}",
+                    },
+                )
+                ET.SubElement(
+                    content_types_root,
+                    f"{package_namespace}Override",
+                    {
+                        "PartName": f"/xl/worksheets/{sheet_file}",
+                        "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml",
+                    },
+                )
+
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as exported_zip:
+                for info in template_zip.infolist():
+                    if info.filename == "[Content_Types].xml":
+                        exported_zip.writestr(info, ET.tostring(content_types_root, encoding="utf-8", xml_declaration=True))
+                    elif info.filename == "xl/worksheets/sheet1.xml":
+                        exported_zip.writestr(
+                            info,
+                            ET.tostring(rendered_sheets[0]["worksheet"], encoding="utf-8", xml_declaration=True),
+                        )
+                    elif info.filename == "xl/worksheets/_rels/sheet1.xml.rels":
+                        exported_zip.writestr(info, ET.tostring(worksheet_rels_root, encoding="utf-8", xml_declaration=True))
+                    elif info.filename == "xl/workbook.xml":
+                        exported_zip.writestr(info, ET.tostring(workbook_root, encoding="utf-8", xml_declaration=True))
+                    elif info.filename == "xl/_rels/workbook.xml.rels":
+                        exported_zip.writestr(info, ET.tostring(workbook_rels_root, encoding="utf-8", xml_declaration=True))
+                    else:
+                        exported_zip.writestr(info, template_zip.read(info.filename))
+
+                for index, rendered_sheet in enumerate(rendered_sheets[1:], start=2):
+                    exported_zip.writestr(
+                        f"xl/worksheets/sheet{index}.xml",
+                        ET.tostring(rendered_sheet["worksheet"], encoding="utf-8", xml_declaration=True),
+                    )
+                    exported_zip.writestr(
+                        f"xl/worksheets/_rels/sheet{index}.xml.rels",
+                        ET.tostring(worksheet_rels_root, encoding="utf-8", xml_declaration=True),
+                    )
+
+        output.seek(0)
+        response = make_response(output.getvalue())
+        export_name = str(filename_date or date.today().strftime("%m-%d-%Y"))
+        response.headers["Content-Disposition"] = (
+            f"attachment; filename=library_entry_logs_{export_name}.xlsx"
+        )
+        response.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return response
+
     def _dashboard_filter_window(filter_key=None):
         filter_options = {
             "today": {"days": 1, "label": "Today"},
@@ -1512,6 +2403,12 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def program_monthly_visits_page():
+        return _spa_index()
+
+    @bp.route("/monthly-daily-visits", endpoint="monthly_daily_visits_page")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def monthly_daily_visits_page():
         return _spa_index()
 
     @bp.route("/route-list")
@@ -2345,10 +3242,20 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def export_logs():
-        import csv
-        import io
         from datetime import date, datetime
-        from flask import make_response
+
+        college_code_map = {
+            "College of Engineering": "COE",
+            "College of Architecture, Fine Arts and Design": "CAFAD",
+            "College of Arts and Sciences": "CAS",
+            "College of Accountancy, Business, Economics, and International Hospitality Management": "CABEIHM",
+            "College of Informatics and Computing Sciences": "CICS",
+            "College of Nursing and Allied Health Sciences": "CNAHS",
+            "College of Engineering Technology": "CET",
+            "College of Agriculture and Forestry": "CAF",
+            "College of Teacher Education": "CTE",
+            OTHER_COLLEGE_LABEL: "OTHER",
+        }
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -2365,20 +3272,13 @@ def create_routes_blueprint(deps):
             SELECT
                 u.name,
                 u.sr_code,
+                u.gender,
                 u.course,
+                COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
                 COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') AS event_type,
                 re.confidence,
                 COALESCE(re.captured_at, re.ingested_at) AS event_time,
-                CASE
-                    WHEN COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
-                    THEN COALESCE(re.captured_at, re.ingested_at)
-                    ELSE NULL
-                END AS entered_at,
-                CASE
-                    WHEN COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'exit'
-                    THEN COALESCE(re.captured_at, re.ingested_at)
-                    ELSE NULL
-                END AS exited_at
+                COALESCE(re.payload_json, '') AS payload_json
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
         """
@@ -2391,20 +3291,94 @@ def create_routes_blueprint(deps):
         c.execute(query, params)
         logs = c.fetchall()
         conn.close()
- 
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["Name", "SR Code", "Program", "Event Type", "Confidence (%)", "Entered At", "Exited At", "Timestamp"])
-        for name, sr_code, program, event_type, confidence, event_time, entered_at, exited_at in logs:
-            confidence = _coerce_confidence(confidence)
-            conf_value = f"{confidence * 100:.1f}" if isinstance(confidence, (int, float)) else ""
-            writer.writerow([name, sr_code, program, event_type, conf_value, entered_at, exited_at, event_time])
- 
-        response = make_response(output.getvalue())
-        filename = f"library_entry_logs_{date_for_name.strftime('%m-%d-%Y')}.csv"
-        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
-        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
-        response.headers['Content-type'] = 'text/csv'
+
+        catalog_entries = []
+        program_to_college = {}
+        for college_name, program_names in DEFAULT_COLLEGE_PROGRAM_MAP.items():
+            for program_name in program_names:
+                canonical_program = normalize_program_name(program_name)
+                if not canonical_program:
+                    continue
+                catalog_entries.append((canonical_program, program_code_for(canonical_program)))
+                program_to_college[canonical_program] = college_name
+        program_lookup = build_program_lookup(catalog_entries)
+
+        export_rows = []
+        for (
+            name,
+            sr_code,
+            gender,
+            program,
+            user_type,
+            event_type,
+            _confidence,
+            event_time,
+            payload_json,
+        ) in logs:
+            payload = _parse_payload_json_object(payload_json)
+            snapshot_user_type = str(payload.get("identity_user_type") or payload.get("user_type") or "").strip()
+            normalized_user_type = _normalize_user_type(snapshot_user_type or user_type)
+
+            snapshot_name = payload.get("identity_name") or payload.get("user_name") or payload.get("name")
+            snapshot_sr_code = payload.get("identity_sr_code") or payload.get("user_sr_code") or payload.get("sr_code")
+            snapshot_gender = payload.get("identity_gender") or payload.get("gender")
+            snapshot_program = payload.get("identity_program") or payload.get("program")
+
+            display_name = _display_profile_field(name or snapshot_name, user_type=normalized_user_type)
+            display_sr_code = _display_profile_field(sr_code or snapshot_sr_code, user_type=normalized_user_type)
+            display_gender = _display_profile_field(
+                gender or snapshot_gender,
+                user_type=normalized_user_type,
+                visitor_default="-",
+            )
+
+            raw_program = normalize_program_name(program or snapshot_program)
+            if raw_program:
+                resolved_program, resolution_status, _ = resolve_program_name(raw_program, program_lookup)
+                canonical_program = normalize_program_name(resolved_program)
+                if resolution_status in {"catalog", "registered"} and canonical_program:
+                    resolved_college = program_to_college.get(canonical_program, OTHER_COLLEGE_LABEL)
+                    display_program = normalize_program_name(program_code_for(canonical_program)) or canonical_program
+                    display_college = college_code_map.get(resolved_college, "OTHER")
+                else:
+                    display_program = raw_program.upper()
+                    display_college = "OTHER"
+            elif normalized_user_type == "visitor":
+                display_program = "VIS"
+                display_college = "VIS"
+            elif normalized_user_type == "staff":
+                display_program = "STAFF"
+                display_college = "STAFF"
+            else:
+                display_program = "N/A"
+                display_college = "OTHER"
+
+            normalized_event_type = str(event_type or "").strip().lower() or "entry"
+            if normalized_event_type not in {"entry", "exit"}:
+                normalized_event_type = "unknown"
+
+            timestamp_text = _normalize_timestamp_for_json(event_time)
+            date_text = timestamp_text[:10] if timestamp_text else ""
+            time_text = timestamp_text[11:19] if len(timestamp_text) >= 19 else timestamp_text
+
+            export_rows.append(
+                {
+                    "date": date_text,
+                    "sr_code": display_sr_code,
+                    "name": display_name,
+                    "sex": display_gender,
+                    "college_office": display_college,
+                    "program": display_program,
+                    "entry_timestamp": time_text if normalized_event_type == "entry" else "",
+                    "exit_timestamp": time_text if normalized_event_type == "exit" else "",
+                }
+            )
+
+        response = _build_entry_exit_logs_workbook(
+            export_rows,
+            selected_date=selected_date,
+            filename_date=date_for_name.strftime("%m-%d-%Y"),
+        )
         log_action("EXPORT_LOGS")
         return response
 
@@ -2432,6 +3406,27 @@ def create_routes_blueprint(deps):
         response.headers["Content-Disposition"] = f"attachment; filename={filename}"
         response.headers["Content-type"] = "text/csv"
         log_action("EXPORT_PROGRAM_MONTHLY_VISITS", target=str(payload["year"]))
+        return response
+
+    @bp.route("/monthly-daily-visits/export", endpoint="export_monthly_daily_visits")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def export_monthly_daily_visits():
+        try:
+            payload = _monthly_daily_visits_data(
+                request.args.get("year", "").strip(),
+                request.args.get("month", "").strip(),
+            )
+            response = _build_monthly_daily_visits_workbook(payload)
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 500
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+
+        log_action(
+            "EXPORT_MONTHLY_DAILY_VISITS",
+            target=f"{payload['year']}-{payload['month']:02d}",
+        )
         return response
 
     @bp.route("/api/dashboard", methods=["GET"], endpoint="api_dashboard")
@@ -3725,6 +4720,16 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin", "library_staff")
     def api_program_monthly_visits():
         payload = _monthly_program_visits_data(request.args.get("year", "").strip())
+        return jsonify(payload)
+
+    @bp.route("/api/monthly-daily-visits", methods=["GET"], endpoint="api_monthly_daily_visits")
+    @login_required
+    @role_required("super_admin", "library_admin", "library_staff")
+    def api_monthly_daily_visits():
+        payload = _monthly_daily_visits_data(
+            request.args.get("year", "").strip(),
+            request.args.get("month", "").strip(),
+        )
         return jsonify(payload)
 
     @bp.route("/api/manage-users", methods=["GET"], endpoint="api_manage_users")

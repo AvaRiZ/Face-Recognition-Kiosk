@@ -74,6 +74,7 @@ export default function Sidebar() {
             {isAdmin ? <NavItem to="/profile-management" icon="bi bi-people" label="Profile Management" /> : null}
             {isStaff ? <NavItem to="/entry-logs" icon="bi bi-clipboard-check" label="Entry & Exit Logs" /> : null}
             {role ? <NavItem to="/program-monthly-visits" icon="bi bi-bar-chart" label="Program Monthly Visits" /> : null}
+            {role ? <NavItem to="/monthly-daily-visits" icon="bi bi-calendar3" label="Monthly Daily Visits" /> : null}
 
             {canSeeManagement ? <li className="nav-heading">Management</li> : null}
             {isStaff ? <NavItem to="/analytics-reports" icon="bi bi-graph-up-arrow" label="Reports & Analytics" /> : null}

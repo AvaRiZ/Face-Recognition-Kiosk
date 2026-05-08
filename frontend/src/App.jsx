@@ -7,6 +7,7 @@ import DashboardPage from './pages/Dashboard.jsx';
 import ProfileManagementPage from './pages/ProfileManagement.jsx';
 import EntryExitLogsPage from './pages/EntryExitLogs.jsx';
 import ProgramMonthlyVisitsPage from './pages/ProgramMonthlyVisits.jsx';
+import MonthlyDailyVisitsPage from './pages/MonthlyDailyVisits.jsx';
 import AnalyticsReportsPage from './pages/AnalyticsReports.jsx';
 import RouteListPage from './pages/RouteList.jsx';
 import ManageUsersPage from './pages/ManageUsers.jsx';
@@ -95,6 +96,7 @@ export default function App() {
           <Route path="archived-profiles" element={<Navigate to="/profile-management?status=archived" replace />} />
           <Route path="entry-logs" element={<EntryExitLogsPage />} />
           <Route path="program-monthly-visits" element={<ProgramMonthlyVisitsPage />} />
+          <Route path="monthly-daily-visits" element={<MonthlyDailyVisitsPage />} />
           <Route path="analytics-reports" element={<AnalyticsReportsPage />} />
           <Route path="route-list" element={<RouteListPage />} />
           <Route path="routes" element={<Navigate to="/route-list" replace />} />

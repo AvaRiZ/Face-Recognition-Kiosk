@@ -126,15 +126,15 @@ export default function EntryExitLogsPage() {
     setExporting(true);
 
     try {
-      await downloadFile(exportHref, `entry-logs-${dateFilter || 'all'}.csv`);
+      await downloadFile(exportHref, `entry-logs-${dateFilter || 'all'}.xlsx`);
       await showSuccess(
         'Export Complete',
-        'Entry logs were exported successfully.'
+        'Entry and exit logs were exported successfully.'
       );
     } catch (error) {
       await showError(
         'Export Failed',
-        getErrorMessage(error, 'The entry log export could not be generated.')
+        getErrorMessage(error, 'The entry and exit log export could not be generated.')
       );
     } finally {
       setExporting(false);
@@ -212,7 +212,7 @@ export default function EntryExitLogsPage() {
                 onClick={handleExportClick}
                 disabled={exporting}
               >
-                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export CSV'}
+                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export Excel'}
               </button>
             </div>
           </div>
