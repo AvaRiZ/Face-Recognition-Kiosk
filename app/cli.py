@@ -64,6 +64,11 @@ class CLIApplication:
             "last_frame_ts": None,
             "updated_at": time.time(),
         }
+        self._greeting_popup_name = ""
+        self._greeting_popup_active_until = 0.0
+        self._greeting_popup_duration_seconds = 4.0
+        self._greeting_same_user_cooldown_seconds = 8.0
+        self._greeting_last_shown_by_user: dict[str, float] = {}
 
     def _registration_allowed_on_this_worker(self) -> bool:
         return self.worker_role == "entry"
@@ -253,14 +258,93 @@ class CLIApplication:
             return "Rec+Reg"
         return "Rec Only"
 
+    @staticmethod
+    def _normalize_display_name(raw_name: object) -> str:
+        return str(raw_name or "").strip()
+
+    @staticmethod
+    def _truncate_text(value: str, max_chars: int = 30) -> str:
+        if len(value) <= max_chars:
+            return value
+        return f"{value[:max(0, max_chars - 3)].rstrip()}..."
+
+    def _maybe_trigger_greeting_popup(self, recognized_user: dict[str, str] | None, now: float | None = None) -> None:
+        if not self._registration_allowed_on_this_worker():
+            return
+        user_name = self._normalize_display_name((recognized_user or {}).get("name"))
+        if not user_name:
+            return
+
+        observed_now = float(now if now is not None else time.time())
+        cooldown = max(0.0, float(self._greeting_same_user_cooldown_seconds))
+        duration = max(0.5, float(self._greeting_popup_duration_seconds))
+        normalized_key = user_name.casefold()
+
+        last_shown_at = self._greeting_last_shown_by_user.get(normalized_key)
+        if last_shown_at is not None and (observed_now - float(last_shown_at)) < cooldown:
+            return
+
+        stale_cutoff = observed_now - max(cooldown, duration) * 3.0
+        stale_keys = [
+            key for key, shown_at in self._greeting_last_shown_by_user.items()
+            if float(shown_at) < stale_cutoff
+        ]
+        for key in stale_keys:
+            self._greeting_last_shown_by_user.pop(key, None)
+
+        self._greeting_last_shown_by_user[normalized_key] = observed_now
+        self._greeting_popup_name = user_name
+        self._greeting_popup_active_until = observed_now + duration
+
+    def _draw_greeting_popup(self, frame, frame_width: int, frame_height: int, now: float | None = None) -> None:
+        if not self._registration_allowed_on_this_worker():
+            return
+        if not self._greeting_popup_name:
+            return
+        observed_now = float(now if now is not None else time.time())
+        if observed_now >= float(self._greeting_popup_active_until):
+            self._greeting_popup_name = ""
+            return
+
+        popup_width = min(430, max(290, int(frame_width * 0.34)))
+        popup_height = 116
+        margin_right = 18
+        x2 = frame_width - margin_right
+        x1 = max(12, x2 - popup_width)
+        y1 = max(90, int(frame_height * 0.22))
+        y2 = min(frame_height - 110, y1 + popup_height)
+        if y2 <= y1:
+            return
+
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (20, 65, 34), -1)
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (72, 220, 120), 2)
+        cv2.addWeighted(overlay, 0.74, frame, 0.26, 0, frame)
+
+        cv2.putText(
+            frame,
+            "Welcome",
+            (x1 + 18, y1 + 38),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.72,
+            (210, 255, 224),
+            2,
+        )
+        cv2.putText(
+            frame,
+            self._truncate_text(f"{self._greeting_popup_name}!"),
+            (x1 + 18, y1 + 82),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.86,
+            (255, 255, 255),
+            2,
+        )
+
     def _build_footer_guidance(self, reg_state) -> tuple[str, str, tuple[int, int, int]]:
         recognized_user = self.state.recognized_user or {}
         if recognized_user:
             user_name = str(recognized_user.get("name") or "Unknown user").strip() or "Unknown user"
-            confidence_text = str(recognized_user.get("confidence") or "").strip()
             status_line = f"Recognized: {user_name}"
-            if confidence_text:
-                status_line = f"{status_line} ({confidence_text})"
             return status_line, "Pass", (0, 255, 0)
 
         if not self._registration_allowed_on_this_worker():
@@ -307,10 +391,7 @@ class CLIApplication:
             return "No track", (180, 180, 180)
 
         if track_state.recognized and track_state.user:
-            confidence_text = track_state.user.get("confidence")
             label = f"Recognized: {track_state.user['name']}"
-            if confidence_text:
-                label = f"{label} ({confidence_text})"
             return label, (0, 255, 0)
 
         if is_selected_for_registration and reg_state.manual_active:
@@ -444,7 +525,7 @@ class CLIApplication:
                 self.state.set_registration_status_reason(
                     "possible_existing_match",
                     (
-                        f"Possible match with {user_name} ({confidence:.2%}). "
+                        f"Possible match with {user_name}. "
                         "Hold still to confirm or use Continue as New Student."
                     ),
                 )
@@ -461,7 +542,7 @@ class CLIApplication:
                 self.state.set_registration_status_reason(
                     "possible_existing_match",
                     (
-                        f"Possible match with {user_name} ({confidence:.2%}) "
+                        f"Possible match with {user_name} "
                         f"[{track_state.registration_recognized_streak}/{required_frames} confirmations]. "
                         "Hold still to confirm or use Continue as New Student."
                     ),
@@ -766,6 +847,7 @@ class CLIApplication:
                         track_state.recognized = True
                         track_state.user = dict(self.state.recognized_user) if self.state.recognized_user else None
                         track_state.failed_good_quality_attempts = 0
+                        self._maybe_trigger_greeting_popup(track_state.user, now=current_time)
                     else:
                         track_state.recognized = False
                         track_state.user = None
@@ -1000,6 +1082,7 @@ class CLIApplication:
                 (230, 230, 230),
                 1,
             )
+            self._draw_greeting_popup(frame, frame_width, frame_height, now=current_time)
 
             cv2.imshow(display_title, frame)
 
