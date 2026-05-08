@@ -384,7 +384,6 @@ class FaceRecognitionService:
 
             recognized_payload = recognized_user_payload(best_match)
             self.state.set_recognized_user(recognized_payload)
-            reg_state.in_progress = False
             print(
                 f"[OK] Recognized: {recognized_payload['name']} "
                 f"(conf: {best_match.confidence:.2%}, dist: {best_match.distance:.4f})"
@@ -400,7 +399,7 @@ class FaceRecognitionService:
                 "payload": recognized_payload,
             }
 
-        if allow_registration and not reg_state.in_progress and reg_state.capture_count < reg_state.max_captures:
+        if allow_registration and reg_state.phase == "capturing":
             current_pose = self.state.get_current_registration_pose() or "front"
             detected_pose = quality_service.detect_face_pose(face_crop, landmarks=landmarks)
             if detected_pose != current_pose:
@@ -426,17 +425,7 @@ class FaceRecognitionService:
                 quality=quality_score,
                 pose=current_pose,
             )
-            captured_count = self.state.capture_registration_sample(sample)
-            print(
-                f"  Captured registration sample for pose '{current_pose}' "
-                f"({captured_count}/{reg_state.max_captures} valid captures)"
-            )
-
-            if reg_state.in_progress and reg_state.pending_registration:
-                print(
-                    f"[WARN] New face detected - Ready for registration with "
-                    f"{len(reg_state.pending_registration)} samples"
-                )
+            print(f"  Captured registration sample for pose '{current_pose}'")
 
             return {
                 "status": "registration_captured",

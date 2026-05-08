@@ -50,39 +50,80 @@ class RegistrationSample:
 
 @dataclass
 class RegistrationState:
-    pending_registration: Optional[list[RegistrationSample]] = None
-    in_progress: bool = False
     session_id: Optional[str] = None
-    captured_samples: list[RegistrationSample] = field(default_factory=list)
+    phase: str = "idle"  # idle | capturing | ready | expired
+    registration_kind: str = "student"
+    force_new_identity: bool = False
     required_poses: list[str] = field(default_factory=lambda: ["front", "left", "right"])
     current_pose_index: int = 0
     samples_by_pose: dict[str, list[RegistrationSample]] = field(default_factory=dict)
     pose_capture_counts: dict[str, int] = field(default_factory=dict)
     samples_per_pose_target: int = 10
     retained_samples_per_pose: int = 5
-    max_captures: int = 30
-    capture_requested: bool = False
-    capture_active: bool = False
     capture_track_id: Optional[int] = None
     selected_track_id: Optional[int] = None
-    session_active: bool = False
-    session_expired: bool = False
     session_started_at: Optional[float] = None
+    expires_at: Optional[float] = None
     last_activity_at: Optional[float] = None
     status_reason_code: Optional[str] = None
     status_reason_message: str = ""
     status_updated_at: Optional[str] = None
-    allow_unknown_override: bool = False
+    _max_captures_override: Optional[int] = None
+
+    def _flattened_samples(self) -> list[RegistrationSample]:
+        samples: list[RegistrationSample] = []
+        for pose in self.required_poses:
+            samples.extend(self.samples_by_pose.get(pose, []))
+        return samples
 
     @property
     def capture_count(self) -> int:
-        if self.pose_capture_counts:
-            return int(sum(self.pose_capture_counts.values()))
-        return len(self.captured_samples)
+        return int(sum(self.pose_capture_counts.values()))
+
+    @property
+    def captured_samples(self) -> list[RegistrationSample]:
+        return self._flattened_samples()
+
+    @captured_samples.setter
+    def captured_samples(self, value: list[RegistrationSample]) -> None:
+        samples = list(value or [])
+        if not self.required_poses:
+            self.samples_by_pose = {}
+            self.pose_capture_counts = {}
+            return
+        default_pose = self.required_poses[0]
+        self.samples_by_pose = {pose: [] for pose in self.required_poses}
+        for sample in samples:
+            pose = str(getattr(sample, "pose", "") or "").strip().lower()
+            if pose not in self.samples_by_pose:
+                pose = default_pose
+            self.samples_by_pose[pose].append(sample)
+        self.pose_capture_counts = {
+            pose: len(self.samples_by_pose.get(pose, []))
+            for pose in self.required_poses
+        }
+
+    @property
+    def pending_registration(self) -> Optional[list[RegistrationSample]]:
+        if self.phase != "ready":
+            return None
+        return self._flattened_samples()
+
+    @pending_registration.setter
+    def pending_registration(self, value: Optional[list[RegistrationSample]]) -> None:
+        if value:
+            self.captured_samples = list(value)
+            self.phase = "ready"
+        else:
+            self.captured_samples = []
+            if self.phase == "ready":
+                self.phase = "idle"
 
     @property
     def current_pose(self) -> Optional[str]:
         if not self.required_poses:
+            return None
+        if self.phase != "capturing":
             return None
         if self.current_pose_index >= len(self.required_poses):
             return None
@@ -96,22 +137,50 @@ class RegistrationState:
     def total_retained_samples(self) -> int:
         return len(self.required_poses) * int(self.retained_samples_per_pose)
 
+    @property
+    def max_captures(self) -> int:
+        if self._max_captures_override is not None:
+            return int(self._max_captures_override)
+        return self.total_required_captures
+
+    @max_captures.setter
+    def max_captures(self, value: int) -> None:
+        self._max_captures_override = int(value)
+
+    @property
+    def ready_to_submit(self) -> bool:
+        return bool(
+            self.phase == "ready"
+            and len(self._flattened_samples()) >= int(self.total_retained_samples)
+        )
+
     # Backward-compatible aliases used by existing route/frontend payloads.
     @property
     def manual_requested(self) -> bool:
-        return bool(self.capture_requested)
+        return self.phase == "capturing" and self.capture_track_id is None
 
     @manual_requested.setter
     def manual_requested(self, value: bool) -> None:
-        self.capture_requested = bool(value)
+        if value:
+            self.phase = "capturing"
+            self.capture_track_id = None
+        elif self.phase == "capturing" and self.capture_track_id is None:
+            self.phase = "idle"
 
     @property
     def manual_active(self) -> bool:
-        return bool(self.capture_active)
+        return self.phase == "capturing" and self.capture_track_id is not None
 
     @manual_active.setter
     def manual_active(self, value: bool) -> None:
-        self.capture_active = bool(value)
+        if value:
+            self.phase = "capturing"
+            if self.capture_track_id is None:
+                self.capture_track_id = self.selected_track_id
+        else:
+            self.capture_track_id = None
+            if self.phase == "capturing":
+                self.phase = "idle"
 
     @property
     def manual_track_id(self) -> Optional[int]:
@@ -123,11 +192,52 @@ class RegistrationState:
 
     @property
     def web_session_active(self) -> bool:
-        return bool(self.session_active)
+        return self.phase == "capturing"
 
     @web_session_active.setter
     def web_session_active(self, value: bool) -> None:
-        self.session_active = bool(value)
+        if value:
+            self.phase = "capturing"
+        elif self.phase == "capturing":
+            self.phase = "idle"
+
+    @property
+    def session_active(self) -> bool:
+        return self.phase == "capturing"
+
+    @session_active.setter
+    def session_active(self, value: bool) -> None:
+        self.web_session_active = value
+
+    @property
+    def session_expired(self) -> bool:
+        return self.phase == "expired"
+
+    @session_expired.setter
+    def session_expired(self, value: bool) -> None:
+        if value:
+            self.phase = "expired"
+        elif self.phase == "expired":
+            self.phase = "idle"
+
+    @property
+    def allow_unknown_override(self) -> bool:
+        return bool(self.force_new_identity)
+
+    @allow_unknown_override.setter
+    def allow_unknown_override(self, value: bool) -> None:
+        self.force_new_identity = bool(value)
+
+    @property
+    def in_progress(self) -> bool:
+        return self.phase == "ready"
+
+    @in_progress.setter
+    def in_progress(self, value: bool) -> None:
+        if value:
+            self.phase = "ready"
+        elif self.phase == "ready":
+            self.phase = "idle"
 
 
 @dataclass

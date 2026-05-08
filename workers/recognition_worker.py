@@ -16,7 +16,7 @@ from services.quality_service import FaceQualityService
 from services.recognition_service import FaceRecognitionService
 from services.tracking_service import TrackingService
 from utils.logging import log_gpu_info, log_header, log_step
-from workers.api_client import ApiClient
+from workers.api_client import ApiClient, ApiRequestError
 from workers.durable_queue import DurableOutboundQueue
 from workers.worker_repository import WorkerApiRepository
 
@@ -85,7 +85,16 @@ def _send_outbound_entry(api_client: ApiClient, entry: dict) -> bool:
         response = api_client.post_json("/api/internal/recognition-events", payload)
         return bool(response.get("success"))
     if kind == "embedding_update":
-        response = api_client.post_json("/api/internal/embedding-updates", payload)
+        try:
+            response = api_client.post_json("/api/internal/embedding-updates", payload)
+        except ApiRequestError as exc:
+            if exc.status == 404:
+                print(
+                    "[EMBED-UPDATE][DROP] "
+                    f"status={exc.status} queue_entry_id={entry.get('id')} reason=user_not_found"
+                )
+                return True
+            raise
         return bool(response.get("success"))
     if kind == "registration_sample":
         sample_id = str(payload.get("sample_id") or "")
@@ -96,7 +105,17 @@ def _send_outbound_entry(api_client: ApiClient, entry: dict) -> bool:
             f"sample_id={sample_id} session_id={session_id} pose={pose} "
             f"queue_entry_id={entry.get('id')}"
         )
-        response = api_client.post_json("/api/internal/registration-samples", payload)
+        try:
+            response = api_client.post_json("/api/internal/registrations/samples", payload)
+        except ApiRequestError as exc:
+            if exc.status in {400, 403, 409}:
+                print(
+                    "[REG-SAMPLE][DROP] "
+                    f"status={exc.status} sample_id={sample_id} session_id={session_id} "
+                    f"queue_entry_id={entry.get('id')} reason=non_retryable"
+                )
+                return True
+            raise
         print(
             "[REG-SAMPLE][ACK] "
             f"sample_id={sample_id} session_id={session_id} success={bool(response.get('success'))} "
@@ -131,61 +150,30 @@ def _apply_runtime_config(runtime: WorkerRuntime, payload: dict) -> None:
     if exit_source is not None:
         runtime.config.exit_cctv_stream_source = str(exit_source)
 
-    _apply_registration_session_state(runtime, payload)
+    _apply_registration_control(runtime, payload)
 
 
-def _apply_registration_session_state(runtime: WorkerRuntime, payload: dict) -> None:
-    registration_session = payload.get("registration_session") or {}
-    if not isinstance(registration_session, dict):
+def _apply_registration_control(runtime: WorkerRuntime, payload: dict) -> None:
+    registration_control = payload.get("registration_control") or {}
+    if not isinstance(registration_control, dict):
         return
-
-    local_reg = runtime.state.registration_state
-    remote_session_active = bool(registration_session.get("web_session_active"))
-    remote_manual_requested = bool(registration_session.get("manual_requested"))
-    remote_manual_active = bool(registration_session.get("manual_active"))
-    remote_in_progress = bool(registration_session.get("in_progress"))
-    remote_session_id = str(registration_session.get("session_id") or "").strip() or None
-
-    # Registration capture must only be driven by the entry worker.
     if runtime.worker_role != "entry":
-        if local_reg.manual_requested or local_reg.manual_active:
-            runtime.state.stop_manual_registration()
-        if remote_session_id is not None:
-            local_reg.session_id = remote_session_id
+        runtime.state.sync_registration_control(
+            session_id=None,
+            phase="idle",
+            expected_pose=None,
+            force_new_identity=False,
+            registration_kind=str(registration_control.get("registration_kind") or "student"),
+        )
         return
 
-    local_session_id = str(getattr(local_reg, "session_id", "") or "").strip() or None
-    if (
-        remote_session_id is not None
-        and local_session_id is not None
-        and remote_session_id != local_session_id
-        and (
-        local_reg.manual_requested or local_reg.manual_active or local_reg.capture_count > 0
-        )
-    ):
-        runtime.state.cancel_web_registration_session()
-        local_reg = runtime.state.registration_state
-    if remote_session_id is not None:
-        local_reg.session_id = remote_session_id
-
-    remote_wants_capture = remote_session_active or remote_manual_requested or remote_manual_active
-    local_has_capture = local_reg.manual_requested or local_reg.manual_active
-
-    if remote_wants_capture and not local_has_capture:
-        runtime.state.start_web_registration_session()
-        if remote_session_id is not None:
-            runtime.state.registration_state.session_id = remote_session_id
-    elif not remote_wants_capture and local_has_capture and not local_reg.in_progress:
-        runtime.state.cancel_web_registration_session()
-        if remote_session_id is not None:
-            runtime.state.registration_state.session_id = remote_session_id
-
-    # When API has already finalized or reset registration, clear stale local
-    # in-progress gate so recognition can resume immediately on the worker.
-    if not remote_wants_capture and not remote_in_progress and local_reg.in_progress:
-        runtime.state.complete_registration()
-        if remote_session_id is not None:
-            runtime.state.registration_state.session_id = remote_session_id
+    runtime.state.sync_registration_control(
+        session_id=str(registration_control.get("session_id") or "").strip() or None,
+        phase=str(registration_control.get("phase") or "idle"),
+        expected_pose=str(registration_control.get("expected_pose") or "").strip().lower() or None,
+        force_new_identity=bool(registration_control.get("force_new_identity")),
+        registration_kind=str(registration_control.get("registration_kind") or "student"),
+    )
 
 
 def _start_sync_loop(runtime: WorkerRuntime, poll_interval_seconds: float = 3.0):
@@ -217,7 +205,7 @@ def _start_sync_loop(runtime: WorkerRuntime, poll_interval_seconds: float = 3.0)
                 else:
                     # Registration session lifecycle changes do not bump settings_version.
                     # Keep session state in sync on every poll so capture starts/stops immediately.
-                    _apply_registration_session_state(runtime, runtime_config_payload)
+                    _apply_registration_control(runtime, runtime_config_payload)
 
                 try:
                     runtime.api_client.post_json(
@@ -297,6 +285,15 @@ def build_runtime() -> WorkerRuntime:
             runtime_source = _normalize_stream_source(runtime_payload.get(source_key))
             if runtime_source is not None:
                 stream_source = runtime_source
+        registration_control = runtime_payload.get("registration_control") or {}
+        if isinstance(registration_control, dict):
+            state.sync_registration_control(
+                session_id=str(registration_control.get("session_id") or "").strip() or None,
+                phase=str(registration_control.get("phase") or "idle"),
+                expected_pose=str(registration_control.get("expected_pose") or "").strip().lower() or None,
+                force_new_identity=bool(registration_control.get("force_new_identity")),
+                registration_kind=str(registration_control.get("registration_kind") or "student"),
+            )
     except Exception as exc:
         log_step(f"Runtime config fetch failed; using local defaults ({exc})", status="WARN")
 

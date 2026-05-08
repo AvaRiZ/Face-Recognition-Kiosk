@@ -12,7 +12,6 @@ REQUIRED_CANONICAL_TABLES = (
     "daily_occupancy_state",
     "occupancy_snapshots",
     "occupancy_alerts",
-    "user_registrations",
 )
 
 
@@ -34,7 +33,7 @@ def init_canonical_schema(db_path: str) -> None:
             "PostgreSQL schema is missing canonical recognition_events.event_type. "
             "Run `alembic upgrade head` before starting the app."
         )
-    missing_user_columns = [name for name in ("user_type", "flow_type") if name not in user_columns]
+    missing_user_columns = [name for name in ("user_type",) if name not in user_columns]
     if missing_user_columns:
         raise RuntimeError(
             "PostgreSQL schema is missing required users columns "

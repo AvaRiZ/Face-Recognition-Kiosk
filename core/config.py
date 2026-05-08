@@ -78,7 +78,7 @@ class AppConfig:
     #   reason a face was marked poor.
     # - Enable `quality_debug_show_all_scores` while tuning thresholds so you
     #   can inspect every component score and raw metric value.
-    quality_debug_enabled: bool = True
+    quality_debug_enabled: bool = False
     quality_debug_show_primary_issue: bool = True
     quality_debug_show_all_scores: bool = True
 
@@ -122,14 +122,14 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Entry camera stream source (accessible to entry-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    entry_cctv_stream_source: str = "2"
+    entry_cctv_stream_source: str = "0"
 
     # Exit camera stream source (accessible to exit-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    exit_cctv_stream_source: str = "0"
+    exit_cctv_stream_source: str = "1"
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
-    cli_top_bar_enabled: bool = True
+    cli_top_bar_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Occupancy and capacity management

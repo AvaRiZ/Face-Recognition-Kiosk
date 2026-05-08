@@ -183,38 +183,6 @@ def create_routes_blueprint(deps):
         except Exception:
             return datetime.now(timezone.utc)
 
-    def _insert_user_registration_audit(
-        *,
-        registration_type: str,
-        flow_type: str,
-        status: str,
-        performed_by: str,
-        user_id: int | None = None,
-        event_id: str | None = None,
-        notes: str | None = None,
-    ) -> None:
-        conn = db_connect(deps["db_path"])
-        c = conn.cursor()
-        c.execute(
-            """
-            INSERT INTO user_registrations (
-                user_id, event_id, registration_type, flow_type, status, performed_by, notes
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                user_id,
-                event_id,
-                registration_type,
-                flow_type,
-                status,
-                performed_by,
-                notes,
-            ),
-        )
-        conn.commit()
-        conn.close()
-
     def _snapshot_recognition_event_identity(
         cursor,
         *,
@@ -274,7 +242,6 @@ def create_routes_blueprint(deps):
         gender: str | None,
         program: str | None,
         user_type: str,
-        flow_type: str,
     ) -> int:
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -287,14 +254,13 @@ def create_routes_blueprint(deps):
             "",
             0,
             user_type,
-            flow_type,
         )
         c.execute(
             """
             INSERT INTO users (
-                name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type, flow_type
+                name, sr_code, gender, course, embeddings, image_paths, embedding_dim, user_type
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING user_id
             """,
             params,
@@ -305,7 +271,16 @@ def create_routes_blueprint(deps):
         conn.close()
         return user_id
 
-    def _record_manual_entry_event(*, user_id: int | None, sr_code: str | None, event_id: str, captured_at: datetime):
+    def _record_manual_entry_event(
+        *,
+        user_id: int | None,
+        sr_code: str | None,
+        event_id: str,
+        captured_at: datetime,
+        method: str = "manual-resolution",
+        resolution_action: str = "visitor_entry",
+        metadata: dict | None = None,
+    ):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         payload_json = {
@@ -313,7 +288,9 @@ def create_routes_blueprint(deps):
             "user_id": user_id,
             "sr_code": sr_code,
             "decision": "allowed",
-            "source": "librarian_manual_admission",
+            "source": "librarian_manual_resolution",
+            "resolution_action": resolution_action,
+            "resolution_metadata": metadata or {},
             "event_type": "entry",
             "captured_at": captured_at.isoformat(),
         }
@@ -331,7 +308,7 @@ def create_routes_blueprint(deps):
                 sr_code,
                 "allowed",
                 "entry",
-                "manual-approval",
+                method,
                 captured_at,
                 json.dumps(payload_json, ensure_ascii=True),
             ),
@@ -363,7 +340,16 @@ def create_routes_blueprint(deps):
             )
         return inserted
 
-    def _record_manual_exit_event(*, user_id: int | None, sr_code: str | None, event_id: str, captured_at: datetime):
+    def _record_manual_exit_event(
+        *,
+        user_id: int | None,
+        sr_code: str | None,
+        event_id: str,
+        captured_at: datetime,
+        method: str = "manual-resolution",
+        resolution_action: str = "visitor_exit",
+        metadata: dict | None = None,
+    ):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         payload_json = {
@@ -371,7 +357,9 @@ def create_routes_blueprint(deps):
             "user_id": user_id,
             "sr_code": sr_code,
             "decision": "allowed",
-            "source": "librarian_manual_exit",
+            "source": "librarian_manual_resolution",
+            "resolution_action": resolution_action,
+            "resolution_metadata": metadata or {},
             "event_type": "exit",
             "captured_at": captured_at.isoformat(),
         }
@@ -389,7 +377,7 @@ def create_routes_blueprint(deps):
                 sr_code,
                 "allowed",
                 "exit",
-                "manual-exit",
+                method,
                 captured_at,
                 json.dumps(payload_json, ensure_ascii=True),
             ),
@@ -445,42 +433,16 @@ def create_routes_blueprint(deps):
             "inside_now": entries > exits,
         }
 
-    def _resolve_registration_status_reason(reg_state, stream_status, worker_attached, detection_paused):
+    def _resolve_registration_status_reason(reg_state):
         code = (getattr(reg_state, "status_reason_code", None) or "").strip() or None
         message = (getattr(reg_state, "status_reason_message", "") or "").strip()
         updated_at = (getattr(reg_state, "status_updated_at", None) or "").strip() or None
-
-        stream_state = str((stream_status or {}).get("state") or "").strip().lower()
-        stream_message = str((stream_status or {}).get("message") or "").strip()
-
-        if not worker_attached:
-            return (
-                "worker_unattached",
-                "Entry recognition worker is offline. Start the entry worker and wait for heartbeat sync.",
-                _utc_now_iso(),
-            )
-
-        if detection_paused:
-            return (
-                "detection_paused",
-                "Detection is paused while website registration uses the camera stream.",
-                _utc_now_iso(),
-            )
-
-        if stream_state in {"disconnected", "reconnecting", "connecting"}:
-            return (
-                f"stream_{stream_state}",
-                stream_message or "Camera stream is unavailable. Check camera source and reconnect.",
-                _utc_now_iso(),
-            )
-
-        if getattr(reg_state, "session_expired", False):
+        if getattr(reg_state, "phase", "idle") == "expired":
             return (
                 "session_expired",
                 "Registration session expired due to inactivity. Start a new session to continue.",
                 updated_at or _utc_now_iso(),
             )
-
         return code, message, updated_at
 
     def _spa_index():
@@ -534,9 +496,9 @@ def create_routes_blueprint(deps):
         return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
 
     def _registration_sample_previews(reg_state):
-        samples = reg_state.pending_registration or reg_state.captured_samples or []
+        samples = reg_state.captured_samples or []
         previews = []
-        preview_limit = reg_state.total_retained_samples if reg_state.pending_registration else reg_state.max_captures
+        preview_limit = reg_state.total_retained_samples if reg_state.ready_to_submit else reg_state.max_captures
         for index, sample in enumerate(samples[:preview_limit]):
             face_crop = getattr(sample, "face_crop", None)
             if face_crop is None or getattr(face_crop, "size", 0) == 0:
@@ -564,65 +526,24 @@ def create_routes_blueprint(deps):
 
     def _registration_status_payload(reg_state):
         progress = deps["get_registration_progress"]()
-        total_progress = progress.get("total_progress", {})
-        captured_total = int(total_progress.get("captured", reg_state.capture_count))
-        stream_status = deps["stream_status"]() if deps.get("stream_status") else {"state": "unknown", "message": "Camera status unavailable."}
-        heartbeat_ttl_seconds = int(getattr(deps["config"], "registration_worker_heartbeat_ttl_seconds", 10) or 10)
-        worker_online_checker = deps.get("is_worker_online")
-        if callable(worker_online_checker):
-            worker_attached = bool(worker_online_checker("entry", heartbeat_ttl_seconds))
-        else:
-            worker_attached = bool(deps.get("worker_runtime_attached"))
-        worker_last_seen_getter = deps.get("get_worker_last_seen_at")
-        entry_worker_last_seen_at = None
-        if callable(worker_last_seen_getter):
-            raw_last_seen = worker_last_seen_getter("entry")
-            if isinstance(raw_last_seen, (int, float)):
-                entry_worker_last_seen_at = float(raw_last_seen)
-        detection_paused = bool(deps["detection_paused"]())
-        session_timeout_seconds = int(getattr(deps["config"], "registration_session_timeout_seconds", 0) or 0)
-        session_started_at = float(reg_state.session_started_at) if reg_state.session_started_at is not None else None
-        last_activity_at = float(reg_state.last_activity_at) if reg_state.last_activity_at is not None else None
-        session_expires_at = None
-        seconds_until_expiry = None
-        if session_timeout_seconds > 0 and last_activity_at is not None:
-            session_expires_at = last_activity_at + session_timeout_seconds
-            seconds_until_expiry = max(0, int(session_expires_at - time.time()))
-        elif bool(getattr(reg_state, "session_expired", False)):
-            seconds_until_expiry = 0
-        reason_code, reason_message, reason_updated_at = _resolve_registration_status_reason(
-            reg_state=reg_state,
-            stream_status=stream_status,
-            worker_attached=worker_attached,
-            detection_paused=detection_paused,
-        )
+        reason_code, reason_message, reason_updated_at = _resolve_registration_status_reason(reg_state=reg_state)
         return {
-            "capture_count": captured_total,
-            "max_captures": reg_state.max_captures,
-            "has_pending_registration": bool(reg_state.pending_registration),
-            "is_in_progress": reg_state.in_progress,
-            "web_session_active": bool(reg_state.web_session_active),
-            "allow_unknown_override": bool(getattr(reg_state, "allow_unknown_override", False)),
-            "session_expired": bool(getattr(reg_state, "session_expired", False)),
-            "worker_attached": worker_attached,
-            "entry_worker_last_seen_at": entry_worker_last_seen_at,
-            "detection_paused": detection_paused,
-            "sample_previews": _registration_sample_previews(reg_state),
+            "active": progress.get("phase") in {"capturing", "ready"},
+            "session_id": progress.get("session_id"),
+            "phase": progress.get("phase", "idle"),
+            "registration_kind": progress.get("registration_kind", "student"),
+            "force_new_identity": bool(progress.get("force_new_identity")),
             "required_poses": progress["required_poses"],
             "current_pose": progress["current_pose"],
             "current_pose_index": progress["current_pose_index"],
             "pose_progress": progress["pose_progress"],
             "total_progress": progress["total_progress"],
             "ready_to_submit": progress["ready_to_submit"],
-            "camera_stream": stream_status,
+            "preview_samples": _registration_sample_previews(reg_state),
+            "expires_in_seconds": progress.get("expires_in_seconds"),
             "status_reason_code": reason_code,
             "status_reason_message": reason_message,
             "status_updated_at": reason_updated_at,
-            "session_timeout_seconds": session_timeout_seconds,
-            "session_started_at": session_started_at,
-            "last_activity_at": last_activity_at,
-            "session_expires_at": session_expires_at,
-            "seconds_until_expiry": seconds_until_expiry,
         }
 
     def _registration_error_payload(reg_state, message: str, status_reason_code: str | None = None, **extra):
@@ -633,10 +554,9 @@ def create_routes_blueprint(deps):
         return payload
 
     def _has_complete_pending_registration(reg_state) -> bool:
-        pending_registration = reg_state.pending_registration or []
         if not deps["is_registration_ready"]():
             return False
-        return len(pending_registration) >= int(reg_state.total_retained_samples)
+        return len(reg_state.captured_samples or []) >= int(reg_state.total_retained_samples)
 
     def _validate_registration_fields(name: str, sr_code: str, gender: str, program: str, user_type: str = "enrolled"):
         allowed_genders = {"Male", "Female", "Other"}
@@ -2476,19 +2396,19 @@ def create_routes_blueprint(deps):
 
     @bp.route("/registered-profiles", endpoint="registered_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def registered_profiles():
         return _spa_index()
 
     @bp.route("/archive-profiles", endpoint="registered_profiles_archive")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def registered_profiles_archive():
         return _spa_index()
 
     @bp.route("/archive-profiles/submit", methods=["POST"], endpoint="registered_profiles_archive_submit")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def registered_profiles_archive_submit():
         user_ids = request.form.getlist("user_ids")
         if not user_ids:
@@ -2514,13 +2434,13 @@ def create_routes_blueprint(deps):
 
     @bp.route("/archived-profiles", endpoint="archived_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def archived_profiles():
         return _spa_index()
 
     @bp.route("/archived-profiles/restore", methods=["POST"], endpoint="archived_profiles_restore")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def archived_profiles_restore():
         user_ids = request.form.getlist("user_ids")
         if not user_ids:
@@ -2727,21 +2647,6 @@ def create_routes_blueprint(deps):
                 pass
             return {"success": False, "message": str(e)}, 500
 
-    @bp.route("/api/reset_registration", methods=["POST"], endpoint="reset_registration")
-    @login_required
-    @role_required("super_admin", "library_admin")
-    def reset_registration():
-        deps["reset_registration_state"]()
-        return {"success": True, "message": "Registration state reset"}
-
-    @bp.route("/api/register-info", methods=["GET"], endpoint="api_register_info")
-    @api_login_required
-    @api_role_required("super_admin", "library_admin", "library_staff")
-    def api_register_info():
-        deps["expire_registration_session_if_needed"]()
-        reg_state = deps["get_registration_state"]()
-        return jsonify(_registration_status_payload(reg_state))
-
     @bp.route("/api/detection/pause", methods=["POST"], endpoint="api_detection_pause")
     @api_login_required
     @api_role_required("super_admin", "library_admin", "library_staff")
@@ -2766,180 +2671,154 @@ def create_routes_blueprint(deps):
             )
         return jsonify({"success": True, "detection_paused": False})
 
-    @bp.route("/api/register-reset", methods=["POST"], endpoint="api_register_reset")
-    @api_login_required
-    @api_role_required("super_admin", "library_admin", "library_staff")
-    def api_register_reset():
-        deps["reset_registration_state"]()
-        if deps.get("set_registration_status_reason"):
-            deps["set_registration_status_reason"](
-                "session_reset",
-                "Registration capture session reset.",
+    def _record_manual_resolution_event(
+        *,
+        event_id: str,
+        decision: str,
+        action: str,
+        captured_at: datetime,
+        user_id: int | None = None,
+        sr_code: str | None = None,
+        event_type: str = "entry",
+        metadata: dict | None = None,
+    ) -> None:
+        payload_json = {
+            "event_id": event_id,
+            "user_id": user_id,
+            "sr_code": sr_code,
+            "decision": decision,
+            "event_type": event_type,
+            "source": "librarian_manual_resolution",
+            "resolution_action": action,
+            "resolution_metadata": metadata or {},
+            "captured_at": captured_at.isoformat(),
+        }
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, method, captured_at, payload_json
             )
-        reg_state = deps["get_registration_state"]()
-        payload = _registration_status_payload(reg_state)
-        payload.update(
-            {
-                "success": True,
-                "message": "Registration capture session reset.",
-            }
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            (
+                event_id,
+                user_id,
+                sr_code,
+                decision,
+                event_type,
+                "manual-resolution",
+                captured_at,
+                json.dumps(payload_json, ensure_ascii=True),
+            ),
         )
-        return jsonify(payload)
+        conn.commit()
+        conn.close()
 
-    @bp.route("/api/register-session/start", methods=["POST"], endpoint="api_register_session_start")
+    @bp.route("/api/registrations/active", methods=["GET"], endpoint="api_registration_active_get")
     @api_login_required
     @api_role_required("super_admin", "library_admin", "library_staff")
-    def api_register_session_start():
+    def api_registration_active_get():
         deps["expire_registration_session_if_needed"]()
         reg_state = deps["get_registration_state"]()
-        heartbeat_ttl_seconds = int(getattr(deps["config"], "registration_worker_heartbeat_ttl_seconds", 10) or 10)
-        worker_online_checker = deps.get("is_worker_online")
-        if callable(worker_online_checker):
-            worker_attached = bool(worker_online_checker("entry", heartbeat_ttl_seconds))
+        return jsonify(_registration_status_payload(reg_state))
+
+    @bp.route("/api/registrations/active", methods=["POST"], endpoint="api_registration_active_start")
+    @api_login_required
+    @api_role_required("super_admin", "library_admin", "library_staff")
+    def api_registration_active_start():
+        deps["expire_registration_session_if_needed"]()
+        payload = request.get_json(silent=True) or {}
+        registration_kind = str(payload.get("registration_kind") or "student").strip().lower()
+        start_session = deps.get("start_registration_session")
+        if callable(start_session):
+            started = bool(start_session(registration_kind))
         else:
-            worker_attached = bool(deps.get("worker_runtime_attached"))
-        if not worker_attached:
-            payload = _registration_error_payload(
-                reg_state,
-                "Entry recognition worker is offline. Start the entry worker and wait for heartbeat sync before starting registration.",
-                status_reason_code="worker_unattached",
-            )
-            return jsonify(payload), 503
-        if reg_state.in_progress and reg_state.pending_registration:
-            payload = _registration_error_payload(
-                reg_state,
-                "A registration capture is already complete. Submit it or reset before starting a new session.",
-                status_reason_code="capture_complete",
-            )
-            return jsonify(payload), 409
-
-        if reg_state.manual_active:
-            payload = _registration_error_payload(
-                reg_state,
-                "A registration capture is already in progress.",
-                status_reason_code="capture_in_progress",
-            )
-            return jsonify(payload), 409
-
-        if reg_state.web_session_active or reg_state.manual_requested:
-            payload = _registration_error_payload(
-                reg_state,
-                "A registration session is already active and waiting for a student.",
-                status_reason_code="session_already_active",
-            )
-            return jsonify(payload), 409
-
-        started = deps["start_web_registration_session"]()
+            started = bool(deps["start_web_registration_session"]())
         reg_state = deps["get_registration_state"]()
-        payload = _registration_status_payload(reg_state)
+        status_payload = _registration_status_payload(reg_state)
         if not started:
-            payload.update(
+            status_payload.update(
                 {
                     "success": False,
-                    "message": "Unable to start a new registration session because another registration step is already active.",
+                    "message": "A registration session is already active. Submit or cancel it first.",
                 }
             )
-            if deps.get("set_registration_status_reason"):
-                deps["set_registration_status_reason"](
-                    "session_start_failed",
-                    payload["message"],
-                )
-            return jsonify(payload), 409
-
-        if deps.get("set_registration_status_reason"):
-            deps["set_registration_status_reason"](
-                "session_started",
-                "Registration session started. Keep the student in frame to capture required samples.",
-            )
-        payload.update(
+            return jsonify(status_payload), 409
+        status_payload.update(
             {
                 "success": True,
-                "message": "Registration session started. Keep the student in frame to capture required samples.",
+                "message": "Registration session started.",
             }
         )
-        return jsonify(payload)
+        return jsonify(status_payload), 201
 
-    @bp.route("/api/register-session/cancel", methods=["POST"], endpoint="api_register_session_cancel")
+    @bp.route("/api/registrations/active", methods=["DELETE"], endpoint="api_registration_active_cancel")
     @api_login_required
     @api_role_required("super_admin", "library_admin", "library_staff")
-    def api_register_session_cancel():
-        deps["expire_registration_session_if_needed"]()
-        deps["cancel_web_registration_session"]()
-        if deps.get("set_registration_status_reason"):
-            deps["set_registration_status_reason"](
-                "session_canceled",
-                "Registration session canceled.",
-            )
+    def api_registration_active_cancel():
+        cancel_session = deps.get("cancel_registration_session")
+        if callable(cancel_session):
+            cancel_session(reason_code="session_canceled", reason_message="Registration session canceled.")
+        else:
+            deps["cancel_web_registration_session"]()
         reg_state = deps["get_registration_state"]()
         payload = _registration_status_payload(reg_state)
-        payload.update(
-            {
-                "success": True,
-                "message": "Registration session canceled.",
-            }
-        )
+        payload.update({"success": True, "message": "Registration session canceled."})
         return jsonify(payload)
 
-    @bp.route("/api/register-session/continue-unknown", methods=["POST"], endpoint="api_register_session_continue_unknown")
+    @bp.route("/api/registrations/active/override", methods=["POST"], endpoint="api_registration_active_override")
     @api_login_required
     @api_role_required("super_admin", "library_admin", "library_staff")
-    def api_register_session_continue_unknown():
+    def api_registration_active_override():
         deps["expire_registration_session_if_needed"]()
-        reg_state = deps["get_registration_state"]()
-        if not (reg_state.manual_active or reg_state.web_session_active or reg_state.capture_count > 0):
-            payload = _registration_error_payload(
-                reg_state,
-                "No active registration capture is in progress.",
-                status_reason_code="no_active_capture",
-            )
-            return jsonify(payload), 409
-
-        if deps.get("enable_unknown_registration_override"):
+        override_session = deps.get("override_registration_session")
+        if callable(override_session):
+            overridden = bool(override_session())
+        else:
             deps["enable_unknown_registration_override"]()
-        if deps.get("set_registration_status_reason"):
-            deps["set_registration_status_reason"](
-                "override_forced_unknown",
-                "Manual override enabled. Continuing registration as an unknown student.",
-            )
+            overridden = True
         reg_state = deps["get_registration_state"]()
         payload = _registration_status_payload(reg_state)
-        payload.update(
-            {
-                "success": True,
-                "message": "Continuing capture as a new student by manual override.",
-            }
-        )
+        if not overridden:
+            payload.update({"success": False, "message": "No active registration session to override."})
+            return jsonify(payload), 409
+        payload.update({"success": True, "message": "Manual override enabled for this session."})
         return jsonify(payload)
 
-    @bp.route("/register", methods=["POST"], endpoint="register_submit")
+    @bp.route("/api/registrations/active/submit", methods=["POST"], endpoint="api_registration_active_submit")
     @api_login_required
     @api_role_required("super_admin", "library_admin", "library_staff")
-    def register_submit():
+    def api_registration_active_submit():
         deps["expire_registration_session_if_needed"]()
         repository = deps["repository"]
         reg_state = deps["get_registration_state"]()
-        pending_registration = reg_state.pending_registration or []
+        pending_registration = reg_state.captured_samples or []
         if not pending_registration:
-            return jsonify({"success": False, "message": "No pending registration samples found."}), 400
+            return jsonify({"success": False, "message": "No captured registration samples found."}), 400
         if not _has_complete_pending_registration(reg_state):
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "message": "Registration capture is not complete yet. Finish all required face samples before saving.",
-                    }
-                ),
-                400,
-            )
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "Registration capture is not complete yet. Finish all required face samples before saving.",
+                }
+            ), 400
 
-        registration_type = str(request.form.get("user_type", "student") or "student").strip().lower()
-        user_type = "visitor" if registration_type == "visitor" else "enrolled"
-        name = request.form.get("name", "").strip()
-        sr_code = request.form.get("sr_code", "").strip() if registration_type != "visitor" else request.form.get("sr_code", "").strip()
-        if registration_type == "visitor" and sr_code == "":
+        payload = request.get_json(silent=True) or {}
+        registration_kind = str(payload.get("registration_kind") or reg_state.registration_kind or "student").strip().lower()
+        if registration_kind not in {"student", "visitor"}:
+            registration_kind = "student"
+        user_type = "visitor" if registration_kind == "visitor" else "enrolled"
+
+        name = str(payload.get("name") or "").strip()
+        sr_code = str(payload.get("sr_code") or "").strip() if registration_kind != "visitor" else str(payload.get("sr_code") or "").strip()
+        if registration_kind == "visitor" and sr_code == "":
             sr_code = None
-        gender = request.form.get("gender", "").strip()
-        program = request.form.get("program", "").strip()
+        gender = str(payload.get("gender") or "").strip()
+        program = str(payload.get("program") or "").strip()
+
         is_valid, validation_message, invalid_field = _validate_registration_fields(
             name,
             sr_code or "",
@@ -2953,27 +2832,15 @@ def create_routes_blueprint(deps):
         if user_type == "enrolled":
             existing = repository.get_user_by_sr_code(sr_code)
             if existing is not None:
-                return (
-                    jsonify(
-                        {
-                            "success": False,
-                            "message": f"SR Code {sr_code} is already registered to {existing.name}. Use a different SR Code.",
-                        }
-                    ),
-                    409,
-                )
+                return jsonify(
+                    {
+                        "success": False,
+                        "message": f"SR Code {sr_code} is already registered to {existing.name}. Use a different SR Code.",
+                    }
+                ), 409
 
         all_embeddings = {}
-        image_paths = []
-        user_folder = os.path.join(deps["base_save_dir"], sr_code or "visitor")
-        os.makedirs(user_folder, exist_ok=True)
-
-        for index, face_sample in enumerate(pending_registration):
-            timestamp = int(time.time() * 1000)
-            filename = os.path.join(user_folder, f"face_{timestamp}_{index}.jpg")
-            if not cv2.imwrite(filename, face_sample.face_crop):
-                return jsonify({"success": False, "message": "Failed to save captured face sample."}), 500
-            image_paths.append(filename)
+        for face_sample in pending_registration:
             all_embeddings = merge_embeddings_by_model(all_embeddings, face_sample.embeddings)
 
         user_id = repository.save_user(
@@ -2985,7 +2852,7 @@ def create_routes_blueprint(deps):
                 program=program,
                 user_type=user_type,
                 embeddings=all_embeddings,
-                image_paths=image_paths,
+                image_paths=[],
                 embedding_dim=0,
             )
         )
@@ -3001,7 +2868,6 @@ def create_routes_blueprint(deps):
                 f"Profile registered for {saved_user.name}." if saved_user else "Registration saved successfully.",
             )
         total_embeddings = count_embeddings(normalize_embeddings_by_model(all_embeddings))
-        redirect_url = url_for("spa_public_routes")
         profile_payload = None
         if saved_user:
             profile_payload = {
@@ -3023,147 +2889,147 @@ def create_routes_blueprint(deps):
                     else "Registration saved successfully."
                 ),
                 "profile": profile_payload,
-                "redirect_url": redirect_url,
             }
         )
 
-    @bp.route("/api/register/unrecognized", methods=["POST"], endpoint="api_register_unrecognized")
+    @bp.route("/api/registrations/resolutions", methods=["POST"], endpoint="api_registration_resolutions")
     @api_login_required
     @api_role_required("super_admin", "library_admin", "library_staff")
-    def api_register_unrecognized():
+    def api_registration_resolutions():
         payload = request.get_json(silent=True) or {}
-        event_id = str(payload.get("event_id") or "").strip()
         action = str(payload.get("action") or "").strip().lower()
-        if not event_id:
-            return jsonify({"success": False, "message": "`event_id` is required."}), 400
-        if action not in {"approve", "deny"}:
-            return jsonify({"success": False, "message": "`action` must be 'approve' or 'deny'."}), 400
+        if action not in {"unrecognized_approve", "unrecognized_deny", "visitor_entry", "visitor_exit"}:
+            return jsonify({"success": False, "message": "`action` is invalid."}), 400
 
-        performer = (session.get("username") or session.get("role") or "staff")
-        if action == "deny":
-            _insert_user_registration_audit(
-                registration_type="unrecognized",
-                flow_type="manual_entry",
-                status="denied",
-                performed_by=str(performer),
-                event_id=event_id,
-                notes=str(payload.get("notes") or "").strip() or None,
+        performer = str(session.get("username") or session.get("role") or "staff")
+        captured_at = _parse_iso_utc(payload.get("captured_at"))
+        notes = str(payload.get("notes") or "").strip()
+        source_event_id = str(payload.get("event_id") or "").strip() or None
+
+        if action == "unrecognized_deny":
+            denied_event_id = f"resolution-{uuid.uuid4().hex}"
+            _record_manual_resolution_event(
+                event_id=denied_event_id,
+                decision="denied",
+                action=action,
+                captured_at=captured_at,
+                user_id=None,
+                sr_code=None,
+                event_type="entry",
+                metadata={
+                    "source_event_id": source_event_id,
+                    "performed_by": performer,
+                    "notes": notes or None,
+                },
             )
-            emit_analytics_update("unrecognized_denied", {"event_id": event_id})
-            return jsonify({"success": True, "event_id": event_id, "status": "denied"})
+            emit_analytics_update("unrecognized_denied", {"event_id": source_event_id, "resolution_event_id": denied_event_id})
+            return jsonify(
+                {
+                    "success": True,
+                    "action": action,
+                    "event_id": source_event_id,
+                    "resolution_event_id": denied_event_id,
+                    "status": "denied",
+                }
+            )
 
-        name = str(payload.get("name") or "").strip()
-        if not name:
-            return jsonify({"success": False, "message": "`name` is required for approval."}), 400
-
-        sr_code = str(payload.get("sr_code") or "").strip() or None
-        gender = str(payload.get("gender") or "").strip() or ""
-        program = str(payload.get("program") or "").strip() or ""
-        resolved_type = str(payload.get("user_type") or "unrecognized").strip().lower()
-        if resolved_type not in {"enrolled", "visitor", "unrecognized"}:
-            resolved_type = "unrecognized"
-        captured_at = _parse_iso_utc(payload.get("captured_at"))
-        approved_event_id = f"manual-{uuid.uuid4().hex}"
-
-        user_id = _create_identity_user(
-            name=name,
-            sr_code=sr_code,
-            gender=gender,
-            program=program,
-            user_type=resolved_type,
-            flow_type="manual_entry",
-        )
-        _insert_user_registration_audit(
-            user_id=user_id,
-            event_id=event_id,
-            registration_type="unrecognized",
-            flow_type="manual_entry",
-            status="approved",
-            performed_by=str(performer),
-            notes=str(payload.get("notes") or "").strip() or None,
-        )
-        _record_manual_entry_event(user_id=user_id, sr_code=sr_code, event_id=approved_event_id, captured_at=captured_at)
-        bump_profiles_version(deps["db_path"])
-        return jsonify(
-            {
-                "success": True,
-                "status": "approved",
-                "event_id": event_id,
-                "admitted_event_id": approved_event_id,
-                "user_id": int(user_id),
-                "user_type": resolved_type,
-            }
-        )
-
-    @bp.route("/api/register/visitor", methods=["POST"], endpoint="api_register_visitor")
-    @api_login_required
-    @api_role_required("super_admin", "library_admin", "library_staff")
-    def api_register_visitor():
-        payload = request.get_json(silent=True) or {}
-        name = str(payload.get("name") or "").strip()
-        if not name:
-            return jsonify({"success": False, "message": "`name` is required."}), 400
-        sr_code = str(payload.get("sr_code") or "").strip() or None
-        gender = str(payload.get("gender") or "").strip() or ""
-        program = str(payload.get("program") or "").strip() or ""
-        captured_at = _parse_iso_utc(payload.get("captured_at"))
-        performer = (session.get("username") or session.get("role") or "staff")
-        event_id = str(payload.get("event_id") or "").strip() or f"visitor-{uuid.uuid4().hex}"
-
-        user_id = None
-        if sr_code:
-            existing = deps["repository"].get_user_by_sr_code(sr_code)
-            if existing is not None:
-                user_id = int(existing.id)
-        if user_id is None:
+        if action == "unrecognized_approve":
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                return jsonify({"success": False, "message": "`name` is required for unrecognized approval."}), 400
+            sr_code = str(payload.get("sr_code") or "").strip() or None
+            gender = str(payload.get("gender") or "").strip() or ""
+            program = str(payload.get("program") or "").strip() or ""
+            resolved_type = str(payload.get("user_type") or "unrecognized").strip().lower()
+            if resolved_type not in {"enrolled", "visitor", "unrecognized"}:
+                resolved_type = "unrecognized"
             user_id = _create_identity_user(
                 name=name,
                 sr_code=sr_code,
                 gender=gender,
                 program=program,
-                user_type="visitor",
-                flow_type="manual_entry",
+                user_type=resolved_type,
             )
-        presence = _visitor_presence_state(int(user_id))
-        if presence["inside_now"]:
+            admitted_event_id = str(payload.get("admitted_event_id") or "").strip() or f"manual-{uuid.uuid4().hex}"
+            _record_manual_entry_event(
+                user_id=user_id,
+                sr_code=sr_code,
+                event_id=admitted_event_id,
+                captured_at=captured_at,
+                method="manual-resolution",
+                resolution_action=action,
+                metadata={
+                    "source_event_id": source_event_id,
+                    "performed_by": performer,
+                    "notes": notes or None,
+                },
+            )
+            bump_profiles_version(deps["db_path"])
             return jsonify(
                 {
-                    "success": False,
-                    "message": "Visitor is already marked inside. Record an exit before admitting again.",
-                    **presence,
+                    "success": True,
+                    "action": action,
+                    "event_id": source_event_id,
+                    "admitted_event_id": admitted_event_id,
+                    "user_id": int(user_id),
+                    "user_type": resolved_type,
                 }
-            ), 409
-        _insert_user_registration_audit(
-            user_id=user_id,
-            event_id=event_id,
-            registration_type="visitor",
-            flow_type="manual_entry",
-            status="approved",
-            performed_by=str(performer),
-            notes=str(payload.get("notes") or "").strip() or None,
-        )
-        _record_manual_entry_event(user_id=user_id, sr_code=sr_code, event_id=event_id, captured_at=captured_at)
-        bump_profiles_version(deps["db_path"])
-        return jsonify(
-            {
-                "success": True,
-                "user_id": int(user_id),
-                "event_id": event_id,
-                "user_type": "visitor",
-                "flow_type": "manual_entry",
-            }
-        )
+            )
 
-    @bp.route("/api/register/visitor/exit", methods=["POST"], endpoint="api_register_visitor_exit")
-    @api_login_required
-    @api_role_required("super_admin", "library_admin", "library_staff")
-    def api_register_visitor_exit():
-        payload = request.get_json(silent=True) or {}
+        if action == "visitor_entry":
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                return jsonify({"success": False, "message": "`name` is required for visitor entry."}), 400
+            sr_code = str(payload.get("sr_code") or "").strip() or None
+            gender = str(payload.get("gender") or "").strip() or ""
+            program = str(payload.get("program") or "").strip() or ""
+            user_id = None
+            if sr_code:
+                existing = deps["repository"].get_user_by_sr_code(sr_code)
+                if existing is not None:
+                    user_id = int(existing.id)
+            if user_id is None:
+                user_id = _create_identity_user(
+                    name=name,
+                    sr_code=sr_code,
+                    gender=gender,
+                    program=program,
+                    user_type="visitor",
+                )
+            presence = _visitor_presence_state(int(user_id))
+            if presence["inside_now"]:
+                return jsonify(
+                    {
+                        "success": False,
+                        "message": "Visitor is already marked inside. Record an exit before admitting again.",
+                        **presence,
+                    }
+                ), 409
+            entry_event_id = source_event_id or f"visitor-{uuid.uuid4().hex}"
+            _record_manual_entry_event(
+                user_id=user_id,
+                sr_code=sr_code,
+                event_id=entry_event_id,
+                captured_at=captured_at,
+                method="manual-resolution",
+                resolution_action=action,
+                metadata={"performed_by": performer, "notes": notes or None},
+            )
+            bump_profiles_version(deps["db_path"])
+            return jsonify(
+                {
+                    "success": True,
+                    "action": action,
+                    "user_id": int(user_id),
+                    "event_id": entry_event_id,
+                    "user_type": "visitor",
+                }
+            )
+
         raw_user_id = payload.get("user_id")
         sr_code = str(payload.get("sr_code") or "").strip() or None
         if raw_user_id is None and not sr_code:
-            return jsonify({"success": False, "message": "`user_id` or `sr_code` is required."}), 400
-
+            return jsonify({"success": False, "message": "`user_id` or `sr_code` is required for visitor exit."}), 400
         user_id = None
         if raw_user_id is not None and str(raw_user_id).strip() != "":
             try:
@@ -3174,13 +3040,9 @@ def create_routes_blueprint(deps):
             existing = deps["repository"].get_user_by_sr_code(sr_code)
             if existing:
                 user_id = int(existing.id)
-
         if not user_id:
             return jsonify({"success": False, "message": "Visitor not found."}), 404
 
-        captured_at = _parse_iso_utc(payload.get("captured_at"))
-        event_id = str(payload.get("event_id") or "").strip() or f"visitor-exit-{uuid.uuid4().hex}"
-        performer = (session.get("username") or session.get("role") or "staff")
         presence = _visitor_presence_state(int(user_id))
         if not presence["inside_now"]:
             return jsonify(
@@ -3190,23 +3052,22 @@ def create_routes_blueprint(deps):
                     **presence,
                 }
             ), 409
-
-        _insert_user_registration_audit(
+        exit_event_id = source_event_id or f"visitor-exit-{uuid.uuid4().hex}"
+        _record_manual_exit_event(
             user_id=user_id,
-            event_id=event_id,
-            registration_type="visitor",
-            flow_type="manual_entry",
-            status="approved",
-            performed_by=str(performer),
-            notes="Manual visitor exit confirmation.",
+            sr_code=sr_code,
+            event_id=exit_event_id,
+            captured_at=captured_at,
+            method="manual-resolution",
+            resolution_action=action,
+            metadata={"performed_by": performer, "notes": notes or None},
         )
-        _record_manual_exit_event(user_id=user_id, sr_code=sr_code, event_id=event_id, captured_at=captured_at)
         return jsonify(
             {
                 "success": True,
-                "event_id": event_id,
+                "action": action,
+                "event_id": exit_event_id,
                 "user_id": int(user_id),
-                "flow_type": "manual_entry",
                 "status": "exit_recorded",
             }
         )
@@ -3725,7 +3586,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/profiles", methods=["GET"], endpoint="api_profiles_list")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_list():
         status = _normalize_profile_status(request.args.get("status"))
         query = (request.args.get("q") or "").strip().lower()
@@ -3829,7 +3690,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/registered-profiles", methods=["GET"], endpoint="api_registered_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_registered_profiles():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -3857,7 +3718,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/profiles", methods=["POST"], endpoint="api_profiles_create")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_create():
         payload = request.get_json(silent=True) or {}
         name = (payload.get("name") or "").strip()
@@ -3895,7 +3756,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/profiles/<int:user_id>", methods=["PUT"], endpoint="api_profiles_update")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_update(user_id):
         payload = request.get_json(silent=True) or {}
         name = (payload.get("name") or "").strip()
@@ -3945,7 +3806,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/profiles/<int:user_id>", methods=["DELETE"], endpoint="api_profiles_delete")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_delete(user_id):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -3997,7 +3858,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/archive-profiles", methods=["GET"], endpoint="api_archive_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_archive_profiles():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -4026,7 +3887,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/archive-profiles/submit", methods=["POST"], endpoint="api_archive_profiles_submit")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_archive_profiles_submit():
         payload = request.get_json(silent=True) or {}
         user_ids = payload.get("user_ids") or []
@@ -4079,7 +3940,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/archived-profiles", methods=["GET"], endpoint="api_archived_profiles")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_archived_profiles():
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -4109,7 +3970,7 @@ def create_routes_blueprint(deps):
 
     @bp.route("/api/archived-profiles/restore", methods=["POST"], endpoint="api_archived_profiles_restore")
     @login_required
-    @role_required("super_admin", "library_admin")
+    @role_required("super_admin", "library_admin", "library_staff")
     def api_archived_profiles_restore():
         payload = request.get_json(silent=True) or {}
         user_ids = payload.get("user_ids") or []
@@ -4796,7 +4657,7 @@ def create_routes_blueprint(deps):
             "/kiosk-improved",
             "/api/kiosk-metrics",
             "/register",
-            "/api/register-info",
+            "/api/registrations/active",
         }
         visible_rules = [
             rule
