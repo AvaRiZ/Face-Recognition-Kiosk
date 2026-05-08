@@ -82,7 +82,7 @@ export default function ProgramMonthlyVisitsPage() {
     setExporting(true);
 
     try {
-      await downloadFile(exportHref, `program-monthly-visits-${data.year || selectedYear}.csv`);
+      await downloadFile(exportHref, `program-monthly-visits-${data.year || selectedYear}.xlsx`);
       await showSuccess(
         'Export Complete',
         `Program monthly visits for ${data.year || selectedYear} were exported successfully.`
@@ -179,7 +179,7 @@ export default function ProgramMonthlyVisitsPage() {
                 onClick={handleExportClick}
                 disabled={exporting}
               >
-                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export CSV'}
+                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export Excel'}
               </button>
             </div>
           </div>

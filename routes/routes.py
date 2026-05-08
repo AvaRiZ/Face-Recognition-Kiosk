@@ -1795,6 +1795,301 @@ def create_routes_blueprint(deps):
         response.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         return response
 
+    def _build_program_monthly_visits_workbook(payload):
+        from flask import make_response
+
+        template_path = Path("static/report_templates/MONTHLY PROGRAM VISIT TEMPLATE.xlsx")
+        if not template_path.exists():
+            raise FileNotFoundError("Program monthly visits Excel template is missing.")
+
+        rows = payload.get("rows") or []
+        overall_row = payload.get("overall_row") or {"program": "Overall Total", "months": [0] * 12, "overall_total": 0}
+        month_labels = list(payload.get("months") or [])
+        if len(month_labels) != 12:
+            month_labels = [calendar.month_abbr[idx] for idx in range(1, 13)]
+
+        with zipfile.ZipFile(template_path, "r") as template_zip:
+            sheet_xml = template_zip.read("xl/worksheets/sheet1.xml")
+            styles_xml = template_zip.read("xl/styles.xml")
+            workbook_xml = template_zip.read("xl/workbook.xml")
+            worksheet = ET.fromstring(sheet_xml)
+            styles_root = ET.fromstring(styles_xml)
+            workbook_root = ET.fromstring(workbook_xml)
+            namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+            sheet_data = worksheet.find(f"{namespace}sheetData")
+            if sheet_data is None:
+                raise ValueError("Excel template worksheet is missing sheet data.")
+            fonts = styles_root.find(f"{namespace}fonts")
+            cell_xfs = styles_root.find(f"{namespace}cellXfs")
+            if fonts is None or cell_xfs is None:
+                raise ValueError("Excel template styles are missing required format definitions.")
+
+            workbook_sheets = workbook_root.find(f"{namespace}sheets")
+            if workbook_sheets is None or not list(workbook_sheets):
+                raise ValueError("Excel template workbook is missing sheet definitions.")
+
+            workbook_sheets[0].attrib["name"] = str(payload.get("year") or "Program Visits")[:31]
+
+            rows_by_number = {
+                int(row.attrib.get("r") or 0): row
+                for row in sheet_data.findall(f"{namespace}row")
+            }
+            required_rows = {7, 8, 9, 10, 36, 37, 38, 39}
+            missing_rows = sorted(row_number for row_number in required_rows if row_number not in rows_by_number)
+            if missing_rows:
+                raise ValueError(f"Excel template is missing required row(s): {missing_rows}")
+
+            title_cell = _ensure_xlsx_cell(rows_by_number[7], "A7")
+            _set_xlsx_text_cell(title_cell, f"LIBRARY USERS for the YEAR {payload['year']}")
+
+            header_row = rows_by_number[8]
+            program_header_cell = _ensure_xlsx_cell(header_row, "A8")
+            _set_xlsx_text_cell(program_header_cell, "COLLEGE/PROGRAM/OFFICE")
+            for month_index, month_label in enumerate(month_labels, start=2):
+                month_cell = _ensure_xlsx_cell(header_row, f"{_excel_column_label(month_index)}8")
+                _set_xlsx_text_cell(month_cell, month_label)
+            total_header_cell = _ensure_xlsx_cell(header_row, "N8")
+            _set_xlsx_text_cell(total_header_cell, "TOTAL")
+
+            first_data_row_template = _clone_xlsx_row(rows_by_number[9], 9)
+            data_row_template = _clone_xlsx_row(rows_by_number[10], 10)
+            total_row_template = _clone_xlsx_row(rows_by_number[36], 36)
+            footer_row_templates = [
+                _clone_xlsx_row(rows_by_number[37], 37),
+                _clone_xlsx_row(rows_by_number[38], 38),
+                _clone_xlsx_row(rows_by_number[39], 39),
+            ]
+            program_column_style = _ensure_xlsx_cell(first_data_row_template, "A9").attrib.get("s")
+            font_style_cache = {}
+            xf_style_cache = {}
+
+            def clone_font(base_font_id, *, bold=False):
+                cache_key = (int(base_font_id or 0), bool(bold))
+                if cache_key in font_style_cache:
+                    return font_style_cache[cache_key]
+
+                base_font = fonts[cache_key[0]]
+                cloned_font = ET.fromstring(ET.tostring(base_font))
+                bold_node = cloned_font.find(f"{namespace}b")
+                if bold and bold_node is None:
+                    cloned_font.insert(0, ET.Element(f"{namespace}b"))
+                elif not bold and bold_node is not None:
+                    cloned_font.remove(bold_node)
+
+                fonts.append(cloned_font)
+                fonts.attrib["count"] = str(len(fonts))
+                font_id = len(fonts) - 1
+                font_style_cache[cache_key] = font_id
+                return font_id
+
+            def clone_numeric_style(base_style_id, *, bold=False, horizontal="center", vertical="center"):
+                cache_key = (int(base_style_id or 0), bool(bold), horizontal, vertical)
+                if cache_key in xf_style_cache:
+                    return xf_style_cache[cache_key]
+
+                base_style = cell_xfs[cache_key[0]]
+                cloned_style = ET.fromstring(ET.tostring(base_style))
+                cloned_style.attrib["numFmtId"] = "0"
+                cloned_style.attrib.pop("applyNumberFormat", None)
+                alignment = cloned_style.find(f"{namespace}alignment")
+                if alignment is None:
+                    alignment = ET.SubElement(cloned_style, f"{namespace}alignment")
+                alignment.attrib["horizontal"] = str(horizontal)
+                alignment.attrib["vertical"] = str(vertical)
+                cloned_style.attrib["applyAlignment"] = "1"
+                if bold:
+                    next_font_id = clone_font(int(cloned_style.attrib.get("fontId", "0")), bold=True)
+                    cloned_style.attrib["fontId"] = str(next_font_id)
+                    cloned_style.attrib["applyFont"] = "1"
+
+                cell_xfs.append(cloned_style)
+                cell_xfs.attrib["count"] = str(len(cell_xfs))
+                style_id = len(cell_xfs) - 1
+                xf_style_cache[cache_key] = style_id
+                return style_id
+
+            def clone_text_style(base_style_id, *, bold=False, horizontal="center", vertical="center"):
+                cache_key = (f"text:{int(base_style_id or 0)}", bool(bold), horizontal, vertical)
+                if cache_key in xf_style_cache:
+                    return xf_style_cache[cache_key]
+
+                base_style = cell_xfs[int(base_style_id or 0)]
+                cloned_style = ET.fromstring(ET.tostring(base_style))
+                alignment = cloned_style.find(f"{namespace}alignment")
+                if alignment is None:
+                    alignment = ET.SubElement(cloned_style, f"{namespace}alignment")
+                alignment.attrib["horizontal"] = str(horizontal)
+                alignment.attrib["vertical"] = str(vertical)
+                cloned_style.attrib["applyAlignment"] = "1"
+                if bold:
+                    next_font_id = clone_font(int(cloned_style.attrib.get("fontId", "0")), bold=True)
+                    cloned_style.attrib["fontId"] = str(next_font_id)
+                    cloned_style.attrib["applyFont"] = "1"
+
+                cell_xfs.append(cloned_style)
+                cell_xfs.attrib["count"] = str(len(cell_xfs))
+                style_id = len(cell_xfs) - 1
+                xf_style_cache[cache_key] = style_id
+                return style_id
+
+            centered_program_style = clone_text_style(int(program_column_style or 13))
+
+            month_cell_styles = {}
+            for month_index in range(12):
+                column_label = _excel_column_label(month_index + 2)
+                base_style = _ensure_xlsx_cell(first_data_row_template, f"{column_label}9").attrib.get("s") or "14"
+                month_cell_styles[column_label] = clone_numeric_style(int(base_style))
+            total_column_style = clone_numeric_style(
+                int(_ensure_xlsx_cell(first_data_row_template, "N9").attrib.get("s") or 17),
+                bold=True,
+            )
+            overall_month_cell_styles = {}
+            for month_index in range(12):
+                column_label = _excel_column_label(month_index + 2)
+                base_style = _ensure_xlsx_cell(total_row_template, f"{column_label}36").attrib.get("s") or "14"
+                overall_month_cell_styles[column_label] = clone_numeric_style(int(base_style), bold=True)
+            overall_total_style = clone_numeric_style(
+                int(_ensure_xlsx_cell(total_row_template, "N36").attrib.get("s") or 17),
+                bold=True,
+            )
+            overall_program_style = clone_text_style(
+                int(_ensure_xlsx_cell(total_row_template, "A36").attrib.get("s") or 33),
+                bold=True,
+            )
+
+            def to_export_code(value):
+                normalized = normalize_program_name(value)
+                lowered = normalized.lower()
+                if not normalized:
+                    return "N/A"
+                if lowered == "overall total":
+                    return "Overall Total"
+                if lowered == "visitor":
+                    return "VIS"
+                if lowered == "staff":
+                    return "STAFF"
+                if lowered == "unassigned":
+                    return "UNASSIGNED"
+                if is_program_code(normalized):
+                    return normalized.upper()
+                return normalize_program_name(program_code_for(normalized)) or normalized.upper()
+
+            for existing_row in list(sheet_data.findall(f"{namespace}row")):
+                try:
+                    row_number = int(existing_row.attrib.get("r") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if row_number >= 9:
+                    sheet_data.remove(existing_row)
+
+            def set_row_height(sheet_row, label_text):
+                text_length = len(str(label_text or "").strip())
+                approx_lines = max(1, math.ceil(text_length / 22)) if text_length else 1
+                height = min(max(20, approx_lines * 15), 60)
+                sheet_row.attrib["ht"] = str(height)
+                sheet_row.attrib["customHeight"] = "1"
+
+            def set_program_cell(sheet_row, row_number, value, style_id):
+                program_cell = _ensure_xlsx_cell(sheet_row, f"A{row_number}", style_id)
+                if value is None or str(value).strip() == "":
+                    _clear_xlsx_cell_value(program_cell)
+                else:
+                    _set_xlsx_text_cell(program_cell, str(value))
+
+            for row_index, row in enumerate(rows, start=1):
+                row_number = 8 + row_index
+                row_template = first_data_row_template if row_index == 1 else data_row_template
+                sheet_row = _clone_xlsx_row(row_template, row_number)
+                sheet_data.append(sheet_row)
+
+                export_label = to_export_code(row.get("program"))
+                set_program_cell(sheet_row, row_number, export_label, centered_program_style)
+                set_row_height(sheet_row, export_label)
+
+                month_values = list(row.get("months") or [])
+                for month_index in range(12):
+                    column_label = _excel_column_label(month_index + 2)
+                    month_cell = _ensure_xlsx_cell(sheet_row, f"{column_label}{row_number}", month_cell_styles[column_label])
+                    _set_xlsx_number_cell(month_cell, int(month_values[month_index] or 0) if month_index < len(month_values) else 0)
+
+                total_cell = _ensure_xlsx_cell(sheet_row, f"N{row_number}", total_column_style)
+                _set_xlsx_number_cell(total_cell, int(row.get("overall_total") or 0))
+
+            total_row_number = 9 + len(rows)
+            total_row = _clone_xlsx_row(total_row_template, total_row_number)
+            sheet_data.append(total_row)
+            overall_label = to_export_code(overall_row.get("program") or "Overall Total")
+            set_program_cell(total_row, total_row_number, overall_label, overall_program_style)
+            set_row_height(total_row, overall_label)
+
+            overall_months = list(overall_row.get("months") or [])
+            for month_index in range(12):
+                column_label = _excel_column_label(month_index + 2)
+                month_cell = _ensure_xlsx_cell(total_row, f"{column_label}{total_row_number}", overall_month_cell_styles[column_label])
+                _set_xlsx_number_cell(month_cell, int(overall_months[month_index] or 0) if month_index < len(overall_months) else 0)
+
+            total_cell = _ensure_xlsx_cell(total_row, f"N{total_row_number}", overall_total_style)
+            _set_xlsx_number_cell(total_cell, int(overall_row.get("overall_total") or 0))
+
+            footer_start_row = total_row_number + 1
+            for offset, footer_template in enumerate(footer_row_templates):
+                sheet_data.append(_clone_xlsx_row(footer_template, footer_start_row + offset))
+
+            merge_cells = worksheet.find(f"{namespace}mergeCells")
+            if merge_cells is not None:
+                footer_row_offset = footer_start_row - 37
+                for merge_cell in merge_cells.findall(f"{namespace}mergeCell"):
+                    ref = str(merge_cell.attrib.get("ref") or "")
+                    match = re.match(r"^([A-Z]+)(\d+):([A-Z]+)(\d+)$", ref)
+                    if not match:
+                        continue
+                    start_column, start_row, end_column, end_row = match.groups()
+                    start_row_number = int(start_row)
+                    end_row_number = int(end_row)
+                    if start_row_number >= 37 and end_row_number >= 37:
+                        merge_cell.attrib["ref"] = (
+                            f"{start_column}{start_row_number + footer_row_offset}:"
+                            f"{end_column}{end_row_number + footer_row_offset}"
+                        )
+
+            cols = worksheet.find(f"{namespace}cols")
+            if cols is not None:
+                for col in cols.findall(f"{namespace}col"):
+                    try:
+                        min_col = int(col.attrib.get("min") or 0)
+                        max_col = int(col.attrib.get("max") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if min_col >= 2 and max_col <= 13:
+                        col.attrib["width"] = "10.5"
+                        col.attrib["customWidth"] = "1"
+                    elif min_col <= 14 and max_col >= 14:
+                        col.attrib["width"] = "11.5"
+                        col.attrib["customWidth"] = "1"
+
+            dimension = worksheet.find(f"{namespace}dimension")
+            if dimension is not None:
+                dimension.attrib["ref"] = f"A1:N{footer_start_row + len(footer_row_templates) - 1}"
+
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as exported_zip:
+                for info in template_zip.infolist():
+                    if info.filename == "xl/worksheets/sheet1.xml":
+                        exported_zip.writestr(info, ET.tostring(worksheet, encoding="utf-8", xml_declaration=True))
+                    elif info.filename == "xl/styles.xml":
+                        exported_zip.writestr(info, ET.tostring(styles_root, encoding="utf-8", xml_declaration=True))
+                    elif info.filename == "xl/workbook.xml":
+                        exported_zip.writestr(info, ET.tostring(workbook_root, encoding="utf-8", xml_declaration=True))
+                    else:
+                        exported_zip.writestr(info, template_zip.read(info.filename))
+
+        output.seek(0)
+        response = make_response(output.getvalue())
+        filename = f"program_monthly_visits_{payload['year']}.xlsx"
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        response.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return response
+
     def _build_entry_exit_logs_workbook(log_rows, *, selected_date=None, filename_date=None):
         from flask import make_response
 
@@ -3247,25 +3542,14 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def export_program_monthly_visits():
-        from flask import make_response
+        try:
+            payload = _monthly_program_visits_data(request.args.get("year", "").strip())
+            response = _build_program_monthly_visits_workbook(payload)
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 500
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
 
-        payload = _monthly_program_visits_data(request.args.get("year", "").strip())
-        output = io.StringIO()
-        writer = csv.writer(output)
-
-        header = ["Program", *payload["months"], "Overall Total"]
-        writer.writerow(header)
-
-        for row in payload["rows"]:
-            writer.writerow([row["program"], *row["months"], row["overall_total"]])
-
-        overall_row = payload["overall_row"]
-        writer.writerow([overall_row["program"], *overall_row["months"], overall_row["overall_total"]])
-
-        response = make_response(output.getvalue())
-        filename = f"program_monthly_visits_{payload['year']}.csv"
-        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
-        response.headers["Content-type"] = "text/csv"
         log_action("EXPORT_PROGRAM_MONTHLY_VISITS", target=str(payload["year"]))
         return response
 
