@@ -126,7 +126,7 @@ class AppConfig:
 
     # Exit camera stream source (accessible to exit-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    exit_cctv_stream_source: str = "1"
+    exit_cctv_stream_source: str = "2"
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
     cli_top_bar_enabled: bool = False
@@ -160,8 +160,8 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_face_area_min` to reject small, low-detail faces.
     # - Lower it if your camera is farther away and valid faces look smaller.
-    quality_face_area_min: int = 230 * 230
-    quality_face_area_good: int = 280 * 280
+    quality_face_area_min: int = 100 * 100
+    quality_face_area_good: int = 240 * 240
 
     # ------------------------------------------------------------------
     # Quality scoring: detector confidence
@@ -179,7 +179,7 @@ class AppConfig:
     # Tuning:
     # - Raise `quality_sharpness_min` to be stricter against blur.
     # - Lower it if motion blur is common but recognition still works.
-    quality_sharpness_min: float = 30.0
+    quality_sharpness_min: float = 25.0
     quality_sharpness_good: float = 80.0
 
     # ------------------------------------------------------------------
@@ -192,8 +192,8 @@ class AppConfig:
     # - Lower it if your environment is dim and faces are still usable.
     # - Lower `quality_brightness_max` if overexposed faces should fail sooner.
     # - Widen the `good_min` to `good_max` band if lighting is more variable.
-    quality_brightness_min: float = 60.0
-    quality_brightness_good_min: float = 70.0
+    quality_brightness_min: float = 40.0
+    quality_brightness_good_min: float = 50.0
     quality_brightness_good_max: float = 185.0
     quality_brightness_max: float = 215.0
 
@@ -202,7 +202,7 @@ class AppConfig:
     # Tuning:
     # - Raise these to prefer richer contrast and facial detail.
     # - Lower them if your camera feed is naturally low-contrast.
-    quality_dynamic_range_min: float = 75.0
+    quality_dynamic_range_min: float = 55.0
     quality_dynamic_range_good: float = 100.0
 
     # ------------------------------------------------------------------
@@ -219,8 +219,8 @@ class AppConfig:
     # Yaw:
     # - Based on nose offset from the eye midpoint.
     # - Lower the thresholds to prefer more front-facing faces.
-    quality_pose_yaw_good: float = 0.40
-    quality_pose_yaw_max: float = 0.70
+    quality_pose_yaw_good: float = 0.35
+    quality_pose_yaw_max: float = 0.90
 
     # Landmark margin:
     # - Measures how close key landmarks are to the crop edges.
@@ -232,12 +232,12 @@ class AppConfig:
     # These are used to classify the current head pose as front/left/right
     # using landmark yaw measured as nose offset from eye midpoint.
     registration_pose_front_max_yaw_ratio: float = 0.20
-    registration_pose_side_min_yaw_ratio: float = 0.35
+    registration_pose_side_min_yaw_ratio: float = 0.25
 
     # Registration distance gate (face-size proxy).
     # The closest detected face is selected for registration; this threshold
     # ensures that selected face is close enough to camera before capture.
-    registration_min_face_area: int = 230 * 230
+    registration_min_face_area: int = 150 * 150
 
     # ------------------------------------------------------------------
     # Device configuration
