@@ -343,6 +343,54 @@ function buildHeatmapSheetRows(weeklyHeatmap = []) {
   ];
 }
 
+function buildUserTypeSheetRows(userTypeDistribution = []) {
+  return [
+    ["User Type", "Count"],
+    ...(userTypeDistribution ?? []).map((item) => [item.label, item.count]),
+  ];
+}
+
+function buildRecentEntriesSheetRows(recentEntries = []) {
+  return [
+    ["Name", "SR Code", "User Type", "Confidence", "Timestamp", "Status"],
+    ...(recentEntries ?? []).map((item) => [
+      item.name || "Unknown",
+      item.sr_code || "Visitor",
+      item.user_type || "unknown",
+      `${toNonNegativeNumber(item.conf_pct)}%`,
+      item.timestamp || "",
+      item.status || "",
+    ]),
+  ];
+}
+
+function buildActiveAlertsSheetRows(activeAlerts = []) {
+  return [
+    ["Message", "Occupancy", "Capacity", "Percent", "Created At"],
+    ...(activeAlerts ?? []).map((alert) => [
+      alert.message || "Capacity alert",
+      alert.occupancy_count ?? 0,
+      alert.capacity_limit ?? 0,
+      `${Math.round((Number(alert.occupancy_ratio || 0) || 0) * 100)}%`,
+      alert.created_at || "",
+    ]),
+  ];
+}
+
+function buildOccupancyHistorySheetRows(occupancyHistory = []) {
+  return [
+    ["Snapshot Time", "Occupancy", "Capacity", "Entries", "Exits", "Status"],
+    ...(occupancyHistory ?? []).map((snapshot) => [
+      snapshot.snapshot_timestamp || "",
+      snapshot.occupancy_count ?? 0,
+      snapshot.capacity_limit ?? 0,
+      snapshot.daily_entries ?? 0,
+      snapshot.daily_exits ?? 0,
+      snapshot.capacity_warning ? "Warning" : "Normal",
+    ]),
+  ];
+}
+
 function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
   const viewMode = getDashboardViewMode(filterKey);
   const workbook = XLSX.utils.book_new();
@@ -354,6 +402,9 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
     data?.filter_start_date,
     data?.filter_end_date
   );
+  const liveOccupancy = data?.live_occupancy ?? null;
+  const activeAlerts = data?.active_alerts ?? [];
+  const occupancyHistory = data?.occupancy_history ?? [];
 
   const summaryRows = [
     ["Dashboard Export"],
@@ -367,8 +418,28 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
     ["Registered Students", data?.total_students ?? 0],
     ["Recognition Logs", data?.total_logs ?? 0],
     ["Unique Visitors", data?.unique_visitors ?? 0],
+    ["Entries", data?.total_entries ?? 0],
+    ["Exits", data?.total_exits ?? 0],
+    ["Unrecognized Faces", data?.unrecognized_count ?? 0],
+    ["Low-Confidence Events", data?.low_confidence_count ?? 0],
     ["Average Confidence", `${data?.avg_confidence ?? 0}%`],
+    ["Active Alerts", activeAlerts.length],
   ];
+
+  if (liveOccupancy) {
+    summaryRows.push(
+      ["Current Occupancy", liveOccupancy.occupancy_count ?? 0],
+      ["Capacity Limit", liveOccupancy.capacity_limit ?? 0],
+      [
+        "Occupancy Status",
+        liveOccupancy.is_full
+          ? "Full Capacity"
+          : liveOccupancy.capacity_warning
+            ? "Warning Threshold"
+            : "Normal Capacity",
+      ]
+    );
+  }
 
   XLSX.utils.book_append_sheet(
     workbook,
@@ -428,6 +499,24 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
     sanitizeWorksheetName("Top Visitors")
   );
 
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, buildUserTypeSheetRows(data?.user_type_distribution ?? []), {
+      minWidth: 16,
+      freezeTopRow: true,
+    }),
+    sanitizeWorksheetName("User Types")
+  );
+
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, buildRecentEntriesSheetRows(data?.recent_entries ?? []), {
+      minWidth: 16,
+      freezeTopRow: true,
+    }),
+    sanitizeWorksheetName("Recent Entries")
+  );
+
   if (viewMode !== "today") {
     XLSX.utils.book_append_sheet(
       workbook,
@@ -460,6 +549,28 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
       workbook,
       buildWorksheet(XLSX, monthlyRows, { minWidth: 14, freezeTopRow: true }),
       sanitizeWorksheetName("Monthly Visitors")
+    );
+  }
+
+  if (activeAlerts.length) {
+    XLSX.utils.book_append_sheet(
+      workbook,
+      buildWorksheet(XLSX, buildActiveAlertsSheetRows(activeAlerts), {
+        minWidth: 16,
+        freezeTopRow: true,
+      }),
+      sanitizeWorksheetName("Active Alerts")
+    );
+  }
+
+  if (occupancyHistory.length) {
+    XLSX.utils.book_append_sheet(
+      workbook,
+      buildWorksheet(XLSX, buildOccupancyHistorySheetRows(occupancyHistory), {
+        minWidth: 16,
+        freezeTopRow: true,
+      }),
+      sanitizeWorksheetName("Occupancy Timeline")
     );
   }
 
@@ -1539,7 +1650,15 @@ export default function Dashboard() {
     if (!data) return;
     setExporting(true);
     try {
-      await downloadDashboardExport(data, selectedFilter);
+      await downloadDashboardExport(
+        {
+          ...data,
+          live_occupancy: occupancyData,
+          active_alerts: activeAlerts,
+          occupancy_history: occupancyHistory,
+        },
+        selectedFilter
+      );
       await showSuccess(
         "Export Complete",
         `Dashboard data for ${filterLabel} was exported to Excel successfully.`
