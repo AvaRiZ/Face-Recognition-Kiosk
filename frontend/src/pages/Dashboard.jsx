@@ -1,7 +1,9 @@
 import React from "react";
+import { Link } from "react-router-dom";
 import { getErrorMessage, showAlert, showError, showSuccess } from "../alerts.js";
 import { fetchJson } from "../api.js";
 import { socket } from "../socket.js";
+import "./Dashboard.css";
 
 const PEAK_HOUR_START = 7;
 const PEAK_HOUR_END = 19;
@@ -149,10 +151,73 @@ function formatSnapshotTimeWithDate(timestamp) {
   return `${time} ${date}`;
 }
 
+function formatRelativeTime(timestamp) {
+  const parsed = parseApiTimestamp(timestamp);
+  if (!parsed) return "just now";
+
+  const diffMs = Date.now() - parsed.getTime();
+  if (diffMs <= 0) return "just now";
+
+  const diffMinutes = Math.round(diffMs / 60000);
+  if (diffMinutes < 1) return "just now";
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
+function getPersonInitials(name) {
+  const cleaned = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (!cleaned.length) {
+    return "?";
+  }
+
+  return cleaned.map((part) => part[0]?.toUpperCase() || "").join("");
+}
+
+function getConfidenceTone(confidencePercent) {
+  const value = toNonNegativeNumber(confidencePercent);
+  if (value >= 90) return "success";
+  if (value >= 75) return "info";
+  if (value >= 60) return "warning";
+  return "danger";
+}
+
+function buildUserTypeSummary(rows) {
+  const totals = {
+    enrolled: 0,
+    visitor: 0,
+    unrecognized: 0,
+    staff: 0,
+  };
+
+  for (const row of rows || []) {
+    const key = String(row?.user_type || "").trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(totals, key)) {
+      totals[key] += 1;
+    }
+  }
+
+  return [
+    { label: "Enrolled", count: totals.enrolled, accent: "green" },
+    { label: "Visitor", count: totals.visitor, accent: "blue" },
+    { label: "Unrecognized", count: totals.unrecognized, accent: "amber" },
+    { label: "Staff", count: totals.staff, accent: "rose" },
+  ].filter((item) => item.count > 0);
+}
+
 // Analyze occupancy trend from snapshot history (oldest to newest order)
 function calculateOccupancyTrend(snapshots) {
   if (!Array.isArray(snapshots) || snapshots.length < 2) {
-    return { trend: "unknown", direction: "→", minutesOld: null, minCount: null, maxCount: null };
+    return { trend: "unknown", direction: "->", minutesOld: null, minCount: null, maxCount: null };
   }
 
   // Sort by timestamp ascending (oldest first) for analysis
@@ -169,14 +234,14 @@ function calculateOccupancyTrend(snapshots) {
   const maxCount = Math.max(...recent.map((s) => s.occupancy_count));
 
   let trend = "steady";
-  let direction = "→";
+  let direction = "->";
   const diff = newest - oldest;
   if (diff > 3) {
     trend = "rising";
-    direction = "↑";
+    direction = "up";
   } else if (diff < -3) {
     trend = "falling";
-    direction = "↓";
+    direction = "down";
   }
 
   const oldestTime = parseApiTimestamp(recent[0].snapshot_timestamp)?.getTime() ?? new Date().getTime();
@@ -189,14 +254,14 @@ function calculateOccupancyTrend(snapshots) {
 // Generate plain-language status message for staff
 function getOccupancyStatusMessage(occupancyCount, capacityLimit, isFull, capacityWarning, trendData) {
   if (isFull) {
-    return "🔴 At capacity. No new entries permitted.";
+    return "At capacity. No new entries permitted.";
   }
 
   const ratio = capacityLimit > 0 ? occupancyCount / capacityLimit : 0;
   const remainingSlots = capacityLimit - occupancyCount;
 
   if (capacityWarning) {
-    const message = `⚠️ Near capacity: ${remainingSlots} slot${remainingSlots === 1 ? "" : "s"} available`;
+    const message = `Near capacity: ${remainingSlots} slot${remainingSlots === 1 ? "" : "s"} available`;
     if (trendData.trend === "rising") {
       return `${message} and still rising.`;
     }
@@ -207,18 +272,18 @@ function getOccupancyStatusMessage(occupancyCount, capacityLimit, isFull, capaci
   }
 
   if (ratio > 0.6 && trendData.trend === "rising") {
-    return `📈 Rising trend: Consider preparing for capacity limits soon.`;
+    return `Rising trend: Consider preparing for capacity limits soon.`;
   }
 
   if (ratio < 0.3 && trendData.trend === "falling") {
-    return `📉 Occupancy is declining, currently moderate.`;
+    return `Occupancy is declining, currently moderate.`;
   }
 
   if (trendData.trend === "steady") {
-    return `✓ Stable occupancy. No action needed.`;
+    return `Stable occupancy. No action needed.`;
   }
 
-  return `✓ Occupancy is normal.`;
+  return `Occupancy is normal.`;
 }
 
 function sanitizeWorksheetName(name) {
@@ -454,6 +519,212 @@ function StatCard({ title, value, subtext, iconClass, cardClass }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DashboardMetricCard({ title, value, meta, accent = "blue", badge }) {
+  return (
+    <article className={`dashboard-metric-card dashboard-accent-${accent}`}>
+      <p className="dashboard-metric-title">{title}</p>
+      <div className="dashboard-metric-value">{value}</div>
+      {badge ? <span className="dashboard-inline-badge">{badge}</span> : null}
+      <p className="dashboard-metric-meta">{meta}</p>
+    </article>
+  );
+}
+
+function DashboardLineChart({
+  labels,
+  values,
+  height = 240,
+  valueLabel = "items",
+  lineColor = "#0072BB",
+  fillColor = "rgba(0, 114, 187, 0.24)",
+  threshold = null,
+  thresholdLabel = "",
+}) {
+  const canvasRef = React.useRef(null);
+  const chartRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!canvasRef.current || !window.Chart || !Array.isArray(labels) || !labels.length) {
+      return undefined;
+    }
+
+    if (chartRef.current) {
+      chartRef.current.destroy();
+    }
+
+    const safeValues = Array.isArray(values) ? values.map(toNonNegativeNumber) : [];
+    const datasets = [
+      {
+        label: valueLabel,
+        data: safeValues,
+        borderColor: lineColor,
+        backgroundColor: fillColor,
+        borderWidth: 3,
+        fill: true,
+        pointBackgroundColor: lineColor,
+        pointBorderColor: "#ffffff",
+        pointBorderWidth: 2,
+        pointRadius: safeValues.map((_, index) => (index === safeValues.length - 1 ? 5 : 0)),
+        pointHoverRadius: safeValues.map((_, index) => (index === safeValues.length - 1 ? 6 : 3)),
+        tension: 0.35,
+      },
+    ];
+
+    if (Number.isFinite(threshold)) {
+      datasets.push({
+        label: thresholdLabel || "Threshold",
+        data: safeValues.map(() => threshold),
+        borderColor: "rgba(247, 160, 26, 0.9)",
+        borderDash: [6, 6],
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 0,
+        pointHoverRadius: 0,
+      });
+    }
+
+    chartRef.current = new window.Chart(canvasRef.current, {
+      type: "line",
+      data: {
+        labels,
+        datasets,
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          intersect: false,
+          mode: "index",
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                if (ctx.datasetIndex === 1 && Number.isFinite(threshold)) {
+                  return ` ${thresholdLabel || "Threshold"}: ${ctx.parsed.y}`;
+                }
+                return ` ${ctx.parsed.y} ${valueLabel}`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            border: { display: false },
+            ticks: {
+              color: "#4f5d73",
+              font: { size: 11, weight: "600" },
+              maxTicksLimit: 7,
+            },
+          },
+          y: {
+            beginAtZero: true,
+            grid: { color: "rgba(79, 93, 115, 0.18)" },
+            border: { display: false },
+            ticks: {
+              color: "#4f5d73",
+              font: { size: 11, weight: "600" },
+              precision: 0,
+            },
+          },
+        },
+      },
+    });
+
+    return () => chartRef.current?.destroy();
+  }, [fillColor, labels, lineColor, threshold, thresholdLabel, valueLabel, values]);
+
+  if (!Array.isArray(labels) || !labels.length) {
+    return <div className="dashboard-empty-state">No data available yet.</div>;
+  }
+
+  return (
+    <div className="dashboard-line-chart" style={{ height }}>
+      <canvas ref={canvasRef}></canvas>
+    </div>
+  );
+}
+
+function DashboardProgressList({
+  items,
+  labelKey = "label",
+  valueKey = "count",
+  accent = "blue",
+  emptyText = "No data available yet.",
+}) {
+  if (!Array.isArray(items) || !items.length) {
+    return <div className="dashboard-empty-state">{emptyText}</div>;
+  }
+
+  const maxValue = Math.max(...items.map((item) => toNonNegativeNumber(item?.[valueKey])), 1);
+
+  return (
+    <div className="dashboard-progress-list">
+      {items.map((item, index) => {
+        const value = toNonNegativeNumber(item?.[valueKey]);
+        const width = Math.max(6, Math.round((value / maxValue) * 100));
+        const label = item?.[labelKey] ?? `Item ${index + 1}`;
+        const itemAccent = item?.accent || accent;
+
+        return (
+          <div key={`${label}-${index}`} className="dashboard-progress-row">
+            <div className="dashboard-progress-copy">
+              <span className="dashboard-progress-label">{label}</span>
+              <span className="dashboard-progress-value">{value}</span>
+            </div>
+            <div className="dashboard-progress-track">
+              <div
+                className={`dashboard-progress-fill dashboard-accent-${itemAccent}`}
+                style={{ width: `${width}%` }}
+              ></div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RecentEntriesList({ entries }) {
+  if (!Array.isArray(entries) || !entries.length) {
+    return <div className="dashboard-empty-state">No recent entry events yet.</div>;
+  }
+
+  return (
+    <div className="dashboard-recent-list">
+      {entries.map((entry) => {
+        const name =
+          entry?.user_type === "unrecognized" || !String(entry?.name || "").trim()
+            ? "Unknown"
+            : entry.name;
+        const confidenceTone = getConfidenceTone(entry?.conf_pct);
+
+        return (
+          <div key={`${entry.id ?? entry.event_id ?? entry.timestamp}-${name}`} className="dashboard-recent-item">
+            <div className={`dashboard-avatar dashboard-accent-${confidenceTone}`}>
+              {getPersonInitials(name)}
+            </div>
+            <div className="dashboard-recent-copy">
+              <div className="dashboard-recent-headline">
+                <span className="dashboard-recent-name">{name}</span>
+                <span className={`dashboard-confidence dashboard-tone-${confidenceTone}`}>
+                  {toNonNegativeNumber(entry?.conf_pct)}%
+                </span>
+              </div>
+              <div className="dashboard-recent-meta">
+                <span>{entry?.sr_code || "Visitor"}</span>
+                <span>{formatRelativeTime(entry?.timestamp)}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1042,7 +1313,7 @@ function WeekdayPatternChart({ data }) {
   );
 }
 
-// ── Main Dashboard Page ──────────────────────────────────────
+// Main Dashboard Page
 export default function Dashboard() {
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -1224,12 +1495,18 @@ export default function Dashboard() {
   const uniqueVisitors = data?.unique_visitors ?? 0;
   const avgConfidence = data?.avg_confidence ?? 0;
   const totalStudents = data?.total_students ?? 0;
+  const totalEntries = data?.total_entries ?? 0;
+  const totalExits = data?.total_exits ?? 0;
+  const unrecognizedCount = data?.unrecognized_count ?? 0;
+  const lowConfidenceCount = data?.low_confidence_count ?? 0;
   const dailyVisitors = data?.daily_visitors ?? [];
   const programDistrib = data?.program_distribution ?? [];
   const peakHoursRaw = data?.peak_hours ?? [];
   const peakHours = normalizePeakHours(peakHoursRaw);
   const hourlyToday = normalizeHourWindow(peakHoursRaw, FULL_DAY_START, FULL_DAY_END);
   const topVisitors = data?.top_visitors ?? [];
+  const recentEntryEvents = data?.recent_entries ?? [];
+  const userTypeSummary = data?.user_type_distribution ?? [];
   const weeklyHeatmap = data?.weekly_heatmap ?? [];
   const monthlyVisitors = data?.monthly_visitors ?? [];
   const viewMode = getDashboardViewMode(selectedFilter);
@@ -1254,6 +1531,9 @@ export default function Dashboard() {
   const peakHourIdx = peakHourMax > 0 ? peakHours.indexOf(peakHourMax) : -1;
   const peakHourLabel =
     peakHourIdx >= 0 ? formatDashboardHourLabel(peakHourIdx) : "N/A";
+  const fullLogPath = isTodayView
+    ? `/entry-exit-logs?direction=entry&tab=today&date=${data?.filter_end_date ?? ""}`
+    : "/entry-exit-logs?direction=entry";
 
   async function handleExportClick() {
     if (!data) return;
@@ -1343,533 +1623,465 @@ export default function Dashboard() {
     : capacityWarning
       ? "bg-warning text-dark"
       : "bg-success";
+  const heroTrafficLabels = isTodayView
+    ? buildHourLabels(PEAK_HOUR_START, PEAK_HOUR_END).map((label) =>
+        label.replace(" AM", "am").replace(" PM", "pm")
+      )
+    : dailyVisitors.map((item) => item.date);
+  const heroTrafficValues = isTodayView ? peakHours : dailyVisitors.map((item) => item.count);
+  const snapshotTrendPoints = [...occupancyHistory]
+    .sort((a, b) => {
+      const timeA = parseApiTimestamp(a.snapshot_timestamp)?.getTime() ?? 0;
+      const timeB = parseApiTimestamp(b.snapshot_timestamp)?.getTime() ?? 0;
+      return timeA - timeB;
+    })
+    .slice(-8);
+  const trendLabels = isTodayView
+    ? snapshotTrendPoints.map((item) => formatSnapshotTime(item.snapshot_timestamp))
+    : isShortRangeView
+      ? dailyVisitors.map((item) => item.date)
+      : monthlyVisitors.map((item) => item.month);
+  const trendValues = isTodayView
+    ? snapshotTrendPoints.map((item) => item.occupancy_count)
+    : isShortRangeView
+      ? dailyVisitors.map((item) => item.count)
+      : monthlyVisitors.map((item) => item.count);
+  const occupancyTrend = calculateOccupancyTrend(occupancyHistory);
+  const occupancyStatusMessage =
+    occupancyHistory.length > 0
+      ? getOccupancyStatusMessage(
+          occupancyCount,
+          capacityLimit,
+          isFull,
+          capacityWarning,
+          occupancyTrend
+        )
+      : "Waiting for more snapshots to establish the live occupancy trend.";
+  const capacityTone = isFull ? "rose" : capacityWarning ? "amber" : "green";
+  const netFlow = dailyEntries - dailyExits;
+  const rangeNetFlow = totalEntries - totalExits;
+  const rangeLabelLower = filterLabel.toLowerCase();
+  const alertSummary = activeAlerts.length
+    ? `${activeAlerts.length} active capacity alert${activeAlerts.length === 1 ? "" : "s"}`
+    : "No active capacity alerts";
+  const attentionItems = [
+    {
+      tone: "amber",
+      label: `${lowConfidenceCount} low-confidence`,
+      detail:
+        lowConfidenceCount === 1
+          ? `event should be reviewed in ${rangeLabelLower}`
+          : `events should be reviewed in ${rangeLabelLower}`,
+    },
+    {
+      tone: "rose",
+      label: `${unrecognizedCount} unrecognized`,
+      detail:
+        unrecognizedCount === 1
+          ? `face detected in ${rangeLabelLower}`
+          : `faces detected in ${rangeLabelLower}`,
+    },
+    {
+      tone: activeAlerts.length ? "blue" : "green",
+      label: activeAlerts.length ? `${activeAlerts.length} active alerts` : "Flow is stable",
+      detail: activeAlerts.length ? "capacity attention is still open" : "no unresolved capacity warning",
+    },
+  ];
 
   return (
-    <section className="section dashboard">
-      <div className="pagetitle d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
-        <div>
-          <h1 className="mb-1">Dashboard</h1>
-          <div className="text-muted small">
-            Showing {filterLabel}
-            {filterDateRange ? ` (${filterDateRange})` : ""}
-          </div>
-        </div>
-        <div className="d-flex flex-column flex-sm-row gap-2 align-items-stretch align-items-sm-center">
-          <select
-            className="form-select form-select-sm"
-            value={selectedFilter}
-            onChange={(event) => setSelectedFilter(event.target.value)}
-            aria-label="Dashboard filter"
-          >
-            {DASHBOARD_FILTER_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={handleExportClick}
-            disabled={!data || exporting}
-            style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
-          >
-            <i className="bi bi-download" style={{ fontSize: '0.9rem' }}></i>
-            {exporting ? "Exporting..." : "Export"}
-          </button>
-        </div>
-      </div>
-
-      {/* Stat Cards */}
-      <div className="row g-3">
-        <StatCard
-          title="Registered Students"
-          value={totalStudents}
-          subtext="registered in system"
-          iconClass="bi bi-people"
-          cardClass="customers-card"
-        />
-        <StatCard
-          title="Recognition Logs"
-          value={totalLogs}
-          subtext={filterLabel.toLowerCase()}
-          iconClass="bi bi-journal-text"
-          cardClass="sales-card"
-        />
-        <StatCard
-          title="Unique Visitors"
-          value={uniqueVisitors}
-          subtext={filterLabel.toLowerCase()}
-          iconClass="bi bi-calendar-check"
-          cardClass="revenue-card"
-        />
-        <StatCard
-          title="Avg. Confidence"
-          value={`${avgConfidence}%`}
-          subtext={`within ${filterLabel.toLowerCase()}`}
-          iconClass="bi bi-speedometer2"
-          cardClass="customers-card"
-        />
-      </div>
-
-      {occupancyPanelError ? (
-        <div className="alert alert-danger mt-3 mb-3">
-          <i className="bi bi-exclamation-triangle me-2"></i>
-          {occupancyPanelError}
-        </div>
-      ) : null}
-
-      <div className="row g-3 mb-3">
-        <div className="col-xl-8">
-          <div className="card h-100">
-            <div className="card-body">
-              {/* Summary Section */}
-              <div className="mb-3">
-                <h5 className="card-title mb-3">Live Occupancy Monitor</h5>
-
-                <div className="d-flex justify-content-between align-items-center">
-                  
-                  {/* LEFT: Occupancy count + status */}
-                  <div className="d-flex align-items-baseline gap-2">
-                    <span className="display-6 fw-bold mb-0">{occupancyCount}</span>
-                    <span className="text-muted fs-6">/ {capacityLimit}</span>
-                    <span className={`badge ${occupancyStatusClass}`}>
-                      {occupancyStatusLabel}
-                    </span>
-                  </div>
-
-                  {/* RIGHT: Percentage */}
-                  <div className="d-flex align-items-baseline gap-2">
-                    <span className="display-5 fw-bold text-primary mb-0">
-                      {occupancyPercent}%
-                    </span>
-                    <span className="text-muted small">capacity</span>
-                  </div>
-
-                </div>
-              </div>
-
-              {/* Progress Bar */}
-              <div className="progress mb-3" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={occupancyPercent}>
-                <div
-                  className={`progress-bar ${isFull ? "bg-danger" : capacityWarning ? "bg-warning" : "bg-success"}`}
-                  style={{ width: `${occupancyPercent}%` }}
-                />
-              </div>
-
-              {/* Trend Analysis & Status Guidance */}
-              {occupancyHistory.length > 0 ? (() => {
-                const trendData = calculateOccupancyTrend(occupancyHistory);
-                const statusMsg = getOccupancyStatusMessage(occupancyCount, capacityLimit, isFull, capacityWarning, trendData);
-                return (
-                  <>
-                    <div className="alert alert-info mb-3 py-2">
-                      <i className="bi bi-info-circle me-2"></i>
-                      <strong>Trend:</strong> {trendData.direction} {trendData.trend}{trendData.minutesOld ? ` (last ${trendData.minutesOld} min)` : ""}
-                    </div>
-                    <div className="alert alert-light mb-3 py-2">
-                      <i className="bi bi-chat-left-text me-2"></i>
-                      {statusMsg}
-                    </div>
-                  </>
-                );
-              })() : null}
-
-              <div className="d-flex justify-content-between align-items-center mb-2">
-                <div>
-                  <strong className="d-block">Activity Today</strong>
-                  <div className="text-muted small">
-                    Entries: <strong>{dailyEntries}</strong> · Exits: <strong>{dailyExits}</strong>
-                  </div>
-                </div>
-              </div>
-
-              {/* Snapshot Detail (Collapsible) */}
-              <div className="mt-3 pt-3 border-top">
-                <button
-                  type="button"
-                  className="btn btn-sm btn-link text-decoration-none"
-                  onClick={() => setShowSnapshotDetail(!showSnapshotDetail)}
-                  aria-expanded={showSnapshotDetail}
-                >
-                  <i className={`bi bi-chevron-${showSnapshotDetail ? "up" : "down"} me-1`}></i>
-                  {showSnapshotDetail ? "Hide" : "Show"} Snapshot Timeline
-                </button>
-                {showSnapshotDetail && occupancyHistory.length ? (
-                  <div className="table-responsive mt-2">
-                    <table className="table table-sm align-middle mb-0">
-                      <thead>
-                        <tr>
-                          <th>Time</th>
-                          <th>Occupancy</th>
-                          <th>Entries</th>
-                          <th>Exits</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {occupancyHistory.slice(-12).map((snapshot) => (
-                          <tr key={`${snapshot.snapshot_timestamp}-${snapshot.occupancy_count}`}>
-                            <td className="small">{formatSnapshotTimeWithDate(snapshot.snapshot_timestamp)}</td>
-                            <td>
-                              <strong>{snapshot.occupancy_count}</strong>
-                              <span className="text-muted">/{snapshot.capacity_limit}</span>
-                            </td>
-                            <td>{snapshot.daily_entries}</td>
-                            <td>{snapshot.daily_exits}</td>
-                            <td>
-                              {snapshot.capacity_warning ? (
-                                <span className="badge bg-warning text-dark">Warning</span>
-                              ) : (
-                                <span className="badge bg-success">Normal</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : showSnapshotDetail && !occupancyHistory.length ? (
-                  <div className="text-muted small mt-2">No snapshots available yet for today.</div>
-                ) : null}
-              </div>
+    <section className="section dashboard dashboard-redesign">
+      <div className="dashboard-shell">
+        <div className="pagetitle dashboard-page-header">
+          <div>
+            <p className="dashboard-kicker">Real-time monitoring</p>
+            <h1 className="mb-1">Dashboard</h1>
+            <div className="text-muted small">
+              Showing {filterLabel}
+              {filterDateRange ? ` (${filterDateRange})` : ""}
             </div>
           </div>
+          <div className="dashboard-header-actions">
+            <select
+              className="form-select form-select-sm"
+              value={selectedFilter}
+              onChange={(event) => setSelectedFilter(event.target.value)}
+              aria-label="Dashboard filter"
+            >
+              {DASHBOARD_FILTER_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={handleExportClick}
+              disabled={!data || exporting}
+            >
+              <i className="bi bi-download me-1"></i>
+              {exporting ? "Exporting..." : "Export"}
+            </button>
+          </div>
         </div>
 
-        
-        <div className="col-xl-4">
-        <div className="row g-3">
-          
-          {/* Capacity Alerts Card */}
-          <div className="col-12">
-            <div className="card h-100">
-              <div className="card-body">
-                <div className="d-flex justify-content-between align-items-center mb-2">
-                  <h5 className="card-title mb-0">Capacity Alerts</h5>
-                  <span className="badge bg-secondary">{activeAlerts.length}</span>
-                </div>
+        <div className="dashboard-overview-grid">
+          <DashboardMetricCard
+            title="Current occupancy"
+            value={occupancyCount}
+            meta={`Live count out of ${capacityLimit || 0} capacity`}
+            accent="amber"
+            badge={`${occupancyPercent}%`}
+          />
+          <DashboardMetricCard
+            title={isTodayView ? "Entries today" : "Entries in range"}
+            value={totalEntries}
+            meta={
+              rangeNetFlow >= 0
+                ? `${rangeNetFlow} more entries than exits in ${rangeLabelLower}`
+                : `${Math.abs(rangeNetFlow)} fewer than exits in ${rangeLabelLower}`
+            }
+            accent="blue"
+          />
+          <DashboardMetricCard
+            title={isTodayView ? "Exits today" : "Exits in range"}
+            value={totalExits}
+            meta={
+              totalEntries > 0
+                ? `${Math.round((totalExits / Math.max(totalEntries, 1)) * 100)}% of entry volume`
+                : `No exits recorded in ${rangeLabelLower}`
+            }
+            accent="green"
+          />
+          <DashboardMetricCard
+            title="Unrecognized faces"
+            value={unrecognizedCount}
+            meta={
+              lowConfidenceCount > 0
+                ? `${lowConfidenceCount} low-confidence event${lowConfidenceCount === 1 ? "" : "s"}`
+                : `No low-confidence events in ${rangeLabelLower}`
+            }
+            accent="rose"
+          />
+        </div>
 
-                {activeAlerts.length ? (
-                  <div className="d-flex flex-column gap-2">
-                    {activeAlerts.slice(0, 5).map((alert) => (
-                      <div key={alert.id} className="border rounded p-2">
-                        <div className="d-flex justify-content-between align-items-start gap-2">
-                          <div>
-                            <div className="fw-semibold small">
-                              {alert.message || "Capacity alert"}
-                            </div>
-                            <div className="text-muted small">
-                              {alert.occupancy_count}/{alert.capacity_limit} ·{" "}
-                              {Math.round((alert.occupancy_ratio || 0) * 100)}%
-                            </div>
-                            <div className="text-muted small">
-                              {formatSnapshotTime(alert.created_at)} ·{" "}
-                              {String(alert.level || "").toUpperCase()}
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-outline-secondary"
-                            onClick={() => handleDismissAlert(alert.id)}
-                            disabled={dismissInFlightId === alert.id}
-                          >
-                            {dismissInFlightId === alert.id ? "..." : "Acknowledge"}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-muted small">No active capacity alerts.</div>
-                )}
-              </div>
-            </div>
+        {occupancyPanelError ? (
+          <div className="alert alert-danger mt-3 mb-0">
+            <i className="bi bi-exclamation-triangle me-2"></i>
+            {occupancyPanelError}
           </div>
+        ) : null}
 
-          {/* Manual Override Card */}
-          <div className="col-12">
-            <div className="card h-100">
-              <div className="card-body">
-                <h5 className="card-title mb-2">Manual Occupancy Override</h5>
-                <p className="text-muted small mb-3">
-                  Apply a signed adjustment to reconcile occupancy drift.
+        <div className="dashboard-feature-grid">
+          <article className="dashboard-panel dashboard-panel-hero">
+            <div className="dashboard-panel-heading">
+              <div>
+                <p className="dashboard-panel-eyebrow">Occupancy & traffic</p>
+                <h2 className="dashboard-panel-title">Live library floor</h2>
+              </div>
+              <span className={`dashboard-status-pill dashboard-accent-${capacityTone}`}>
+                {occupancyStatusLabel}
+              </span>
+            </div>
+
+            <div className="dashboard-occupancy-summary">
+              <div>
+                <div className="dashboard-occupancy-value-row">
+                  <span className="dashboard-occupancy-value">{occupancyCount}</span>
+                  <span className="dashboard-occupancy-capacity">/ {capacityLimit} capacity</span>
+                </div>
+                <p className="dashboard-occupancy-caption">
+                  {occupancyHistory.length > 1
+                    ? `${occupancyTrend.direction} ${occupancyTrend.trend}${
+                        occupancyTrend.minutesOld ? ` in the last ${occupancyTrend.minutesOld} min` : ""
+                      }`
+                    : "Trend will appear after more occupancy snapshots are captured."}
                 </p>
-
-                <form onSubmit={handleManualOverrideSubmit}>
-                  <div className="mb-2">
-                    <label className="form-label small mb-1">
-                      Adjustment
-                    </label>
-                    <input
-                      type="number"
-                      className="form-control form-control-sm"
-                      placeholder="e.g. +2 or -1"
-                      value={overrideAdjustment}
-                      onChange={(e) => setOverrideAdjustment(e.target.value)}
-                      disabled={overrideSubmitting}
-                    />
-                  </div>
-
-                  <div className="mb-2">
-                    <label className="form-label small mb-1">
-                      Reason
-                    </label>
-                    <textarea
-                      className="form-control form-control-sm"
-                      rows={2}
-                      placeholder="Reason for this correction"
-                      value={overrideReason}
-                      onChange={(e) => setOverrideReason(e.target.value)}
-                      disabled={overrideSubmitting}
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="btn btn-sm btn-primary"
-                    disabled={overrideSubmitting}
-                  >
-                    {overrideSubmitting ? "Applying..." : "Apply Override"}
-                  </button>
-                </form>
+              </div>
+              <div className="dashboard-occupancy-aside">
+                <div className="dashboard-occupancy-percent">{occupancyPercent}%</div>
+                <p className="dashboard-occupancy-caption">{occupancyStatusMessage}</p>
               </div>
             </div>
-          </div>
 
-        </div>
-      </div>
-      </div>
+            <div
+              className="dashboard-capacity-meter"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={occupancyPercent}
+            >
+              <div
+                className={`dashboard-capacity-fill dashboard-accent-${capacityTone}`}
+                style={{ width: `${occupancyPercent}%` }}
+              ></div>
+            </div>
+            <div className="dashboard-capacity-meta">
+              <span>{dailyEntries} entries today</span>
+              <span>{dailyExits} exits today</span>
+              <span>{peakHourMax > 0 ? `Peak flow around ${peakHourLabel}` : "Waiting for more traffic data"}</span>
+            </div>
 
-      {/* Daily Visitors + Program Distribution */}
-      <div className="row g-3 mb-3">
-        <div className="col-lg-8">
-          <div className="card h-100">
-            <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <h5 className="card-title mb-0">
-                  {isTodayView ? "Hourly Visitors Today" : "Daily Visitors"}
-                </h5>
-                <span className="badge bg-primary-subtle text-primary">
-                  <i className="bi bi-graph-up me-1"></i>
-                  {filterLabel}
-                </span>
+            <div className="dashboard-subsection">
+              <div className="dashboard-subsection-heading">
+                <h3>{isTodayView ? "Entries per hour today" : "Traffic across the selected range"}</h3>
+                <span>{filterLabel}</span>
               </div>
-              <div className="text-muted small mb-2">
-                {isTodayView
-                  ? "A one-day filter is shown by hour so the activity pattern is easier to read."
-                  : filterDateRange}
-              </div>
-              {isTodayView ? (
-                <PeakHoursChart
-                  data={hourlyToday}
-                  startHour={FULL_DAY_START}
-                  endHour={FULL_DAY_END}
-                  height={360}
-                />
-              ) : (
-                <DailyVisitorsChart data={dailyVisitors} />
-              )}
+              <DashboardLineChart
+                labels={heroTrafficLabels}
+                values={heroTrafficValues}
+                height={260}
+                valueLabel={isTodayView ? "entries" : "visits"}
+                lineColor="#0072BB"
+                fillColor="rgba(0, 114, 187, 0.22)"
+              />
             </div>
-          </div>
-        </div>
-        <div className="col-lg-4">
-          <div className="card h-100">
-            <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <h5 className="card-title mb-0">Program Distribution</h5>
-                <span className="text-muted small">Unique visitors</span>
-              </div>
-              <ProgramDistributionChart data={programDistrib} />
-            </div>
-          </div>
-        </div>
-      </div>
+          </article>
 
-      {/* Weekly Heatmap + Monthly Comparison */}
-      <div className="row g-3 mb-3">
-        <div className="col-lg-8">
-          <div className="card h-100">
-            <div className="card-body">
-              {isTodayView ? (
-                <>
-                  <div className="d-flex justify-content-between align-items-center mb-3">
-                    <h5 className="card-title mb-0">Top Frequent Visitors</h5>
-                    <span className="badge bg-danger-subtle text-danger">
-                      Top {Math.min(topVisitors.length, 10)} in {filterLabel}
-                    </span>
-                  </div>
-                  <TopVisitorsTable data={topVisitors} />
-                </>
-              ) : (
-                <>
-                  <div className="d-flex justify-content-between align-items-center mb-3">
-                    <h5 className="card-title mb-0">Weekly Visit Heatmap</h5>
-                    <span className="text-muted small">
-                      <i className="bi bi-calendar3 me-1"></i>
-                      {filterLabel}
-                    </span>
-                  </div>
-                  <WeeklyHeatmap data={weeklyHeatmap} />
-                </>
-              )}
+          <aside className="dashboard-panel">
+            <div className="dashboard-panel-heading">
+              <div>
+                <p className="dashboard-panel-eyebrow">Recognition feed</p>
+                <h2 className="dashboard-panel-title">
+                  {isTodayView ? "Recent entries" : "Latest entries in range"}
+                </h2>
+              </div>
+              <span className="dashboard-panel-meta">
+                {totalEntries} entry event{totalEntries === 1 ? "" : "s"} in {rangeLabelLower}
+              </span>
             </div>
-          </div>
-        </div>
-        <div className="col-lg-4">
-          <div className="card h-100">
-            <div className="card-body">
-              {isTodayView ? (
-                <>
-                  <div className="d-flex justify-content-between align-items-center mb-3">
-                    <h5 className="card-title mb-0">Range-Based Views</h5>
-                    <span className="badge bg-secondary-subtle text-secondary">
-                      Context
-                    </span>
-                  </div>
-                  <div className="text-muted small mb-3">
-                    Today stays focused on same-day movement. Switch to longer
-                    filters to reveal comparative views like weekly heatmaps and
-                    monthly trend context.
-                  </div>
-                  <div className="border rounded-3 p-3 bg-light">
-                    <div className="fw-semibold small mb-2">
-                      Best fit per filter
-                    </div>
-                    <div className="text-muted small">Today: hourly activity</div>
-                    <div className="text-muted small">7-14 days: weekday pattern</div>
-                    <div className="text-muted small">30-90 days: monthly context</div>
-                  </div>
-                </>
-              ) : isShortRangeView ? (
-                <>
-                  <div className="d-flex justify-content-between align-items-center mb-3">
-                    <h5 className="card-title mb-0">Weekday Pattern</h5>
-                    <span className="badge bg-success-subtle text-success">
-                      Within selected filter
-                    </span>
-                  </div>
-                  <WeekdayPatternChart data={weekdayPattern} />
-                  <p className="text-muted small mt-2 mb-0">
-                    Short-range filters highlight recurring weekday attendance
-                    instead of forcing a monthly comparison.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <div className="d-flex justify-content-between align-items-center mb-3">
-                    <h5 className="card-title mb-0">Monthly Visitors</h5>
-                    <span className="badge bg-primary-subtle text-primary">
-                      Context chart
-                    </span>
-                  </div>
-                  <MonthlyVisitorsChart data={monthlyVisitors} />
-                  {monthlyVisitors.length >= 2 &&
-                    (() => {
-                      const last =
-                        monthlyVisitors[monthlyVisitors.length - 1]?.count ?? 0;
-                      const prev =
-                        monthlyVisitors[monthlyVisitors.length - 2]?.count ?? 0;
-                      const diff =
-                        prev > 0 ? Math.round(((last - prev) / prev) * 100) : 0;
-                      const up = diff >= 0;
-                      return (
-                        <p className="text-muted small mt-2 mb-0">
-                          <i
-                            className={`bi bi-arrow-${up ? "up" : "down"}-circle-fill text-${up ? "success" : "danger"} me-1`}
-                          ></i>
-                          {Math.abs(diff)}% {up ? "more" : "fewer"} visits vs last
-                          month
-                        </p>
-                      );
-                    })()}
-                </>
-              )}
+            <RecentEntriesList entries={recentEntryEvents} />
+            <div className="dashboard-panel-footer">
+              <span>Showing the most recent filtered entry detections.</span>
+              <Link to={fullLogPath}>View full log</Link>
             </div>
-          </div>
+          </aside>
         </div>
-      </div>
 
-      {/* ── Peak Hours + Top Visitors ── */}
-      {!isTodayView ? (
-        <div className="row g-3 mb-3">
-        <div className="col-lg-7">
-          <div className="card h-100">
-            <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <h5 className="card-title mb-0">Peak Hours</h5>
-                {peakHours.some((v) => v > 0) && (
-                  <span className="text-muted small">
-                    <i className="bi bi-clock me-1"></i>
-                    Busiest at <strong>{peakHourLabel}</strong>
+        <div className="dashboard-insight-grid">
+          <article className="dashboard-panel">
+            <div className="dashboard-panel-heading">
+              <div>
+                <p className="dashboard-panel-eyebrow">Breakdown</p>
+                <h2 className="dashboard-panel-title">
+                  {isTodayView ? "Entries by program today" : "Visitors by program"}
+                </h2>
+              </div>
+              <span className="dashboard-panel-meta">{filterLabel}</span>
+            </div>
+
+            <DashboardProgressList
+              items={programDistrib.map((item) => ({
+                ...item,
+                accent: "blue",
+              }))}
+              labelKey="program"
+              valueKey="count"
+              emptyText="No program distribution is available for this range."
+            />
+
+            <div className="dashboard-section-divider"></div>
+
+            <div className="dashboard-subsection-heading">
+              <h3>User types in range</h3>
+              <span>{uniqueVisitors} unique visitors in {rangeLabelLower}</span>
+            </div>
+            <DashboardProgressList
+              items={userTypeSummary}
+              labelKey="label"
+              valueKey="count"
+              accent="green"
+              emptyText="No user type activity has been recorded for this range."
+            />
+          </article>
+
+          <article className="dashboard-panel">
+            <div className="dashboard-panel-heading">
+              <div>
+                <p className="dashboard-panel-eyebrow">Trend</p>
+                <h2 className="dashboard-panel-title">
+                  {isTodayView
+                    ? "Live occupancy trend"
+                    : isShortRangeView
+                      ? "Short-range traffic trend"
+                      : "Monthly traffic context"}
+                </h2>
+              </div>
+              <span className="dashboard-panel-meta">{getDashboardViewLabel(selectedFilter)}</span>
+            </div>
+
+            <DashboardLineChart
+              labels={trendLabels}
+              values={trendValues}
+              height={220}
+              valueLabel={isTodayView ? "people" : "visits"}
+              lineColor="#ED1B2F"
+              fillColor="rgba(237, 27, 47, 0.2)"
+            />
+
+            <div className="dashboard-section-divider"></div>
+
+            <div className="dashboard-subsection-heading">
+              <h3>Flags & attention</h3>
+              <span>{alertSummary}</span>
+            </div>
+            <div className="dashboard-attention-list">
+              {attentionItems.map((item) => (
+                <div key={item.label} className="dashboard-attention-item">
+                  <span className={`dashboard-attention-pill dashboard-accent-${item.tone}`}>
+                    {item.label}
                   </span>
-                )}
-              </div>
-              <div className="d-flex gap-3 mb-3">
-                <span className="small">
-                  <span
-                    className="d-inline-block me-1 rounded"
-                    style={{
-                      width: 10,
-                      height: 10,
-                      background: "rgba(220,53,69,0.85)",
-                    }}
-                  ></span>
-                  High
-                </span>
-                <span className="small">
-                  <span
-                    className="d-inline-block me-1 rounded"
-                    style={{
-                      width: 10,
-                      height: 10,
-                      background: "rgba(255,193,7,0.85)",
-                    }}
-                  ></span>
-                  Medium
-                </span>
-                <span className="small">
-                  <span
-                    className="d-inline-block me-1 rounded"
-                    style={{
-                      width: 10,
-                      height: 10,
-                      background: "rgba(13,110,253,0.7)",
-                    }}
-                  ></span>
-                  Low
-                </span>
-              </div>
-              <PeakHoursChart data={peakHoursRaw} />
+                  <span className="dashboard-attention-copy">{item.detail}</span>
+                </div>
+              ))}
             </div>
-          </div>
+            <p className="dashboard-small-note">
+              Average confidence for {rangeLabelLower}: <strong>{avgConfidence}%</strong>. {totalLogs} recognition log{totalLogs === 1 ? "" : "s"} and {totalStudents} registered profile{totalStudents === 1 ? "" : "s"} are included in this dashboard context.
+            </p>
+          </article>
         </div>
-        <div className="col-lg-5">
-          <div className="card h-100">
-            <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <h5 className="card-title mb-0">Top Frequent Visitors</h5>
-                <span className="badge bg-danger-subtle text-danger">
-                  Top {Math.min(topVisitors.length, 10)} in {filterLabel}
-                </span>
-              </div>
-              <TopVisitorsTable data={topVisitors} />
-            </div>
-          </div>
-        </div>
-        </div>
-      ) : null}
 
-      {/* Dual-camera occupancy note */}
-      <div className="alert alert-info d-flex align-items-center gap-2 py-2">
-        <i className="bi bi-info-circle-fill"></i>
-        <span className="small">
-          <strong>Dual-camera mode:</strong> Camera 1 records entries and Camera 2 records exits.
-          Occupancy, alerts, and manual overrides update both flows in real time.
-        </span>
+        <div className="dashboard-support-grid">
+          <article className="dashboard-panel">
+            <div className="dashboard-panel-heading">
+              <div>
+                <p className="dashboard-panel-eyebrow">Alerts</p>
+                <h2 className="dashboard-panel-title">Capacity watchlist</h2>
+              </div>
+              <span className="dashboard-inline-badge">{activeAlerts.length}</span>
+            </div>
+
+            {activeAlerts.length ? (
+              <div className="dashboard-alert-list">
+                {activeAlerts.slice(0, 5).map((alert) => (
+                  <div key={alert.id} className="dashboard-alert-item">
+                    <div>
+                      <div className="dashboard-alert-title">{alert.message || "Capacity alert"}</div>
+                      <div className="dashboard-alert-meta">
+                        {alert.occupancy_count}/{alert.capacity_limit} at {Math.round((alert.occupancy_ratio || 0) * 100)}% - {formatSnapshotTime(alert.created_at)}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-secondary"
+                      onClick={() => handleDismissAlert(alert.id)}
+                      disabled={dismissInFlightId === alert.id}
+                    >
+                      {dismissInFlightId === alert.id ? "..." : "Acknowledge"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="dashboard-empty-state">No active capacity alerts.</div>
+            )}
+          </article>
+
+          <article className="dashboard-panel">
+            <div className="dashboard-panel-heading">
+              <div>
+                <p className="dashboard-panel-eyebrow">Controls</p>
+                <h2 className="dashboard-panel-title">Manual occupancy override</h2>
+              </div>
+              <span className="dashboard-panel-meta">Staff tool</span>
+            </div>
+            <p className="dashboard-small-note">
+              Apply a signed adjustment when the live occupancy count needs reconciliation.
+            </p>
+
+            <form onSubmit={handleManualOverrideSubmit} className="dashboard-override-form">
+              <div>
+                <label className="form-label small mb-1">Adjustment</label>
+                <input
+                  type="number"
+                  className="form-control form-control-sm"
+                  placeholder="e.g. +2 or -1"
+                  value={overrideAdjustment}
+                  onChange={(e) => setOverrideAdjustment(e.target.value)}
+                  disabled={overrideSubmitting}
+                />
+              </div>
+
+              <div>
+                <label className="form-label small mb-1">Reason</label>
+                <textarea
+                  className="form-control form-control-sm"
+                  rows={2}
+                  placeholder="Reason for this correction"
+                  value={overrideReason}
+                  onChange={(e) => setOverrideReason(e.target.value)}
+                  disabled={overrideSubmitting}
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="btn btn-sm btn-primary align-self-start"
+                disabled={overrideSubmitting}
+              >
+                {overrideSubmitting ? "Applying..." : "Apply Override"}
+              </button>
+            </form>
+
+            <div className="dashboard-section-divider"></div>
+
+            <button
+              type="button"
+              className="btn btn-sm btn-link dashboard-link-button"
+              onClick={() => setShowSnapshotDetail(!showSnapshotDetail)}
+              aria-expanded={showSnapshotDetail}
+            >
+              <i className={`bi bi-chevron-${showSnapshotDetail ? "up" : "down"} me-1`}></i>
+              {showSnapshotDetail ? "Hide" : "Show"} snapshot timeline
+            </button>
+
+            {showSnapshotDetail && occupancyHistory.length ? (
+              <div className="table-responsive mt-3">
+                <table className="table table-sm align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Occupancy</th>
+                      <th>Entries</th>
+                      <th>Exits</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {occupancyHistory.slice(-12).map((snapshot) => (
+                      <tr key={`${snapshot.snapshot_timestamp}-${snapshot.occupancy_count}`}>
+                        <td className="small">{formatSnapshotTimeWithDate(snapshot.snapshot_timestamp)}</td>
+                        <td>
+                          <strong>{snapshot.occupancy_count}</strong>
+                          <span className="text-muted">/{snapshot.capacity_limit}</span>
+                        </td>
+                        <td>{snapshot.daily_entries}</td>
+                        <td>{snapshot.daily_exits}</td>
+                        <td>
+                          {snapshot.capacity_warning ? (
+                            <span className="badge bg-warning text-dark">Warning</span>
+                          ) : (
+                            <span className="badge bg-success">Normal</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : showSnapshotDetail ? (
+              <div className="dashboard-empty-state mt-3">No snapshots available yet for today.</div>
+            ) : null}
+          </article>
+        </div>
+
+        <div className="dashboard-note">
+          <i className="bi bi-info-circle-fill"></i>
+          <span>
+            <strong>Dual-camera mode:</strong> Camera 1 records entries and Camera 2 records exits. Occupancy, alerts, and manual overrides update both flows in real time.
+          </span>
+        </div>
       </div>
     </section>
   );
 }
-

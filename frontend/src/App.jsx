@@ -102,6 +102,7 @@ export default function App() {
           <Route path="archive-profiles" element={<Navigate to="/profile-management?status=active" replace />} />
           <Route path="archived-profiles" element={<Navigate to="/profile-management?status=archived" replace />} />
           <Route path="entry-logs" element={<EntryExitLogsPage />} />
+          <Route path="entry-exit-logs" element={<EntryExitLogsPage />} />
           <Route path="program-monthly-visits" element={<ProgramMonthlyVisitsPage />} />
           <Route path="monthly-daily-visits" element={<MonthlyDailyVisitsPage />} />
           <Route path="analytics-reports" element={<AnalyticsReportsPage />} />

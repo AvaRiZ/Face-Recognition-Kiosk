@@ -2401,10 +2401,13 @@ def create_routes_blueprint(deps):
                             AND DATE(captured_at) BETWEEN %s AND %s
         """, range_params)
         conf_values = []
+        low_confidence_count = 0
         for (confidence,) in c.fetchall():
             value = _coerce_confidence(confidence)
             if value is not None:
                 conf_values.append(value)
+                if value < 0.7:
+                    low_confidence_count += 1
         avg_conf = sum(conf_values) / len(conf_values) if conf_values else None
 
         max_occupancy_setting = _get_setting(deps["db_path"], "max_occupancy", "300")
@@ -2478,6 +2481,49 @@ def create_routes_blueprint(deps):
         # ── Peak hours (24-slot array, index = hour) ───────────────
 
         c.execute("""
+            SELECT
+                COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') AS event_type,
+                COUNT(*) AS count
+            FROM recognition_events re
+            WHERE re.captured_at IS NOT NULL
+              AND DATE(re.captured_at) BETWEEN %s AND %s
+            GROUP BY event_type
+        """, range_params)
+        event_type_totals = {}
+        for event_type, count in c.fetchall():
+            normalized_event_type = str(event_type or "").strip().lower() or "entry"
+            event_type_totals[normalized_event_type] = int(count or 0)
+        total_entries = event_type_totals.get("entry", 0)
+        total_exits = event_type_totals.get("exit", 0)
+
+        c.execute("""
+            SELECT
+                COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
+                COUNT(*) AS count
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE re.captured_at IS NOT NULL
+              AND DATE(re.captured_at) BETWEEN %s AND %s
+            GROUP BY user_type
+        """, range_params)
+        user_type_totals = {
+            "enrolled": 0,
+            "visitor": 0,
+            "unrecognized": 0,
+            "staff": 0,
+        }
+        for user_type, count in c.fetchall():
+            normalized_user_type = _normalize_user_type(user_type)
+            user_type_totals[normalized_user_type] += int(count or 0)
+        user_type_distribution = [
+            {"label": "Enrolled", "count": user_type_totals["enrolled"], "accent": "green"},
+            {"label": "Visitor", "count": user_type_totals["visitor"], "accent": "blue"},
+            {"label": "Unrecognized", "count": user_type_totals["unrecognized"], "accent": "amber"},
+            {"label": "Staff", "count": user_type_totals["staff"], "accent": "rose"},
+        ]
+        unrecognized_count = user_type_totals["unrecognized"]
+
+        c.execute("""
                         SELECT EXTRACT(HOUR FROM captured_at)::int AS hour,
                    COUNT(*) as count
                         FROM recognition_events
@@ -2512,6 +2558,41 @@ def create_routes_blueprint(deps):
         ]
         
         # ── Weekly Heatmap (Day 0=Mon to 6=Sun, Hours 7AM–7PM) ──
+        c.execute("""
+            SELECT
+                re.id,
+                COALESCE(NULLIF(TRIM(u.name), ''), '') AS name,
+                COALESCE(NULLIF(TRIM(u.sr_code), ''), NULLIF(TRIM(re.sr_code), ''), '') AS sr_code,
+                COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
+                COALESCE(re.confidence, 0.0) AS confidence,
+                COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') AS event_type,
+                COALESCE(re.captured_at, re.ingested_at) AS event_time,
+                COALESCE(re.decision, 'allowed') AS decision
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE re.captured_at IS NOT NULL
+              AND DATE(re.captured_at) BETWEEN %s AND %s
+              AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
+            ORDER BY event_time DESC, re.id DESC
+            LIMIT 6
+        """, range_params)
+        recent_entries = []
+        for row_id, name, sr_code, user_type, confidence, event_type, event_time, decision in c.fetchall():
+            normalized_user_type = _normalize_user_type(user_type)
+            confidence_value = _coerce_confidence(confidence) or 0.0
+            recent_entries.append(
+                {
+                    "id": row_id,
+                    "name": _display_profile_field(name, user_type=normalized_user_type),
+                    "sr_code": _display_profile_field(sr_code, user_type=normalized_user_type),
+                    "user_type": normalized_user_type,
+                    "event_type": str(event_type or "").strip().lower() or "entry",
+                    "status": str(decision or "allowed").strip().lower() or "allowed",
+                    "conf_pct": int(confidence_value * 100.0),
+                    "timestamp": _normalize_timestamp_for_json(event_time),
+                }
+            )
+
         # PostgreSQL EXTRACT(DOW) returns 0=Sun,1=Mon,...6=Sat.
         # Remap to Mon=0 ... Sun=6.
         c.execute("""
@@ -2594,10 +2675,16 @@ def create_routes_blueprint(deps):
             "filter_end_date": end_date.isoformat(),
             # ── New fields for enhanced dashboard ──────────────────
             "total_students": total_students,
+            "total_entries": total_entries,
+            "total_exits": total_exits,
+            "unrecognized_count": unrecognized_count,
+            "low_confidence_count": low_confidence_count,
             "daily_visitors": daily_visitors,
             "program_distribution": program_distribution,
+            "user_type_distribution": user_type_distribution,
             "peak_hours": peak_hours,
             "top_visitors": top_visitors,
+            "recent_entries": recent_entries,
             "weekly_heatmap": weekly_heatmap,
             "monthly_visitors": monthly_visitors,
         }

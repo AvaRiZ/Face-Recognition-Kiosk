@@ -3,6 +3,7 @@ import { getErrorMessage, showError, showSuccess } from '../alerts.js';
 import { fetchJson } from '../api.js';
 import { downloadFile } from '../downloads.js';
 import { socket } from '../socket.js';
+import { useLocation } from 'react-router-dom';
 
 function formatDate(ts) {
   if (!ts) return '-';
@@ -22,6 +23,7 @@ function formatEventType(rawType) {
 }
 
 export default function EntryExitLogsPage() {
+  const location = useLocation();
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
@@ -88,6 +90,19 @@ export default function EntryExitLogsPage() {
     () => new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10),
     []
   );
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(location.search || '');
+    const nextDirection = String(params.get('direction') || '').trim().toLowerCase();
+    const nextTab = String(params.get('tab') || '').trim().toLowerCase();
+    const nextDate = String(params.get('date') || '').trim();
+
+    setDirectionFilter(
+      ['entry', 'exit', 'unknown'].includes(nextDirection) ? nextDirection : ''
+    );
+    setActiveTab(['all', 'today', 'week'].includes(nextTab) ? nextTab : 'all');
+    setDateFilter(nextDate || '');
+  }, [location.search]);
 
   const filtered = React.useMemo(() => {
     const searchValue = (search || '').toLowerCase();
