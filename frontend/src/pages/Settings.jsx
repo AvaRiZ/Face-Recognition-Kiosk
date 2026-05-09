@@ -552,7 +552,8 @@ export default function SettingsPage() {
 
           {/* ── Advanced tab ── */}
           {activeTab === TAB_ADVANCED && canManageAdvancedOps && (
-            <form onSubmit={handleSubmit}>
+            <div>
+              <form onSubmit={handleSubmit}>
               <h6 className="text-uppercase text-muted fw-semibold mb-3" style={{ letterSpacing: '.07em', fontSize: '.7rem' }}>
                 Data Retention
               </h6>
@@ -609,42 +610,40 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              <SaveFooter />
+                <SaveFooter />
+              </form>
 
-        {canResetOccupancyDatabase ? (
-          <div className="col-12">
-            <div className="card border-warning">
-              <div className="card-body">
-                <h5 className="card-title text-warning">Occupancy Operations</h5>
-                <p className="text-muted">
-                  <strong>Warning:</strong> This will reset occupancy tracking state and cannot be undone.
-                </p>
-                <button onClick={resetOccupancyDatabase} className="btn btn-outline-danger" type="button">
-                  Reset Occupancy Database
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+              {canResetOccupancyDatabase ? (
+                <div className="card border-warning mt-4">
+                  <div className="card-body">
+                    <h5 className="card-title text-warning">Occupancy Operations</h5>
+                    <p className="text-muted">
+                      <strong>Warning:</strong> This will reset occupancy tracking state and cannot be undone.
+                    </p>
+                    <button onClick={resetOccupancyDatabase} className="btn btn-outline-danger" type="button">
+                      Reset Occupancy Database
+                    </button>
+                  </div>
+                </div>
+              ) : null}
 
-        {canManageAdvancedOps ? (
-          <div className="col-12">
-            <div className="card border-danger">
-              <div className="card-body">
-                <h5 className="card-title text-danger">Advanced Operations</h5>
-                <p className="text-muted">
-                  <strong>Warning:</strong> These operations cannot be undone and require two confirmation steps.
-                </p>
-                <div className="d-flex gap-2 flex-wrap">
-                  <button onClick={resetDatabase} className="btn btn-danger btn-sm" type="button">
-                    <i className="bi bi-trash3 me-1" />Reset Database
-                  </button>
-                  <button onClick={clearRecognitionLog} className="btn btn-warning btn-sm" type="button">
-                    <i className="bi bi-eraser me-1" />Clear Recognition Events
-                  </button>
+              <div className="card border-danger mt-4">
+                <div className="card-body">
+                  <h5 className="card-title text-danger">Advanced Operations</h5>
+                  <p className="text-muted">
+                    <strong>Warning:</strong> These operations cannot be undone and require two confirmation steps.
+                  </p>
+                  <div className="d-flex gap-2 flex-wrap">
+                    <button onClick={resetDatabase} className="btn btn-danger btn-sm" type="button">
+                      <i className="bi bi-trash3 me-1" />Reset Database
+                    </button>
+                    <button onClick={clearRecognitionLog} className="btn btn-warning btn-sm" type="button">
+                      <i className="bi bi-eraser me-1" />Clear Recognition Events
+                    </button>
+                  </div>
                 </div>
               </div>
-            </form>
+            </div>
           )}
 
           {/* ── Audit tab ── */}
