@@ -95,10 +95,6 @@ export default function LoginPage() {
                       <div className="col-12">
                         <button type="submit" className="btn btn-primary w-100">Login</button>
                       </div>
-
-                      <div className="col-12 text-center">
-                        <small className="text-muted">Default superadmin: <strong>superadmin / password</strong></small>
-                      </div>
                     </form>
                   </div>
                 </div>
