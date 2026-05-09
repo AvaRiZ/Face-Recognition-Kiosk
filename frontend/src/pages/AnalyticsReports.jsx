@@ -3607,6 +3607,7 @@ function AnalyticsReportsInner() {
   const initialCache = initialCacheRef.current;
   const [basicData, setBasicData] = React.useState(initialCache?.data ?? null);
   const [error, setError] = React.useState(false);
+  const [errorMessage, setErrorMessage] = React.useState("");
   const [loading, setLoading] = React.useState(!initialCache?.data);
   const [refreshing, setRefreshing] = React.useState(false);
   const [socketConnected, setSocketConnected] = React.useState(socket.connected);
@@ -3639,6 +3640,7 @@ function AnalyticsReportsInner() {
       setRefreshing(true);
     }
     setError(false);
+    setErrorMessage("");
 
     try {
       const basic = await fetchJson("/api/analytics-basic");
@@ -3655,6 +3657,12 @@ function AnalyticsReportsInner() {
       setLoading(false);
     } catch (err) {
       console.error("Analytics pipeline error:", err);
+      setErrorMessage(
+        getErrorMessage(
+          err,
+          "Failed to load analytics data. Check the analytics API or try syncing again."
+        )
+      );
       if (!hasLoadedDataRef.current) {
         setError(true);
       }
@@ -3743,6 +3751,14 @@ function AnalyticsReportsInner() {
 
   const currentData = basicData;
   const dq = currentData?.data_quality;
+  const totalRemoved =
+    typeof dq?.total_removed === "number"
+      ? dq.total_removed
+      : (
+          Number(dq?.removed_low_conf || 0)
+          + Number(dq?.removed_outside_hrs || 0)
+          + Number(dq?.removed_duplicates || 0)
+        );
   const stats = currentData?.descriptive_stats;
   const dowLabels = currentData?.dow_labels;
   const dowAverages = currentData?.dow_averages;
@@ -4174,7 +4190,7 @@ function AnalyticsReportsInner() {
                 value={`${dq?.quality_score || 0}%`}
                 tone={ANALYTICS_COLORS.rose}
                 icon="bi bi-shield-check"
-                helper={`${fmt(dq?.total_removed || 0)} records removed`}
+                helper={`${fmt(totalRemoved)} records removed`}
               />
             </div>
           </div>
@@ -4380,7 +4396,7 @@ function AnalyticsReportsInner() {
                 Cleaning
               </div>
               <div style={{ marginTop: 8, fontSize: 14, color: ANALYTICS_COLORS.ink, fontWeight: 800 }}>
-                {fmt(dq?.total_removed || 0)} records removed
+                {fmt(totalRemoved)} records removed
               </div>
               <div style={{ marginTop: 6, fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.65 }}>
                 Low-confidence, outside-hours, and duplicate same-day scans are filtered so each student counts once per day.
@@ -4453,7 +4469,7 @@ function AnalyticsReportsInner() {
       {initialLoadFailed && (
         <div className="alert alert-danger">
           <i className="bi bi-exclamation-triangle me-2"></i>
-          Failed to load analytics data. Check the analytics API or try syncing again.
+          {errorMessage || "Failed to load analytics data. Check the analytics API or try syncing again."}
         </div>
       )}
 
@@ -4563,7 +4579,7 @@ function AnalyticsReportsInner() {
           {error && (
             <div className="alert alert-danger">
               <i className="bi bi-exclamation-triangle me-2"></i>
-              Failed to refresh analytics. Showing the latest available descriptive data.
+              {errorMessage || "Failed to refresh analytics. Showing the latest available descriptive data."}
             </div>
           )}
 
@@ -4680,7 +4696,7 @@ function AnalyticsReportsInner() {
             stepNum="2"
             title="Data Cleaning"
             color="#dc3545"
-            subtitle={`${fmt(dq?.total_removed || 0)} records removed · ${dq?.quality_score || 0}% retained`}
+            subtitle={`${fmt(totalRemoved)} records removed · ${dq?.quality_score || 0}% retained`}
           >
             <DataQualitySection dq={dq} />
           </Section>

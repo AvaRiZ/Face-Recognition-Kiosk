@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.flask_app import create_flask_app
 from app.realtime import socketio
@@ -22,6 +23,34 @@ class AppRuntime:
     config: AppConfig
     state: AppStateManager
     repository: UserRepository
+
+
+def _load_env_file_if_present(file_path: Path) -> None:
+    if not file_path.exists():
+        return
+
+    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+
+        value = value.strip()
+        if (
+            (value.startswith('"') and value.endswith('"'))
+            or (value.startswith("'") and value.endswith("'"))
+        ):
+            value = value[1:-1]
+
+        os.environ.setdefault(key, value)
+
+
+def _load_default_local_env(repo_root: Path) -> None:
+    _load_env_file_if_present(repo_root / ".env.local")
 
 
 def _apply_app_settings(runtime: AppRuntime) -> None:
@@ -152,6 +181,9 @@ def build_runtime() -> AppRuntime:
 
 
 def main() -> None:
+    repo_root = Path(__file__).resolve().parent
+    _load_default_local_env(repo_root)
+
     db_target = resolve_database_target(AppConfig().db_path)
     if not is_postgres_target(db_target):
         raise RuntimeError(

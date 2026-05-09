@@ -84,6 +84,14 @@ def _timestamp_to_text(value) -> str:
     return text
 
 
+def _normalize_text_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    return str(value).strip()
+
+
 def _to_builtin(value):
     """Recursively convert NumPy/Pandas scalars into JSON-safe Python types."""
     if isinstance(value, dict):
@@ -188,7 +196,7 @@ def _normalize_program_series(df, program_lookup):
 
 
 def _derive_year_level_from_sr_code(sr_code: str | None) -> str:
-    normalized = (sr_code or "").strip()
+    normalized = _normalize_text_value(sr_code)
     match = _YEAR_LEVEL_PATTERN.fullmatch(normalized)
     if not match:
         return ""
@@ -221,7 +229,7 @@ def _normalize_year_level_value(
     if derived:
         return derived
 
-    normalized = " ".join((raw_year_level or "").split())
+    normalized = " ".join(_normalize_text_value(raw_year_level).split())
     if not normalized:
         return "Unknown"
 
@@ -436,7 +444,7 @@ def run_ml_analytics(db_path):
             "sr_code":    sr,
             "name":       name or "-",
             "program":    prog or "Unknown",
-            "gender":     (gender or "Unknown").strip().title(),
+            "gender":     (_normalize_text_value(gender) or "Unknown").title(),
             "year_level": yr or "Unknown",
             "user_type":  user_type or "",
             "confidence": cv,
@@ -1058,6 +1066,7 @@ def run_basic_analytics(db_path):
         "total_live": total_live,
         "total_imported": total_imp,
         "total_cleaned": total_cleaned,
+        "total_removed": total_raw - total_cleaned,
         "removed_low_conf": removed_conf,
         "removed_outside_hrs": removed_hrs,
         "removed_duplicates": removed_dup,
