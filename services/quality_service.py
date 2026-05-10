@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 from typing import Optional
 
-from core.config import AppConfig
+from core.config import AppConfig, FaceQualityThresholdProfile
 
 
 def _clamp01(value):
@@ -176,7 +176,10 @@ class FaceQualityService:
             return f"{component_summary} | {raw_metrics}"
         return f"main_issue={issue_label} | {component_summary} | {raw_metrics}"
 
-    def _alignment_pose_from_landmarks(self, landmarks, width, height):
+    def _quality_profile(self, context: str | None = None) -> FaceQualityThresholdProfile:
+        return self.config.quality_profile_for_context(context)
+
+    def _alignment_pose_from_landmarks(self, landmarks, width, height, profile: FaceQualityThresholdProfile):
         left_eye = landmarks.get("left_eye")
         right_eye = landmarks.get("right_eye")
         nose = landmarks.get("nose")
@@ -192,8 +195,8 @@ class FaceQualityService:
         eye_tilt_ratio = abs(eye_dy) / eye_dist
         alignment_score = _score_lower_better(
             eye_tilt_ratio,
-            self.config.quality_pose_eye_tilt_good,
-            self.config.quality_pose_eye_tilt_max,
+            profile.quality_pose_eye_tilt_good,
+            profile.quality_pose_eye_tilt_max,
         )
 
         pose_score = 0.5
@@ -204,8 +207,8 @@ class FaceQualityService:
             yaw_ratio = abs(nose[0] - eye_mid_x) / half_eye_span
             pose_score = _score_lower_better(
                 yaw_ratio,
-                self.config.quality_pose_yaw_good,
-                self.config.quality_pose_yaw_max,
+                profile.quality_pose_yaw_good,
+                profile.quality_pose_yaw_max,
             )
 
         points = [pt for pt in (left_eye, right_eye, nose, mouth) if pt is not None]
@@ -217,37 +220,37 @@ class FaceQualityService:
 
         truncation_score = _score_higher_better(
             margin_ratio,
-            self.config.quality_landmark_margin_min,
-            self.config.quality_landmark_margin_good,
+            profile.quality_landmark_margin_min,
+            profile.quality_landmark_margin_good,
         )
         return _clamp01(alignment_score), _clamp01(pose_score), _clamp01(truncation_score)
 
-    def _compute_exposure_metrics(self, gray):
+    def _compute_exposure_metrics(self, gray, profile: FaceQualityThresholdProfile):
         gray_f = gray.astype(np.float32, copy=False)
         brightness = float(np.mean(gray_f))
         p5, p95 = np.percentile(gray_f, [5, 95])
         dynamic_range = float(p95 - p5)
         contrast = float(np.std(gray_f))
 
-        if brightness < self.config.quality_brightness_good_min:
+        if brightness < profile.quality_brightness_good_min:
             brightness_score = _score_higher_better(
                 brightness,
-                self.config.quality_brightness_min,
-                self.config.quality_brightness_good_min,
+                profile.quality_brightness_min,
+                profile.quality_brightness_good_min,
             )
-        elif brightness > self.config.quality_brightness_good_max:
+        elif brightness > profile.quality_brightness_good_max:
             brightness_score = _score_lower_better(
                 brightness,
-                self.config.quality_brightness_good_max,
-                self.config.quality_brightness_max,
+                profile.quality_brightness_good_max,
+                profile.quality_brightness_max,
             )
         else:
             brightness_score = 1.0
 
         range_score = _score_higher_better(
             dynamic_range,
-            self.config.quality_dynamic_range_min,
-            self.config.quality_dynamic_range_good,
+            profile.quality_dynamic_range_min,
+            profile.quality_dynamic_range_good,
         )
         exposure_score = _clamp01((brightness_score + range_score) * 0.5)
 
@@ -259,7 +262,8 @@ class FaceQualityService:
             "brightness_score": brightness_score,
         }
 
-    def assess_face_quality(self, face_crop, detection_confidence=None, landmarks=None):
+    def assess_face_quality(self, face_crop, detection_confidence=None, landmarks=None, context: str | None = None):
+        profile = self._quality_profile(context)
         if face_crop is None or face_crop.size == 0:
             debug_info = {
                 "sharpness": 0.0,
@@ -286,6 +290,7 @@ class FaceQualityService:
             issue_name, issue_label = self.primary_quality_issue(debug_info)
             debug_info["primary_issue"] = issue_name
             debug_info["primary_issue_label"] = issue_label
+            debug_info["quality_context"] = str(context or "entry")
             return 0.0, "Poor", debug_info
 
         h, w = face_crop.shape[:2]
@@ -294,26 +299,26 @@ class FaceQualityService:
 
         size_score = _score_higher_better(
             area,
-            self.config.quality_face_area_min,
-            self.config.quality_face_area_good,
+            profile.quality_face_area_min,
+            profile.quality_face_area_good,
         )
 
         laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         sharpness_score = _score_higher_better(
             laplacian_var,
-            self.config.quality_sharpness_min,
-            self.config.quality_sharpness_good,
+            profile.quality_sharpness_min,
+            profile.quality_sharpness_good,
         )
 
         confidence_value = float(detection_confidence) if detection_confidence is not None else 0.5
         confidence_value = _clamp01(confidence_value)
         detection_score = _score_higher_better(
             confidence_value,
-            self.config.quality_detection_confidence_min,
-            self.config.quality_detection_confidence_good,
+            profile.quality_detection_confidence_min,
+            profile.quality_detection_confidence_good,
         )
 
-        exposure_metrics = self._compute_exposure_metrics(gray)
+        exposure_metrics = self._compute_exposure_metrics(gray, profile)
         normalized_landmarks = _normalize_landmarks(landmarks)
         quality_degraded_reason = None
         left_eye = normalized_landmarks.get("left_eye") if normalized_landmarks else None
@@ -329,6 +334,7 @@ class FaceQualityService:
                 normalized_landmarks,
                 w,
                 h,
+                profile,
             )
             alignment_source = "landmarks"
         else:
@@ -356,15 +362,15 @@ class FaceQualityService:
             quality_score = _clamp01(quality_score * 0.95)
 
         failed_checks = []
-        if area < self.config.quality_face_area_min:
+        if area < profile.quality_face_area_min:
             failed_checks.append("size")
-        if detection_confidence is not None and confidence_value < self.config.quality_detection_confidence_min:
+        if detection_confidence is not None and confidence_value < profile.quality_detection_confidence_min:
             failed_checks.append("detection_confidence")
-        if laplacian_var < self.config.quality_sharpness_min:
+        if laplacian_var < profile.quality_sharpness_min:
             failed_checks.append("sharpness")
-        if not (self.config.quality_brightness_min <= exposure_metrics["brightness"] <= self.config.quality_brightness_max):
+        if not (profile.quality_brightness_min <= exposure_metrics["brightness"] <= profile.quality_brightness_max):
             failed_checks.append("exposure")
-        if exposure_metrics["dynamic_range"] < self.config.quality_dynamic_range_min:
+        if exposure_metrics["dynamic_range"] < profile.quality_dynamic_range_min:
             failed_checks.append("dynamic_range")
         if landmarks_reliable:
             if alignment_score < 0.4:
@@ -375,11 +381,11 @@ class FaceQualityService:
                 failed_checks.append("truncation")
 
         if failed_checks:
-            quality_score = min(quality_score, max(0.0, self.config.face_quality_threshold - 0.01))
+            quality_score = min(quality_score, max(0.0, profile.face_quality_threshold - 0.01))
             quality_status = "Poor"
-        elif quality_score >= self.config.face_quality_good_threshold:
+        elif quality_score >= profile.face_quality_good_threshold:
             quality_status = "Good"
-        elif quality_score >= self.config.face_quality_threshold:
+        elif quality_score >= profile.face_quality_threshold:
             quality_status = "Acceptable"
         else:
             quality_status = "Poor"
@@ -410,6 +416,7 @@ class FaceQualityService:
                 "pose_score": pose_score,
                 "occlusion_score": occlusion_score,
             },
+            "quality_context": str(context or "entry"),
         }
         issue_name, issue_label = self.primary_quality_issue(debug_info)
         debug_info["primary_issue"] = issue_name

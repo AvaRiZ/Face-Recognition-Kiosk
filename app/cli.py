@@ -392,7 +392,8 @@ class CLIApplication:
             return label, (0, 255, 0)
 
         if is_selected_for_registration and reg_state.manual_active:
-            if track_state.last_quality_score < self.config.face_quality_threshold:
+            registration_threshold = self.config.quality_profile_for_context("registration").face_quality_threshold
+            if track_state.last_registration_quality_score < registration_threshold:
                 return "Target: Improve quality", (0, 140, 255)
             expected_pose = self.state.get_current_registration_pose()
             if expected_pose and track_state.last_pose and track_state.last_pose != expected_pose:
@@ -411,7 +412,8 @@ class CLIApplication:
         if track_state.failed_good_quality_attempts >= self.config.unknown_person_attempt_threshold:
             return "No match", (0, 165, 255)
 
-        if track_state.last_quality_score < self.config.face_quality_threshold:
+        recognition_threshold = self.config.quality_profile_for_context(self.worker_role).face_quality_threshold
+        if track_state.last_quality_score < recognition_threshold:
             return "Low quality", (0, 140, 255)
 
         return "Detected", (180, 180, 180)
@@ -715,7 +717,14 @@ class CLIApplication:
                             face_crop,
                             detection_confidence=detection_confidence,
                             landmarks=landmarks,
+                            context=self.worker_role,
                         )
+                        registration_quality = self.quality_service.assess_face_quality(
+                            face_crop,
+                            detection_confidence=detection_confidence,
+                            landmarks=landmarks,
+                            context="registration",
+                        ) if self._registration_allowed_on_this_worker() else None
                         detected_pose = self.quality_service.detect_face_pose(face_crop, landmarks=landmarks)
 
                         track_id = int(box.id[0]) if box.id is not None else None
@@ -736,6 +745,12 @@ class CLIApplication:
                         track_state.last_quality_score = quality_score
                         track_state.last_quality_status = quality_status
                         track_state.last_quality_debug = quality_debug
+                        if registration_quality is not None:
+                            (
+                                track_state.last_registration_quality_score,
+                                track_state.last_registration_quality_status,
+                                track_state.last_registration_quality_debug,
+                            ) = registration_quality
                         track_state.last_landmarks = landmarks
                         track_state.last_pose = detected_pose
                         track_state.last_stable = is_stable
@@ -816,6 +831,12 @@ class CLIApplication:
                             track_state.last_quality_status,
                             track_state.last_quality_debug,
                         ),
+                        quality_context=self.worker_role,
+                        registration_quality=(
+                            track_state.last_registration_quality_score,
+                            track_state.last_registration_quality_status,
+                            track_state.last_registration_quality_debug,
+                        ),
                     )
 
                     status = result.get("status")
@@ -838,7 +859,8 @@ class CLIApplication:
                         track_state.recognized = False
                         track_state.user = None
                         self._reset_registration_recognition_streak(track_state)
-                        if status in {"uncertain", "no_match"} and track_state.last_quality_score >= self.config.face_quality_threshold:
+                        recognition_threshold = self.config.quality_profile_for_context(self.worker_role).face_quality_threshold
+                        if status in {"uncertain", "no_match"} and track_state.last_quality_score >= recognition_threshold:
                             track_state.failed_good_quality_attempts += 1
 
                     if registration_capture_allowed:
@@ -923,9 +945,10 @@ class CLIApplication:
                     color = (0, 255, 0)
                     thickness = 2
                 elif track_state.last_stable:
-                    if track_state.last_quality_score >= self.config.face_quality_good_threshold:
+                    profile = self.config.quality_profile_for_context(self.worker_role)
+                    if track_state.last_quality_score >= profile.face_quality_good_threshold:
                         color = (0, 255, 0)
-                    elif track_state.last_quality_score >= self.config.face_quality_threshold:
+                    elif track_state.last_quality_score >= profile.face_quality_threshold:
                         color = (0, 255, 255)
                     else:
                         color = (0, 0, 255)

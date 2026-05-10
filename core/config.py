@@ -1,10 +1,84 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Callable
 
 import tensorflow as tf
 import torch
+
+
+QUALITY_CONTEXTS = ("entry", "exit", "registration")
+QUALITY_PROFILE_FIELDS = (
+    "face_quality_threshold",
+    "face_quality_good_threshold",
+    "quality_face_area_min",
+    "quality_face_area_good",
+    "quality_detection_confidence_min",
+    "quality_detection_confidence_good",
+    "quality_sharpness_min",
+    "quality_sharpness_good",
+    "quality_brightness_min",
+    "quality_brightness_good_min",
+    "quality_brightness_good_max",
+    "quality_brightness_max",
+    "quality_dynamic_range_min",
+    "quality_dynamic_range_good",
+    "quality_pose_eye_tilt_good",
+    "quality_pose_eye_tilt_max",
+    "quality_pose_yaw_good",
+    "quality_pose_yaw_max",
+    "quality_landmark_margin_good",
+    "quality_landmark_margin_min",
+)
+QUALITY_PROFILE_BOUNDS = {
+    "face_quality_threshold": {"min": 0.1, "max": 0.95},
+    "face_quality_good_threshold": {"min": 0.1, "max": 0.99},
+    "quality_face_area_min": {"min": 100, "max": 250000},
+    "quality_face_area_good": {"min": 100, "max": 500000},
+    "quality_detection_confidence_min": {"min": 0.0, "max": 1.0},
+    "quality_detection_confidence_good": {"min": 0.0, "max": 1.0},
+    "quality_sharpness_min": {"min": 0.0, "max": 500.0},
+    "quality_sharpness_good": {"min": 0.0, "max": 1000.0},
+    "quality_brightness_min": {"min": 0.0, "max": 255.0},
+    "quality_brightness_good_min": {"min": 0.0, "max": 255.0},
+    "quality_brightness_good_max": {"min": 0.0, "max": 255.0},
+    "quality_brightness_max": {"min": 0.0, "max": 255.0},
+    "quality_dynamic_range_min": {"min": 0.0, "max": 255.0},
+    "quality_dynamic_range_good": {"min": 0.0, "max": 255.0},
+    "quality_pose_eye_tilt_good": {"min": 0.0, "max": 2.0},
+    "quality_pose_eye_tilt_max": {"min": 0.0, "max": 2.0},
+    "quality_pose_yaw_good": {"min": 0.0, "max": 2.0},
+    "quality_pose_yaw_max": {"min": 0.0, "max": 2.0},
+    "quality_landmark_margin_good": {"min": 0.0, "max": 0.5},
+    "quality_landmark_margin_min": {"min": 0.0, "max": 0.5},
+}
+
+
+@dataclass
+class FaceQualityThresholdProfile:
+    face_quality_threshold: float
+    face_quality_good_threshold: float
+    quality_face_area_min: int
+    quality_face_area_good: int
+    quality_detection_confidence_min: float
+    quality_detection_confidence_good: float
+    quality_sharpness_min: float
+    quality_sharpness_good: float
+    quality_brightness_min: float
+    quality_brightness_good_min: float
+    quality_brightness_good_max: float
+    quality_brightness_max: float
+    quality_dynamic_range_min: float
+    quality_dynamic_range_good: float
+    quality_pose_eye_tilt_good: float
+    quality_pose_eye_tilt_max: float
+    quality_pose_yaw_good: float
+    quality_pose_yaw_max: float
+    quality_landmark_margin_good: float
+    quality_landmark_margin_min: float
+
+    def to_dict(self) -> dict[str, float | int]:
+        return asdict(self)
 
 
 @dataclass
@@ -231,9 +305,84 @@ class AppConfig:
     torch_device_index: int = 0
     tf_use_gpu: bool = True
 
+    entry_quality: FaceQualityThresholdProfile | None = field(default=None)
+    exit_quality: FaceQualityThresholdProfile | None = field(default=None)
+    registration_quality: FaceQualityThresholdProfile | None = field(default=None)
+
+    def __post_init__(self) -> None:
+        self.reset_quality_profiles_to_global_defaults()
+
     @property
     def models(self) -> list[str]:
         return [self.primary_model, self.secondary_model]
+
+    def build_global_quality_profile(self) -> FaceQualityThresholdProfile:
+        return FaceQualityThresholdProfile(
+            face_quality_threshold=float(self.face_quality_threshold),
+            face_quality_good_threshold=float(self.face_quality_good_threshold),
+            quality_face_area_min=int(self.quality_face_area_min),
+            quality_face_area_good=int(self.quality_face_area_good),
+            quality_detection_confidence_min=float(self.quality_detection_confidence_min),
+            quality_detection_confidence_good=float(self.quality_detection_confidence_good),
+            quality_sharpness_min=float(self.quality_sharpness_min),
+            quality_sharpness_good=float(self.quality_sharpness_good),
+            quality_brightness_min=float(self.quality_brightness_min),
+            quality_brightness_good_min=float(self.quality_brightness_good_min),
+            quality_brightness_good_max=float(self.quality_brightness_good_max),
+            quality_brightness_max=float(self.quality_brightness_max),
+            quality_dynamic_range_min=float(self.quality_dynamic_range_min),
+            quality_dynamic_range_good=float(self.quality_dynamic_range_good),
+            quality_pose_eye_tilt_good=float(self.quality_pose_eye_tilt_good),
+            quality_pose_eye_tilt_max=float(self.quality_pose_eye_tilt_max),
+            quality_pose_yaw_good=float(self.quality_pose_yaw_good),
+            quality_pose_yaw_max=float(self.quality_pose_yaw_max),
+            quality_landmark_margin_good=float(self.quality_landmark_margin_good),
+            quality_landmark_margin_min=float(self.quality_landmark_margin_min),
+        )
+
+    def reset_quality_profiles_to_global_defaults(self) -> None:
+        default_profile = self.build_global_quality_profile()
+        if self.entry_quality is None:
+            self.entry_quality = FaceQualityThresholdProfile(**default_profile.to_dict())
+        if self.exit_quality is None:
+            self.exit_quality = FaceQualityThresholdProfile(**default_profile.to_dict())
+        if self.registration_quality is None:
+            self.registration_quality = FaceQualityThresholdProfile(**default_profile.to_dict())
+
+    def quality_profile_for_context(self, context: str | None = None) -> FaceQualityThresholdProfile:
+        normalized = str(context or "entry").strip().lower()
+        if normalized not in QUALITY_CONTEXTS:
+            normalized = "entry"
+        profile = getattr(self, f"{normalized}_quality", None)
+        if isinstance(profile, FaceQualityThresholdProfile):
+            return profile
+        return self.build_global_quality_profile()
+
+    def quality_profiles_to_dict(self) -> dict[str, dict[str, float | int]]:
+        return {
+            context: self.quality_profile_for_context(context).to_dict()
+            for context in QUALITY_CONTEXTS
+        }
+
+    def apply_quality_profiles(self, payload: dict | None) -> None:
+        if not isinstance(payload, dict):
+            return
+        for context in QUALITY_CONTEXTS:
+            profile_payload = payload.get(context)
+            if not isinstance(profile_payload, dict):
+                continue
+            base_profile = self.quality_profile_for_context(context).to_dict()
+            for key, value in profile_payload.items():
+                if key not in base_profile:
+                    continue
+                try:
+                    if isinstance(base_profile[key], int):
+                        base_profile[key] = int(value)
+                    else:
+                        base_profile[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            setattr(self, f"{context}_quality", FaceQualityThresholdProfile(**base_profile))
 
     def resolved_entry_stream_source(self) -> str | int:
         """Resolve entry camera stream source (entry-worker)."""

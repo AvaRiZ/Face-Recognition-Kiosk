@@ -7,7 +7,7 @@ from pathlib import Path
 from app.flask_app import create_flask_app
 from app.realtime import socketio
 from auth import init_auth_db
-from core.config import AppConfig
+from core.config import AppConfig, QUALITY_CONTEXTS, QUALITY_PROFILE_BOUNDS, QUALITY_PROFILE_FIELDS
 from core.state import AppStateManager
 from database.repository import UserRepository
 from database.schema import init_canonical_schema
@@ -70,6 +70,28 @@ def _apply_app_settings(runtime: AppRuntime) -> None:
     config = runtime.config
     state = runtime.state
 
+    def _quality_setting_key(context, field_name):
+        return f"{context}_quality_{field_name}"
+
+    def _coerce_quality_value(field_name, raw_value, fallback):
+        try:
+            return int(raw_value) if field_name in {"quality_face_area_min", "quality_face_area_good"} else float(raw_value)
+        except (TypeError, ValueError):
+            return fallback
+
+    def _apply_face_quality_profiles(legacy_quality_threshold):
+        profiles = {}
+        for context in QUALITY_CONTEXTS:
+            base = config.quality_profile_for_context(context).to_dict()
+            for field_name in QUALITY_PROFILE_FIELDS:
+                fallback = legacy_quality_threshold if field_name == "face_quality_threshold" else base[field_name]
+                raw_value = get_app_setting(config.db_path, _quality_setting_key(context, field_name), str(fallback))
+                parsed = _coerce_quality_value(field_name, raw_value, fallback)
+                bounds = QUALITY_PROFILE_BOUNDS[field_name]
+                base[field_name] = max(bounds["min"], min(bounds["max"], parsed))
+            profiles[context] = base
+        config.apply_quality_profiles(profiles)
+
     threshold = _coerce_float(
         get_app_setting(config.db_path, "threshold", str(state.base_threshold)),
         state.base_threshold,
@@ -83,6 +105,7 @@ def _apply_app_settings(runtime: AppRuntime) -> None:
         0.95,
     )
     state.set_thresholds(threshold, quality_threshold)
+    _apply_face_quality_profiles(quality_threshold)
 
     config.recognition_confidence_threshold = _coerce_float(
         get_app_setting(

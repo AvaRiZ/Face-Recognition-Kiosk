@@ -254,6 +254,8 @@ class FaceRecognitionService:
         detection_confidence=None,
         landmarks=None,
         precomputed_quality=None,
+        quality_context: str = "entry",
+        registration_quality=None,
     ):
         reg_state = self.state.registration_state
         if reg_state.in_progress:
@@ -267,28 +269,61 @@ class FaceRecognitionService:
                 face_crop,
                 detection_confidence=detection_confidence,
                 landmarks=landmarks,
+                context=quality_context,
             )
         else:
             quality_score, quality_status, quality_debug = precomputed_quality
 
-        if quality_score < self.state.face_quality_threshold:
-            message = f"  Skipping low quality face: {quality_score:.2f} ({quality_status})"
-            if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
-                primary_issue = quality_debug.get("primary_issue_label")
-                if primary_issue:
-                    message += f" | main issue: {primary_issue}"
-            if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
-                message += f" | {quality_service.quality_debug_summary(quality_debug)}"
-            print(message)
-            return {
-                "status": "low_quality",
-                "reason_code": "low_quality",
-                "quality_score": quality_score,
-                "quality_status": quality_status,
-                "quality_debug": quality_debug,
-                "match_confidence": None,
-                "match_threshold": None,
-            }
+        quality_threshold = self.config.quality_profile_for_context(quality_context).face_quality_threshold
+        if quality_score < quality_threshold:
+            if allow_registration and reg_state.phase == "capturing":
+                if registration_quality is None:
+                    registration_quality = quality_service.assess_face_quality(
+                        face_crop,
+                        detection_confidence=detection_confidence,
+                        landmarks=landmarks,
+                        context="registration",
+                    )
+                reg_quality_score, reg_quality_status, reg_quality_debug = registration_quality
+                registration_threshold = self.config.quality_profile_for_context("registration").face_quality_threshold
+                if reg_quality_score >= registration_threshold:
+                    quality_score, quality_status, quality_debug = reg_quality_score, reg_quality_status, reg_quality_debug
+                else:
+                    message = f"  Skipping low quality registration sample: {reg_quality_score:.2f} ({reg_quality_status})"
+                    if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
+                        primary_issue = reg_quality_debug.get("primary_issue_label")
+                        if primary_issue:
+                            message += f" | main issue: {primary_issue}"
+                    if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
+                        message += f" | {quality_service.quality_debug_summary(reg_quality_debug)}"
+                    print(message)
+                    return {
+                        "status": "low_quality",
+                        "reason_code": "low_quality",
+                        "quality_score": reg_quality_score,
+                        "quality_status": reg_quality_status,
+                        "quality_debug": reg_quality_debug,
+                        "match_confidence": None,
+                        "match_threshold": None,
+                    }
+            else:
+                message = f"  Skipping low quality face: {quality_score:.2f} ({quality_status})"
+                if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
+                    primary_issue = quality_debug.get("primary_issue_label")
+                    if primary_issue:
+                        message += f" | main issue: {primary_issue}"
+                if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
+                    message += f" | {quality_service.quality_debug_summary(quality_debug)}"
+                print(message)
+                return {
+                    "status": "low_quality",
+                    "reason_code": "low_quality",
+                    "quality_score": quality_score,
+                    "quality_status": quality_status,
+                    "quality_debug": quality_debug,
+                    "match_confidence": None,
+                    "match_threshold": None,
+                }
 
         message = (
             f"  Face quality: {quality_score:.2f} ({quality_status}) "
@@ -382,6 +417,34 @@ class FaceRecognitionService:
             }
 
         if allow_registration and reg_state.phase == "capturing":
+            if registration_quality is None:
+                registration_quality = quality_service.assess_face_quality(
+                    face_crop,
+                    detection_confidence=detection_confidence,
+                    landmarks=landmarks,
+                    context="registration",
+                )
+            reg_quality_score, reg_quality_status, reg_quality_debug = registration_quality
+            registration_threshold = self.config.quality_profile_for_context("registration").face_quality_threshold
+            if reg_quality_score < registration_threshold:
+                message = f"  Skipping low quality registration sample: {reg_quality_score:.2f} ({reg_quality_status})"
+                if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
+                    primary_issue = reg_quality_debug.get("primary_issue_label")
+                    if primary_issue:
+                        message += f" | main issue: {primary_issue}"
+                if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
+                    message += f" | {quality_service.quality_debug_summary(reg_quality_debug)}"
+                print(message)
+                return {
+                    "status": "low_quality",
+                    "reason_code": "low_quality",
+                    "quality_score": reg_quality_score,
+                    "quality_status": reg_quality_status,
+                    "quality_debug": reg_quality_debug,
+                    "match_confidence": None,
+                    "match_threshold": None,
+                }
+
             current_pose = self.state.get_current_registration_pose() or "front"
             detected_pose = quality_service.detect_face_pose(face_crop, landmarks=landmarks)
             if detected_pose != current_pose:
@@ -392,9 +455,9 @@ class FaceRecognitionService:
                 return {
                     "status": "pose_mismatch",
                     "reason_code": "pose_mismatch",
-                    "quality_score": quality_score,
-                    "quality_status": quality_status,
-                    "quality_debug": quality_debug,
+                    "quality_score": reg_quality_score,
+                    "quality_status": reg_quality_status,
+                    "quality_debug": reg_quality_debug,
                     "match_confidence": None,
                     "match_threshold": None,
                     "expected_pose": current_pose,
@@ -404,7 +467,7 @@ class FaceRecognitionService:
             sample = RegistrationSample(
                 face_crop=face_crop,
                 embeddings=embeddings,
-                quality=quality_score,
+                quality=reg_quality_score,
                 pose=current_pose,
             )
             print(f"  Captured registration sample for pose '{current_pose}'")
@@ -412,9 +475,9 @@ class FaceRecognitionService:
             return {
                 "status": "registration_captured",
                 "reason_code": "registration_captured",
-                "quality_score": quality_score,
-                "quality_status": quality_status,
-                "quality_debug": quality_debug,
+                "quality_score": reg_quality_score,
+                "quality_status": reg_quality_status,
+                "quality_debug": reg_quality_debug,
                 "match_confidence": None,
                 "match_threshold": None,
                 "expected_pose": current_pose,

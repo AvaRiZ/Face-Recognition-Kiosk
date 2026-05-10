@@ -282,6 +282,8 @@ class AppStateManager:
     def set_thresholds(self, threshold: float, quality_threshold: float) -> None:
         self._base_threshold = float(threshold)
         self._face_quality_threshold = float(quality_threshold)
+        self._config.base_threshold = float(threshold)
+        self._config.face_quality_threshold = float(quality_threshold)
 
     def load_users(self, users: list[User]) -> None:
         self._users = list(users)

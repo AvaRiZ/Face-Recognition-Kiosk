@@ -143,6 +143,7 @@ def _apply_runtime_config(runtime: WorkerRuntime, payload: dict) -> None:
         payload.get("recognition_confidence_threshold", runtime.config.recognition_confidence_threshold)
     )
     runtime.config.recognition_confidence_threshold = max(0.0, min(1.0, recognition_confidence_threshold))
+    runtime.config.apply_quality_profiles(payload.get("face_quality_profiles"))
     entry_source = _normalize_stream_source(payload.get("entry_cctv_stream_source"))
     if entry_source is not None:
         runtime.config.entry_cctv_stream_source = str(entry_source)
@@ -279,6 +280,7 @@ def build_runtime() -> WorkerRuntime:
                 ),
             ),
         )
+        config.apply_quality_profiles(runtime_payload.get("face_quality_profiles"))
         env_stream_override = (os.environ.get("WORKER_CCTV_STREAM_SOURCE") or "").strip()
         if not env_stream_override:
             source_key = "entry_cctv_stream_source" if worker_role == "entry" else "exit_cctv_stream_source"

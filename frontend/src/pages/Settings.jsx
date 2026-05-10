@@ -14,6 +14,47 @@ const DEFAULT_BOUNDS = {
   recognition_event_retention_days: { min: 1, max: 3650 }
 };
 
+const QUALITY_CONTEXTS = [
+  { id: 'entry', label: 'Entry Camera' },
+  { id: 'exit', label: 'Exit Camera' },
+  { id: 'registration', label: 'Registration' }
+];
+
+const QUALITY_FIELDS = [
+  { key: 'face_quality_threshold', label: 'Minimum Quality', step: '0.01' },
+  { key: 'face_quality_good_threshold', label: 'Good Quality', step: '0.01' },
+  { key: 'quality_face_area_min', label: 'Face Area Min', step: '100' },
+  { key: 'quality_face_area_good', label: 'Face Area Good', step: '100' },
+  { key: 'quality_detection_confidence_min', label: 'Detector Confidence Min', step: '0.01' },
+  { key: 'quality_detection_confidence_good', label: 'Detector Confidence Good', step: '0.01' },
+  { key: 'quality_sharpness_min', label: 'Sharpness Min', step: '1' },
+  { key: 'quality_sharpness_good', label: 'Sharpness Good', step: '1' },
+  { key: 'quality_brightness_min', label: 'Brightness Min', step: '1' },
+  { key: 'quality_brightness_good_min', label: 'Brightness Good Min', step: '1' },
+  { key: 'quality_brightness_good_max', label: 'Brightness Good Max', step: '1' },
+  { key: 'quality_brightness_max', label: 'Brightness Max', step: '1' },
+  { key: 'quality_dynamic_range_min', label: 'Dynamic Range Min', step: '1' },
+  { key: 'quality_dynamic_range_good', label: 'Dynamic Range Good', step: '1' },
+  { key: 'quality_pose_eye_tilt_good', label: 'Eye Tilt Good', step: '0.01' },
+  { key: 'quality_pose_eye_tilt_max', label: 'Eye Tilt Max', step: '0.01' },
+  { key: 'quality_pose_yaw_good', label: 'Yaw Good', step: '0.01' },
+  { key: 'quality_pose_yaw_max', label: 'Yaw Max', step: '0.01' },
+  { key: 'quality_landmark_margin_good', label: 'Landmark Margin Good', step: '0.01' },
+  { key: 'quality_landmark_margin_min', label: 'Landmark Margin Min', step: '0.01' }
+];
+
+function normalizeQualityProfiles(profiles) {
+  const source = profiles && typeof profiles === 'object' ? profiles : {};
+  return QUALITY_CONTEXTS.reduce((acc, context) => {
+    const profile = source[context.id] && typeof source[context.id] === 'object' ? source[context.id] : {};
+    acc[context.id] = QUALITY_FIELDS.reduce((profileAcc, field) => {
+      profileAcc[field.key] = String(profile[field.key] ?? '');
+      return profileAcc;
+    }, {});
+    return acc;
+  }, {});
+}
+
 function asFixedNumber(value, digits) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return '-';
@@ -157,6 +198,7 @@ export default function SettingsPage() {
   const [recognitionEventRetentionDays, setRecognitionEventRetentionDays] = React.useState('365');
   const [entryCctvStreamSource, setEntryCctvStreamSource] = React.useState('');
   const [exitCctvStreamSource, setExitCctvStreamSource] = React.useState('');
+  const [faceQualityProfiles, setFaceQualityProfiles] = React.useState(() => normalizeQualityProfiles());
 
   const permissions = React.useMemo(
     () => normalizeRolePermissions(role, data?.permissions),
@@ -176,6 +218,17 @@ export default function SettingsPage() {
     setRecognitionEventRetentionDays(String(payload?.recognition_event_retention_days ?? '365'));
     setEntryCctvStreamSource(String(payload?.entry_cctv_stream_source ?? ''));
     setExitCctvStreamSource(String(payload?.exit_cctv_stream_source ?? ''));
+    setFaceQualityProfiles(normalizeQualityProfiles(payload?.face_quality_profiles));
+  }, []);
+
+  const updateQualityProfileField = React.useCallback((context, field, value) => {
+    setFaceQualityProfiles(prev => ({
+      ...prev,
+      [context]: {
+        ...(prev?.[context] || {}),
+        [field]: value
+      }
+    }));
   }, []);
 
   const loadSettings = React.useCallback(async () => {
@@ -211,6 +264,7 @@ export default function SettingsPage() {
       payload.threshold = threshold;
       payload.quality_threshold = qualityThreshold;
       payload.recognition_confidence_threshold = recognitionConfidenceThreshold;
+      payload.face_quality_profiles = faceQualityProfiles;
     }
     if (permissions.can_manage_advanced_ops) {
       payload.recognition_event_retention_days = recognitionEventRetentionDays;
@@ -632,6 +686,44 @@ export default function SettingsPage() {
                     disabled={!canEditThresholds}
                     helpText="Minimum confidence required before logging an entry or exit event."
                   />
+                </div>
+
+                <div className="col-12">
+                  <hr className="my-1" />
+                  <h6 className="text-uppercase text-muted fw-semibold mb-3 mt-2" style={{ letterSpacing: '.07em', fontSize: '.7rem' }}>
+                    Face Quality Profiles
+                  </h6>
+                  <div className="row g-3">
+                    {QUALITY_CONTEXTS.map(context => (
+                      <div className="col-12" key={context.id}>
+                        <div className="border rounded-3 p-3">
+                          <div className="d-flex align-items-center justify-content-between gap-2 mb-3">
+                            <h6 className="mb-0">{context.label}</h6>
+                            {!canEditThresholds ? <span className="badge bg-secondary">Read-only</span> : null}
+                          </div>
+                          <div className="row g-3">
+                            {QUALITY_FIELDS.map(field => {
+                              const fieldBounds = bounds.face_quality_profiles?.[field.key] || {};
+                              return (
+                                <div className="col-12 col-md-6 col-xl-3" key={field.key}>
+                                  <NumberField
+                                    id={`${context.id}_${field.key}`}
+                                    label={field.label}
+                                    value={faceQualityProfiles?.[context.id]?.[field.key] ?? ''}
+                                    onChange={ev => updateQualityProfileField(context.id, field.key, ev.target.value)}
+                                    min={fieldBounds.min}
+                                    max={fieldBounds.max}
+                                    step={field.step}
+                                    disabled={!canEditThresholds}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
               <SaveFooter />

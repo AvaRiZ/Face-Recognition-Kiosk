@@ -30,6 +30,7 @@ from auth import (
     toggle_staff_status,
 )
 from core.models import User
+from core.config import QUALITY_CONTEXTS, QUALITY_PROFILE_BOUNDS, QUALITY_PROFILE_FIELDS
 from core.program_catalog import (
     DEFAULT_COLLEGE_PROGRAM_MAP,
     OTHER_COLLEGE_LABEL,
@@ -870,6 +871,7 @@ def create_routes_blueprint(deps):
         "vector_index_top_k": {"min": 1, "max": 100},
         "threshold": {"min": 0.1, "max": 0.95},
         "quality_threshold": {"min": 0.1, "max": 0.95},
+        "face_quality_profiles": QUALITY_PROFILE_BOUNDS,
         "recognition_confidence_threshold": {"min": 0.1, "max": 0.99},
         "occupancy_warning_threshold": {"min": 0.5, "max": 0.99},
         "occupancy_snapshot_interval_seconds": {"min": 60, "max": 3600},
@@ -912,6 +914,76 @@ def create_routes_blueprint(deps):
         if parsed < minimum or parsed > maximum:
             return None, f"`{key}` must be between {minimum} and {maximum}."
         return parsed, None
+
+    def _quality_setting_key(context, field_name):
+        return f"{context}_quality_{field_name}"
+
+    def _coerce_quality_field(field_name, value):
+        if field_name in {"quality_face_area_min", "quality_face_area_good"}:
+            return int(value)
+        return float(value)
+
+    def _read_face_quality_profiles(legacy_quality_threshold=None):
+        config = deps["config"]
+        profiles = {}
+        for context in QUALITY_CONTEXTS:
+            base = config.quality_profile_for_context(context).to_dict()
+            for field_name in QUALITY_PROFILE_FIELDS:
+                fallback = (
+                    legacy_quality_threshold
+                    if field_name == "face_quality_threshold" and legacy_quality_threshold is not None
+                    else base[field_name]
+                )
+                raw_value = _get_setting(
+                    deps["db_path"],
+                    _quality_setting_key(context, field_name),
+                    fallback,
+                )
+                try:
+                    parsed = _coerce_quality_field(field_name, raw_value)
+                except (TypeError, ValueError):
+                    parsed = fallback
+                bounds = QUALITY_PROFILE_BOUNDS[field_name]
+                parsed = max(bounds["min"], min(bounds["max"], parsed))
+                base[field_name] = parsed
+            profiles[context] = base
+        config.apply_quality_profiles(profiles)
+        return profiles
+
+    def _parse_quality_profiles_payload(payload):
+        if "face_quality_profiles" not in payload:
+            return None, None
+        raw_profiles = payload.get("face_quality_profiles")
+        if not isinstance(raw_profiles, dict):
+            return None, "`face_quality_profiles` must be an object."
+        parsed_profiles = {}
+        for context, profile_payload in raw_profiles.items():
+            normalized_context = str(context or "").strip().lower()
+            if normalized_context not in QUALITY_CONTEXTS:
+                return None, f"`face_quality_profiles.{context}` is not a supported context."
+            if not isinstance(profile_payload, dict):
+                return None, f"`face_quality_profiles.{normalized_context}` must be an object."
+            parsed_profile = {}
+            for field_name, raw_value in profile_payload.items():
+                if field_name not in QUALITY_PROFILE_FIELDS:
+                    return None, f"`face_quality_profiles.{normalized_context}.{field_name}` is not supported."
+                text = str(raw_value).strip()
+                if not text:
+                    return None, f"`face_quality_profiles.{normalized_context}.{field_name}` is required."
+                try:
+                    parsed = _coerce_quality_field(field_name, text)
+                except (TypeError, ValueError):
+                    return None, f"Invalid `face_quality_profiles.{normalized_context}.{field_name}` value."
+                bounds = QUALITY_PROFILE_BOUNDS[field_name]
+                if parsed < bounds["min"] or parsed > bounds["max"]:
+                    return (
+                        None,
+                        f"`face_quality_profiles.{normalized_context}.{field_name}` must be between "
+                        f"{bounds['min']} and {bounds['max']}.",
+                    )
+                parsed_profile[field_name] = parsed
+            parsed_profiles[normalized_context] = parsed_profile
+        return parsed_profiles, None
 
     def _parse_text_payload(payload, key, max_length=512):
         if key not in payload:
@@ -1061,6 +1133,7 @@ def create_routes_blueprint(deps):
         config.exit_cctv_stream_source = exit_cctv_stream_source
 
         config.recognition_confidence_threshold = recognition_confidence_threshold
+        face_quality_profiles = _read_face_quality_profiles(legacy_quality_threshold=quality_threshold)
 
         return {
             "threshold": float(threshold),
@@ -1073,6 +1146,7 @@ def create_routes_blueprint(deps):
             "recognition_event_retention_days": int(recognition_event_retention_days),
             "entry_cctv_stream_source": entry_cctv_stream_source,
             "exit_cctv_stream_source": exit_cctv_stream_source,
+            "face_quality_profiles": face_quality_profiles,
         }
 
     def _read_settings_audit_rows(include_rows):
@@ -1150,6 +1224,7 @@ def create_routes_blueprint(deps):
             "recognition_event_retention_days": settings_state["recognition_event_retention_days"],
             "entry_cctv_stream_source": settings_state["entry_cctv_stream_source"],
             "exit_cctv_stream_source": settings_state["exit_cctv_stream_source"],
+            "face_quality_profiles": settings_state["face_quality_profiles"],
             "permissions": permissions,
             "bounds": SETTINGS_BOUNDS,
             "last_change": last_change,
@@ -3849,6 +3924,7 @@ def create_routes_blueprint(deps):
                     for key in (
                         "threshold",
                         "quality_threshold",
+                        "face_quality_profiles",
                         "recognition_confidence_threshold",
                         "recognition_event_retention_days",
                         "entry_cctv_stream_source",
@@ -3919,6 +3995,25 @@ def create_routes_blueprint(deps):
                             current_settings["recognition_confidence_threshold"],
                             recognition_confidence_value,
                         )
+
+                profile_updates, profile_error = _parse_quality_profiles_payload(payload)
+                if profile_error:
+                    return jsonify({"success": False, "message": profile_error}), 400
+                if profile_updates is not None:
+                    next_profiles = {
+                        context: dict(current_settings["face_quality_profiles"].get(context, {}))
+                        for context in QUALITY_CONTEXTS
+                    }
+                    for context, profile_payload in profile_updates.items():
+                        for field_name, parsed_value in profile_payload.items():
+                            previous_value = next_profiles[context].get(field_name)
+                            next_profiles[context][field_name] = parsed_value
+                            if parsed_value != previous_value:
+                                changed_fields[_quality_setting_key(context, field_name)] = (
+                                    previous_value,
+                                    parsed_value,
+                                )
+                    next_settings["face_quality_profiles"] = next_profiles
 
             vector_bounds = SETTINGS_BOUNDS["vector_index_top_k"]
             vector_value, vector_error = _parse_bounded_int_payload(
@@ -4030,11 +4125,20 @@ def create_routes_blueprint(deps):
 
             if changed_fields:
                 for setting_key in changed_fields:
-                    _set_setting(deps["db_path"], setting_key, next_settings[setting_key])
+                    if setting_key in next_settings:
+                        _set_setting(deps["db_path"], setting_key, next_settings[setting_key])
+                    elif "_quality_" in setting_key:
+                        context, field_name = setting_key.split("_quality_", 1)
+                        _set_setting(
+                            deps["db_path"],
+                            setting_key,
+                            next_settings["face_quality_profiles"][context][field_name],
+                        )
                 deps["set_thresholds"](
                     float(next_settings["threshold"]),
                     float(next_settings["quality_threshold"]),
                 )
+                deps["config"].apply_quality_profiles(next_settings.get("face_quality_profiles"))
                 deps["config"].vector_index_top_k = int(next_settings["vector_index_top_k"])
                 deps["config"].recognition_confidence_threshold = float(
                     next_settings["recognition_confidence_threshold"]
@@ -4067,6 +4171,12 @@ def create_routes_blueprint(deps):
                 for setting_key in ordered_keys:
                     if setting_key not in changed_fields:
                         continue
+                    previous_value, updated_value = changed_fields[setting_key]
+                    summary_parts.append(
+                        f"{setting_key}: {_format_setting_value(setting_key, previous_value)} -> "
+                        f"{_format_setting_value(setting_key, updated_value)}"
+                    )
+                for setting_key in sorted(k for k in changed_fields if "_quality_" in k):
                     previous_value, updated_value = changed_fields[setting_key]
                     summary_parts.append(
                         f"{setting_key}: {_format_setting_value(setting_key, previous_value)} -> "

@@ -258,6 +258,9 @@ class TrackingState:
     last_quality_score: float = 0.0
     last_quality_status: str = "Poor"
     last_quality_debug: dict = field(default_factory=dict)
+    last_registration_quality_score: float = 0.0
+    last_registration_quality_status: str = "Poor"
+    last_registration_quality_debug: dict = field(default_factory=dict)
     last_landmarks: Optional[dict] = None
     last_pose: Optional[str] = None
     last_stable: bool = False

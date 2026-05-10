@@ -11,6 +11,7 @@ import numpy as np
 from flask import Blueprint, jsonify, request
 
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert, emit_unrecognized_detection
+from core.config import QUALITY_CONTEXTS, QUALITY_PROFILE_BOUNDS, QUALITY_PROFILE_FIELDS
 from core.models import RegistrationSample, User
 from db import connect as db_connect
 from db import get_app_setting
@@ -49,6 +50,38 @@ def _resolve_warning_threshold(db_path: str, default: float) -> float:
     except (TypeError, ValueError):
         parsed = float(default)
     return max(0.5, min(0.99, parsed))
+
+
+def _coerce_quality_field(field_name: str, value, fallback):
+    try:
+        if field_name in {"quality_face_area_min", "quality_face_area_good"}:
+            return int(value)
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _quality_setting_key(context: str, field_name: str) -> str:
+    return f"{context}_quality_{field_name}"
+
+
+def _resolve_face_quality_profiles(db_path: str, config, legacy_quality_threshold: float | None = None) -> dict:
+    profiles = {}
+    for context in QUALITY_CONTEXTS:
+        base = config.quality_profile_for_context(context).to_dict()
+        for field_name in QUALITY_PROFILE_FIELDS:
+            fallback = (
+                legacy_quality_threshold
+                if field_name == "face_quality_threshold" and legacy_quality_threshold is not None
+                else base[field_name]
+            )
+            raw_value = get_app_setting(db_path, _quality_setting_key(context, field_name), str(fallback))
+            parsed = _coerce_quality_field(field_name, raw_value, fallback)
+            bounds = QUALITY_PROFILE_BOUNDS[field_name]
+            base[field_name] = max(bounds["min"], min(bounds["max"], parsed))
+        profiles[context] = base
+    config.apply_quality_profiles(profiles)
+    return profiles
 
 
 def _camera_id_from_event_type(event_type: str) -> int | None:
@@ -317,6 +350,11 @@ def create_internal_blueprint(deps):
                 "settings_version": get_settings_version(deps["db_path"]),
                 "base_threshold": float(threshold),
                 "face_quality_threshold": float(quality_threshold),
+                "face_quality_profiles": _resolve_face_quality_profiles(
+                    deps["db_path"],
+                    config,
+                    legacy_quality_threshold=float(quality_threshold),
+                ),
                 "vector_index_top_k": int(config.vector_index_top_k),
                 "recognition_confidence_threshold": float(config.recognition_confidence_threshold),
                 "entry_cctv_stream_source": str(config.entry_cctv_stream_source),
