@@ -78,6 +78,13 @@ def _normalize_user_type(value) -> str:
     return normalized if normalized in {"enrolled", "unrecognized", "visitor", "staff"} else "unrecognized"
 
 
+def _normalize_person_name(value: object) -> str:
+    normalized = " ".join(str(value or "").split())
+    if not normalized:
+        return ""
+    return normalized.upper()
+
+
 _DASHBOARD_YEAR_LEVEL_LABELS = {
     1: "1st Year",
     2: "2nd Year",
@@ -4273,7 +4280,7 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_create():
         payload = request.get_json(silent=True) or {}
-        name = (payload.get("name") or "").strip()
+        name = _normalize_person_name(payload.get("name"))
         sr_code = (payload.get("sr_code") or "").strip()
         gender = (payload.get("gender") or "").strip()
         program = (payload.get("program") or "").strip()
@@ -4311,7 +4318,7 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin", "library_staff")
     def api_profiles_update(user_id):
         payload = request.get_json(silent=True) or {}
-        name = (payload.get("name") or "").strip()
+        name = _normalize_person_name(payload.get("name"))
         sr_code = (payload.get("sr_code") or "").strip()
         gender = (payload.get("gender") or "").strip()
         program = (payload.get("program") or "").strip()
