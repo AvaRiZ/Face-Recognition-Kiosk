@@ -152,6 +152,9 @@ export default function SettingsPage() {
   const [maxOccupancy, setMaxOccupancy] = React.useState('300');
   const [occupancyWarningThreshold, setOccupancyWarningThreshold] = React.useState('0.9');
   const [occupancySnapshotIntervalSeconds, setOccupancySnapshotIntervalSeconds] = React.useState('300');
+  const [overrideAdjustment, setOverrideAdjustment] = React.useState('');
+  const [overrideReason, setOverrideReason] = React.useState('');
+  const [overrideSubmitting, setOverrideSubmitting] = React.useState(false);
   const [faceSnapshotRetentionDays, setFaceSnapshotRetentionDays] = React.useState('30');
   const [recognitionEventRetentionDays, setRecognitionEventRetentionDays] = React.useState('365');
   const [entryCctvStreamSource, setEntryCctvStreamSource] = React.useState('');
@@ -283,6 +286,41 @@ export default function SettingsPage() {
       await showSuccess('Completed', 'Occupancy database reset successfully.');
     } catch (error) {
       await showError('Request Failed', getErrorMessage(error));
+    }
+  }
+
+  async function handleManualOverrideSubmit() {
+    if (!permissions.can_edit_operational) {
+      await showError('Read-Only Access', 'Your role does not have permission to adjust occupancy.');
+      return;
+    }
+
+    const adjustment = Number.parseInt(String(overrideAdjustment).trim(), 10);
+    const reason = String(overrideReason || '').trim();
+
+    if (!Number.isInteger(adjustment) || adjustment === 0) {
+      await showError('Invalid Adjustment', 'Enter a non-zero integer adjustment value.');
+      return;
+    }
+
+    if (!reason) {
+      await showError('Missing Reason', 'Provide a reason for the manual occupancy override.');
+      return;
+    }
+
+    setOverrideSubmitting(true);
+    try {
+      await fetchJson('/api/occupancy/adjust', {
+        method: 'POST',
+        body: JSON.stringify({ adjustment, reason })
+      });
+      setOverrideAdjustment('');
+      setOverrideReason('');
+      await showSuccess('Override Applied', 'Occupancy state was adjusted successfully.');
+    } catch (error) {
+      await showError('Override Failed', getErrorMessage(error));
+    } finally {
+      setOverrideSubmitting(false);
     }
   }
 
@@ -477,6 +515,60 @@ export default function SettingsPage() {
                     disabled={!canEditOperational}
                     helpText="Alerts fire when occupancy reaches this ratio of max capacity."
                   />
+                </div>
+              </div>
+
+              <div className="card border-primary-subtle mt-4">
+                <div className="card-body">
+                  <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                    <h5 className="card-title mb-0 text-primary">Manual Occupancy Override</h5>
+                    {!canEditOperational ? <span className="badge bg-secondary">Read-only</span> : null}
+                  </div>
+                  <p className="text-muted mb-3">
+                    Apply a signed adjustment when the live occupancy count needs reconciliation.
+                  </p>
+
+                  <div className="row g-3">
+                    <div className="col-12 col-lg-4">
+                      <label htmlFor="occupancy_override_adjustment" className="form-label fw-medium">Adjustment</label>
+                      <input
+                        id="occupancy_override_adjustment"
+                        type="number"
+                        className="form-control"
+                        placeholder="e.g. 2 or -1"
+                        value={overrideAdjustment}
+                        onChange={ev => setOverrideAdjustment(ev.target.value)}
+                        disabled={!canEditOperational || overrideSubmitting}
+                      />
+                      <div className="form-text">Use a positive number to add people or a negative number to subtract.</div>
+                    </div>
+
+                    <div className="col-12 col-lg-8">
+                      <label htmlFor="occupancy_override_reason" className="form-label fw-medium">Reason</label>
+                      <textarea
+                        id="occupancy_override_reason"
+                        className="form-control"
+                        rows={3}
+                        placeholder="Reason for this correction"
+                        value={overrideReason}
+                        onChange={ev => setOverrideReason(ev.target.value)}
+                        disabled={!canEditOperational || overrideSubmitting}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="d-flex align-items-center gap-2 mt-3">
+                    <button
+                      type="button"
+                      className="btn btn-outline-primary"
+                      onClick={handleManualOverrideSubmit}
+                      disabled={!canEditOperational || overrideSubmitting}
+                    >
+                      {overrideSubmitting
+                        ? <><span className="spinner-border spinner-border-sm me-2" />Applying…</>
+                        : <><i className="bi bi-sliders me-2" />Apply Override</>}
+                    </button>
+                  </div>
                 </div>
               </div>
               <SaveFooter />

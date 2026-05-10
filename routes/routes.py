@@ -78,6 +78,100 @@ def _normalize_user_type(value) -> str:
     return normalized if normalized in {"enrolled", "unrecognized", "visitor", "staff"} else "unrecognized"
 
 
+_DASHBOARD_YEAR_LEVEL_LABELS = {
+    1: "1st Year",
+    2: "2nd Year",
+    3: "3rd Year",
+    4: "4th Year",
+    5: "5th Year",
+    6: "6th Year",
+}
+_DASHBOARD_YEAR_LEVEL_PATTERN = re.compile(r"(?P<prefix>\d{2})-\d{5}$")
+
+
+def _derive_dashboard_year_level_from_sr_code(sr_code: str | None) -> str:
+    normalized = str(sr_code or "").strip()
+    match = _DASHBOARD_YEAR_LEVEL_PATTERN.fullmatch(normalized)
+    if not match:
+        return ""
+
+    try:
+        start_year = int(match.group("prefix"))
+    except ValueError:
+        return ""
+
+    current_year = date.today().year % 100
+    year_level = current_year - start_year
+    return _DASHBOARD_YEAR_LEVEL_LABELS.get(year_level, "")
+
+
+def _normalize_dashboard_year_level(
+    sr_code: str | None,
+    raw_year_level: str | None,
+    *,
+    program: str | None = None,
+    user_type: str | None = None,
+) -> str:
+    normalized_user_type = str(user_type or "").strip().lower()
+    normalized_program = str(program or "").strip().lower()
+    normalized_sr_code = str(sr_code or "").strip().lower()
+    visitor_like_sr_code = normalized_sr_code in {"", "-", "n/a", "na", "visitor", "unknown"}
+    if normalized_user_type == "visitor" or normalized_program == "visitor" or visitor_like_sr_code:
+        return "Visitor"
+
+    derived = _derive_dashboard_year_level_from_sr_code(sr_code)
+    if derived:
+        return derived
+
+    normalized = " ".join(str(raw_year_level or "").split())
+    if not normalized:
+        return "Unknown"
+
+    lowered = normalized.lower().replace("-", " ")
+    aliases = {
+        "1": "1st Year",
+        "1st": "1st Year",
+        "1st year": "1st Year",
+        "first year": "1st Year",
+        "2": "2nd Year",
+        "2nd": "2nd Year",
+        "2nd year": "2nd Year",
+        "second year": "2nd Year",
+        "3": "3rd Year",
+        "3rd": "3rd Year",
+        "3rd year": "3rd Year",
+        "third year": "3rd Year",
+        "4": "4th Year",
+        "4th": "4th Year",
+        "4th year": "4th Year",
+        "fourth year": "4th Year",
+        "5": "5th Year",
+        "5th": "5th Year",
+        "5th year": "5th Year",
+        "fifth year": "5th Year",
+        "6": "6th Year",
+        "6th": "6th Year",
+        "6th year": "6th Year",
+        "sixth year": "6th Year",
+        "unknown:student": "Visitor",
+        "unknown student": "Visitor",
+        "visitor": "Visitor",
+    }
+    return aliases.get(lowered, normalized or "Unknown")
+
+
+def _dashboard_year_level_sort_key(value: str | None) -> tuple[int, str]:
+    normalized = " ".join((value or "").split())
+    for number, label in _DASHBOARD_YEAR_LEVEL_LABELS.items():
+        if normalized == label:
+            return (number, label)
+    if normalized == "Visitor":
+        return (97, normalized)
+    if normalized == "Unknown":
+        return (99, normalized)
+    return (98, normalized)
+
+
 def _display_profile_field(value, *, user_type: str, default: str = "-", visitor_default: str = "Visitor") -> str:
     text = str(value or "").strip()
     if text:
@@ -2509,6 +2603,60 @@ def create_routes_blueprint(deps):
             for row in c.fetchall()
         ]
 
+        c.execute("""
+            SELECT
+                COALESCE(NULLIF(TRIM(u.gender), ''), 'Unknown') AS gender,
+                COUNT(DISTINCT re.user_id) AS count
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE re.captured_at IS NOT NULL
+              AND re.user_id IS NOT NULL
+              AND DATE(re.captured_at) BETWEEN %s AND %s
+            GROUP BY gender
+            ORDER BY count DESC, gender ASC
+        """, range_params)
+        gender_distribution = [
+            {"gender": row[0], "count": row[1]}
+            for row in c.fetchall()
+        ]
+
+        c.execute("""
+            SELECT
+                re.user_id,
+                NULLIF(TRIM(u.sr_code), '') AS sr_code,
+                NULLIF(TRIM(u.course), '') AS program,
+                COALESCE(NULLIF(TRIM(u.user_type), ''), 'enrolled') AS user_type,
+                MAX(NULLIF(TRIM(i.year_level), '')) AS year_level
+            FROM recognition_events re
+            LEFT JOIN users u ON re.user_id = u.user_id
+            LEFT JOIN imported_logs i
+              ON NULLIF(TRIM(i.sr_code), '') = NULLIF(TRIM(u.sr_code), '')
+            WHERE re.captured_at IS NOT NULL
+              AND re.user_id IS NOT NULL
+              AND DATE(re.captured_at) BETWEEN %s AND %s
+            GROUP BY
+                re.user_id,
+                NULLIF(TRIM(u.sr_code), ''),
+                NULLIF(TRIM(u.course), ''),
+                COALESCE(NULLIF(TRIM(u.user_type), ''), 'enrolled')
+        """, range_params)
+        year_level_counts = {}
+        for _, sr_code, program, user_type, raw_year_level in c.fetchall():
+            label = _normalize_dashboard_year_level(
+                sr_code,
+                raw_year_level,
+                program=program,
+                user_type=user_type,
+            )
+            year_level_counts[label] = year_level_counts.get(label, 0) + 1
+        year_level_distribution = sorted(
+            [
+                {"year_level": label, "count": count}
+                for label, count in year_level_counts.items()
+            ],
+            key=lambda item: _dashboard_year_level_sort_key(item.get("year_level")),
+        )
+
         # ── Peak hours (24-slot array, index = hour) ───────────────
 
         c.execute("""
@@ -2712,6 +2860,8 @@ def create_routes_blueprint(deps):
             "low_confidence_count": low_confidence_count,
             "daily_visitors": daily_visitors,
             "program_distribution": program_distribution,
+            "gender_distribution": gender_distribution,
+            "year_level_distribution": year_level_distribution,
             "user_type_distribution": user_type_distribution,
             "peak_hours": peak_hours,
             "top_visitors": top_visitors,

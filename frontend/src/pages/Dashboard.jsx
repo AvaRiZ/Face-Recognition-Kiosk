@@ -214,6 +214,110 @@ function buildUserTypeSummary(rows) {
   ].filter((item) => item.count > 0);
 }
 
+function normalizeProgramLabel(value) {
+  const normalized = String(value || "").trim();
+  return normalized || "Unknown";
+}
+
+function normalizeGenderDistribution(items = []) {
+  const merged = new Map();
+  items.forEach((item) => {
+    const label = String(item?.gender || item?.label || "Unknown").trim() || "Unknown";
+    const count = toNonNegativeNumber(item?.count);
+    if (count > 0) {
+      merged.set(label, (merged.get(label) || 0) + count);
+    }
+  });
+  return [...merged.entries()].map(([label, count]) => ({ label, count }));
+}
+
+function normalizeProgramDistribution(items = []) {
+  return items
+    .map((item) => ({
+      label: normalizeProgramLabel(item?.program || item?.label),
+      count: toNonNegativeNumber(item?.count),
+    }))
+    .filter((item) => item.count > 0);
+}
+
+function getYearLevelLabel(item) {
+  return item?.year_level || item?.label || "Unknown";
+}
+
+function normalizeYearLevelLabel(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "Unknown";
+
+  const lowered = normalized.toLowerCase().replace(/-/g, " ");
+  const aliases = {
+    "1": "1st Year",
+    "1st": "1st Year",
+    "1st year": "1st Year",
+    "first year": "1st Year",
+    "2": "2nd Year",
+    "2nd": "2nd Year",
+    "2nd year": "2nd Year",
+    "second year": "2nd Year",
+    "3": "3rd Year",
+    "3rd": "3rd Year",
+    "3rd year": "3rd Year",
+    "third year": "3rd Year",
+    "4": "4th Year",
+    "4th": "4th Year",
+    "4th year": "4th Year",
+    "fourth year": "4th Year",
+    "5": "5th Year",
+    "5th": "5th Year",
+    "5th year": "5th Year",
+    "fifth year": "5th Year",
+    "6": "6th Year",
+    "6th": "6th Year",
+    "6th year": "6th Year",
+    "sixth year": "6th Year",
+    "unknown:student": "Visitor",
+    "unknown student": "Visitor",
+    visitor: "Visitor",
+    unknown: "Unknown",
+  };
+
+  return aliases[lowered] || normalized;
+}
+
+function getYearLevelOrder(label) {
+  const normalized = normalizeYearLevelLabel(label);
+  const lookup = {
+    "1st Year": 1,
+    "2nd Year": 2,
+    "3rd Year": 3,
+    "4th Year": 4,
+    "5th Year": 5,
+    "6th Year": 6,
+    Visitor: 97,
+    Unknown: 99,
+  };
+  return lookup[normalized] ?? 98;
+}
+
+function normalizeYearLevelDistribution(items = []) {
+  const merged = new Map();
+
+  items.forEach((item) => {
+    const label = normalizeYearLevelLabel(getYearLevelLabel(item));
+    const count = toNonNegativeNumber(item?.count);
+    if (count > 0) {
+      merged.set(label, (merged.get(label) || 0) + count);
+    }
+  });
+
+  return [...merged.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => {
+      const orderDelta = getYearLevelOrder(a.label) - getYearLevelOrder(b.label);
+      if (orderDelta !== 0) return orderDelta;
+      return a.label.localeCompare(b.label);
+    });
+}
+
 // Analyze occupancy trend from snapshot history (oldest to newest order)
 function calculateOccupancyTrend(snapshots) {
   if (!Array.isArray(snapshots) || snapshots.length < 2) {
@@ -468,6 +572,26 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
     workbook,
     buildWorksheet(XLSX, programRows, { minWidth: 16, freezeTopRow: true }),
     sanitizeWorksheetName("Program Distribution")
+  );
+
+  const genderRows = [
+    ["Gender", "Unique Visitors"],
+    ...(data?.gender_distribution ?? []).map((item) => [item.gender || "Unknown", item.count]),
+  ];
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, genderRows, { minWidth: 16, freezeTopRow: true }),
+    sanitizeWorksheetName("Gender Distribution")
+  );
+
+  const yearLevelRows = [
+    ["Year Level", "Unique Visitors"],
+    ...(data?.year_level_distribution ?? []).map((item) => [item.year_level || "Unknown", item.count]),
+  ];
+  XLSX.utils.book_append_sheet(
+    workbook,
+    buildWorksheet(XLSX, yearLevelRows, { minWidth: 16, freezeTopRow: true }),
+    sanitizeWorksheetName("Year Level Distribution")
   );
 
   const hourRows = [
@@ -1424,6 +1548,120 @@ function WeekdayPatternChart({ data }) {
   );
 }
 
+function DashboardCategoryChart({
+  items,
+  type = "bar",
+  height = 260,
+  valueLabel = "visitors",
+  emptyText = "No data available yet.",
+  indexAxis = "x",
+}) {
+  const canvasRef = React.useRef(null);
+  const chartRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!canvasRef.current || !window.Chart || !Array.isArray(items) || !items.length) {
+      return undefined;
+    }
+
+    if (chartRef.current) {
+      chartRef.current.destroy();
+    }
+
+    const labels = items.map((item) => item.label);
+    const values = items.map((item) => toNonNegativeNumber(item.count));
+    const palette = ["#0072BB", "#198754", "#F7A01A", "#ED1B2F", "#6F42C1", "#20C997", "#FD7E14", "#0DCAF0"];
+
+    chartRef.current = new window.Chart(canvasRef.current, {
+      type,
+      data: {
+        labels,
+        datasets: [
+          {
+            label: valueLabel,
+            data: values,
+            backgroundColor:
+              type === "doughnut"
+                ? labels.map((_, index) => palette[index % palette.length])
+                : labels.map((_, index) => `${palette[index % palette.length]}CC`),
+            borderColor: labels.map((_, index) => palette[index % palette.length]),
+            borderWidth: type === "doughnut" ? 1 : 0,
+            borderRadius: type === "bar" ? 12 : 0,
+            maxBarThickness: type === "bar" ? 28 : undefined,
+            hoverOffset: type === "doughnut" ? 6 : 0,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        indexAxis,
+        cutout: type === "doughnut" ? "62%" : undefined,
+        plugins: {
+          legend:
+            type === "doughnut"
+                ? {
+                  display: true,
+                  position: "bottom",
+                  labels: {
+                    boxWidth: 12,
+                    padding: 14,
+                    usePointStyle: true,
+                    pointStyle: "circle",
+                  },
+                }
+              : { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const parsedValue =
+                  typeof ctx.parsed === "object"
+                    ? (indexAxis === "y" ? ctx.parsed.x : ctx.parsed.y)
+                    : ctx.parsed;
+                return ` ${ctx.label}: ${parsedValue} ${valueLabel}`;
+              },
+            },
+          },
+        },
+        scales:
+          type === "doughnut"
+            ? {}
+            : {
+                x: {
+                  beginAtZero: indexAxis === "y",
+                  grid: { display: false },
+                  border: { display: false },
+                  ticks: {
+                    font: { size: 11, weight: "600" },
+                  },
+                },
+                y: {
+                  beginAtZero: true,
+                  grid: { color: "rgba(79, 93, 115, 0.18)" },
+                  border: { display: false },
+                  ticks: {
+                    font: { size: 11, weight: "600" },
+                    precision: 0,
+                  },
+                },
+              },
+      },
+    });
+
+    return () => chartRef.current?.destroy();
+  }, [indexAxis, items, type, valueLabel]);
+
+  if (!Array.isArray(items) || !items.length) {
+    return <div className="dashboard-empty-state">{emptyText}</div>;
+  }
+
+  return (
+    <div className="dashboard-line-chart" style={{ height }}>
+      <canvas ref={canvasRef}></canvas>
+    </div>
+  );
+}
+
 // Main Dashboard Page
 export default function Dashboard() {
   const [data, setData] = React.useState(null);
@@ -1431,13 +1669,11 @@ export default function Dashboard() {
   const [error, setError] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
   const [selectedFilter, setSelectedFilter] = React.useState("today");
+  const [distributionTab, setDistributionTab] = React.useState("gender");
   const [occupancyData, setOccupancyData] = React.useState(null);
   const [occupancyHistory, setOccupancyHistory] = React.useState([]);
   const [activeAlerts, setActiveAlerts] = React.useState([]);
   const [occupancyPanelError, setOccupancyPanelError] = React.useState("");
-  const [overrideAdjustment, setOverrideAdjustment] = React.useState("");
-  const [overrideReason, setOverrideReason] = React.useState("");
-  const [overrideSubmitting, setOverrideSubmitting] = React.useState(false);
   const [dismissInFlightId, setDismissInFlightId] = React.useState(null);
   const [showSnapshotDetail, setShowSnapshotDetail] = React.useState(false);
   const latestRequestRef = React.useRef(0);
@@ -1611,7 +1847,9 @@ export default function Dashboard() {
   const unrecognizedCount = data?.unrecognized_count ?? 0;
   const lowConfidenceCount = data?.low_confidence_count ?? 0;
   const dailyVisitors = data?.daily_visitors ?? [];
-  const programDistrib = data?.program_distribution ?? [];
+  const programDistrib = normalizeProgramDistribution(data?.program_distribution ?? []);
+  const genderDistrib = normalizeGenderDistribution(data?.gender_distribution ?? []);
+  const yearLevelDistrib = normalizeYearLevelDistribution(data?.year_level_distribution ?? []);
   const peakHoursRaw = data?.peak_hours ?? [];
   const peakHours = normalizePeakHours(peakHoursRaw);
   const hourlyToday = normalizeHourWindow(peakHoursRaw, FULL_DAY_START, FULL_DAY_END);
@@ -1684,40 +1922,6 @@ export default function Dashboard() {
       await showError("Dismiss Failed", getErrorMessage(err, "Unable to dismiss alert."));
     } finally {
       setDismissInFlightId(null);
-    }
-  }
-
-  async function handleManualOverrideSubmit(event) {
-    event.preventDefault();
-    const adjustment = Number.parseInt(String(overrideAdjustment).trim(), 10);
-    const reason = String(overrideReason || "").trim();
-
-    if (!Number.isInteger(adjustment) || adjustment === 0) {
-      await showError("Invalid Adjustment", "Enter a non-zero integer adjustment value.");
-      return;
-    }
-    if (!reason) {
-      await showError("Missing Reason", "Provide a reason for the manual occupancy override.");
-      return;
-    }
-
-    setOverrideSubmitting(true);
-    try {
-      await fetchJson("/api/occupancy/adjust", {
-        method: "POST",
-        body: JSON.stringify({ adjustment, reason }),
-      });
-      setOverrideAdjustment("");
-      setOverrideReason("");
-      await showSuccess("Override Applied", "Occupancy state was adjusted successfully.");
-      await Promise.all([
-        loadOccupancyPanel({ silent: true }),
-        loadDashboardData({ silent: true, filterKey: selectedFilter }),
-      ]);
-    } catch (err) {
-      await showError("Override Failed", getErrorMessage(err, "Unable to apply manual adjustment."));
-    } finally {
-      setOverrideSubmitting(false);
     }
   }
 
@@ -1806,6 +2010,40 @@ export default function Dashboard() {
       detail: activeAlerts.length ? "capacity attention is still open" : "no unresolved capacity warning",
     },
   ];
+  const distributionTabs = {
+    gender: {
+      key: "gender",
+      label: "Gender",
+      title: "Gender distribution",
+      meta: `${genderDistrib.reduce((sum, item) => sum + item.count, 0)} visitors represented`,
+      note: "This view summarizes how recognized visitors in the selected range are distributed by gender.",
+      type: "doughnut",
+      items: genderDistrib,
+      emptyText: "No gender distribution is available for this range.",
+    },
+    program: {
+      key: "program",
+      label: "Program",
+      title: "Program distribution",
+      meta: `${programDistrib.length} program${programDistrib.length === 1 ? "" : "s"} represented`,
+      note: "This view highlights which academic programs appear most often in the filtered dashboard range.",
+      type: "bar",
+      indexAxis: "y",
+      items: programDistrib,
+      emptyText: "No program distribution is available for this range.",
+    },
+    year: {
+      key: "year",
+      label: "Year level",
+      title: "Year level distribution",
+      meta: `${yearLevelDistrib.length} year-level bucket${yearLevelDistrib.length === 1 ? "" : "s"} represented`,
+      note: "This view shows how recognized visitors in the selected range are spread across year levels.",
+      type: "bar",
+      items: yearLevelDistrib,
+      emptyText: "No year-level distribution is available for this range.",
+    },
+  };
+  const activeDistributionPanel = distributionTabs[distributionTab] || distributionTabs.gender;
 
   return (
     <section className="section dashboard dashboard-redesign">
@@ -1989,15 +2227,17 @@ export default function Dashboard() {
               <span className="dashboard-panel-meta">{filterLabel}</span>
             </div>
 
-            <DashboardProgressList
-              items={programDistrib.map((item) => ({
-                ...item,
-                accent: "blue",
-              }))}
-              labelKey="program"
-              valueKey="count"
-              emptyText="No program distribution is available for this range."
-            />
+            <div className="dashboard-scroll-region">
+              <DashboardProgressList
+                items={programDistrib.map((item) => ({
+                  ...item,
+                  accent: "blue",
+                }))}
+                labelKey="label"
+                valueKey="count"
+                emptyText="No program distribution is available for this range."
+              />
+            </div>
 
             <div className="dashboard-section-divider"></div>
 
@@ -2099,48 +2339,41 @@ export default function Dashboard() {
           <article className="dashboard-panel">
             <div className="dashboard-panel-heading">
               <div>
-                <p className="dashboard-panel-eyebrow">Controls</p>
-                <h2 className="dashboard-panel-title">Manual occupancy override</h2>
+                <p className="dashboard-panel-eyebrow">Distribution</p>
+                <h2 className="dashboard-panel-title">Visitor composition</h2>
               </div>
-              <span className="dashboard-panel-meta">Staff tool</span>
+              <span className="dashboard-panel-meta">{filterLabel}</span>
             </div>
-            <p className="dashboard-small-note">
-              Apply a signed adjustment when the live occupancy count needs reconciliation.
-            </p>
+            <div className="dashboard-tabs" role="tablist" aria-label="Distribution charts">
+              {Object.values(distributionTabs).map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  className={`dashboard-tab-button${distributionTab === tab.key ? " is-active" : ""}`}
+                  aria-selected={distributionTab === tab.key}
+                  onClick={() => setDistributionTab(tab.key)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-            <form onSubmit={handleManualOverrideSubmit} className="dashboard-override-form">
-              <div>
-                <label className="form-label small mb-1">Adjustment</label>
-                <input
-                  type="number"
-                  className="form-control form-control-sm"
-                  placeholder="e.g. +2 or -1"
-                  value={overrideAdjustment}
-                  onChange={(e) => setOverrideAdjustment(e.target.value)}
-                  disabled={overrideSubmitting}
-                />
+            <div className="dashboard-subsection dashboard-chart-section">
+              <div className="dashboard-subsection-heading">
+                <h3>{activeDistributionPanel.title}</h3>
+                <span>{activeDistributionPanel.meta}</span>
               </div>
-
-              <div>
-                <label className="form-label small mb-1">Reason</label>
-                <textarea
-                  className="form-control form-control-sm"
-                  rows={2}
-                  placeholder="Reason for this correction"
-                  value={overrideReason}
-                  onChange={(e) => setOverrideReason(e.target.value)}
-                  disabled={overrideSubmitting}
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="btn btn-sm btn-primary align-self-start"
-                disabled={overrideSubmitting}
-              >
-                {overrideSubmitting ? "Applying..." : "Apply Override"}
-              </button>
-            </form>
+              <DashboardCategoryChart
+                items={activeDistributionPanel.items}
+                type={activeDistributionPanel.type}
+                indexAxis={activeDistributionPanel.indexAxis || "x"}
+                height={260}
+                valueLabel="visitors"
+                emptyText={activeDistributionPanel.emptyText}
+              />
+            </div>
+            <p className="dashboard-small-note">{activeDistributionPanel.note}</p>
 
             <div className="dashboard-section-divider"></div>
 
