@@ -82,7 +82,6 @@ Supported settings and bounds:
 - `max_occupancy` (50 to 2000)
 - `occupancy_warning_threshold` (0.5 to 0.99)
 - `occupancy_snapshot_interval_seconds` (60 to 3600)
-- `face_snapshot_retention_days` (1 to 365)
 - `recognition_event_retention_days` (1 to 3650)
 - `entry_cctv_stream_source` (text, non-empty)
 - `exit_cctv_stream_source` (text, non-empty)

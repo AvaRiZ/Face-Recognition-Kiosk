@@ -11,7 +11,6 @@ const DEFAULT_BOUNDS = {
   recognition_confidence_threshold: { min: 0.1, max: 0.99 },
   occupancy_warning_threshold: { min: 0.5, max: 0.99 },
   occupancy_snapshot_interval_seconds: { min: 60, max: 3600 },
-  face_snapshot_retention_days: { min: 1, max: 365 },
   recognition_event_retention_days: { min: 1, max: 3650 }
 };
 
@@ -155,7 +154,6 @@ export default function SettingsPage() {
   const [overrideAdjustment, setOverrideAdjustment] = React.useState('');
   const [overrideReason, setOverrideReason] = React.useState('');
   const [overrideSubmitting, setOverrideSubmitting] = React.useState(false);
-  const [faceSnapshotRetentionDays, setFaceSnapshotRetentionDays] = React.useState('30');
   const [recognitionEventRetentionDays, setRecognitionEventRetentionDays] = React.useState('365');
   const [entryCctvStreamSource, setEntryCctvStreamSource] = React.useState('');
   const [exitCctvStreamSource, setExitCctvStreamSource] = React.useState('');
@@ -175,7 +173,6 @@ export default function SettingsPage() {
     setMaxOccupancy(String(payload?.max_occupancy ?? '300'));
     setOccupancyWarningThreshold(String(payload?.occupancy_warning_threshold ?? '0.9'));
     setOccupancySnapshotIntervalSeconds(String(payload?.occupancy_snapshot_interval_seconds ?? '300'));
-    setFaceSnapshotRetentionDays(String(payload?.face_snapshot_retention_days ?? '30'));
     setRecognitionEventRetentionDays(String(payload?.recognition_event_retention_days ?? '365'));
     setEntryCctvStreamSource(String(payload?.entry_cctv_stream_source ?? ''));
     setExitCctvStreamSource(String(payload?.exit_cctv_stream_source ?? ''));
@@ -216,7 +213,6 @@ export default function SettingsPage() {
       payload.recognition_confidence_threshold = recognitionConfidenceThreshold;
     }
     if (permissions.can_manage_advanced_ops) {
-      payload.face_snapshot_retention_days = faceSnapshotRetentionDays;
       payload.recognition_event_retention_days = recognitionEventRetentionDays;
       payload.entry_cctv_stream_source = entryCctvStreamSource;
       payload.exit_cctv_stream_source = exitCctvStreamSource;
@@ -652,17 +648,6 @@ export default function SettingsPage() {
               <div className="row g-4 mb-4">
                 <div className="col-12 col-lg-6">
                   <NumberField
-                    id="face_snapshot_retention_days"
-                    label="Face Snapshot Retention (days)"
-                    value={faceSnapshotRetentionDays}
-                    onChange={ev => setFaceSnapshotRetentionDays(ev.target.value)}
-                    min={bounds.face_snapshot_retention_days?.min ?? DEFAULT_BOUNDS.face_snapshot_retention_days.min}
-                    max={bounds.face_snapshot_retention_days?.max ?? DEFAULT_BOUNDS.face_snapshot_retention_days.max}
-                    disabled={!canManageAdvancedOps}
-                  />
-                </div>
-                <div className="col-12 col-lg-6">
-                  <NumberField
                     id="recognition_event_retention_days"
                     label="Recognition Event Retention (days)"
                     value={recognitionEventRetentionDays}
@@ -670,7 +655,7 @@ export default function SettingsPage() {
                     min={bounds.recognition_event_retention_days?.min ?? DEFAULT_BOUNDS.recognition_event_retention_days.min}
                     max={bounds.recognition_event_retention_days?.max ?? DEFAULT_BOUNDS.recognition_event_retention_days.max}
                     disabled={!canManageAdvancedOps}
-                    helpText="Older snapshots and event logs are purged automatically."
+                    helpText="Older event logs are purged automatically."
                   />
                 </div>
               </div>

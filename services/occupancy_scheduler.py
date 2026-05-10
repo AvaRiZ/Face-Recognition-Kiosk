@@ -7,7 +7,6 @@ Responsibilities:
 """
 from __future__ import annotations
 
-import os
 import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -100,29 +99,7 @@ class OccupancySnapshotScheduler:
                 parsed = float(default)
             return max(float(minimum), min(float(maximum), float(parsed)))
 
-        def _purge_face_snapshots(base_dir: Path, cutoff_time: datetime) -> set[str]:
-            if not base_dir.exists():
-                return set()
-            removed: set[str] = set()
-            cutoff_ts = cutoff_time.timestamp()
-            for root, _dirs, files in os.walk(base_dir):
-                for filename in files:
-                    file_path = Path(root) / filename
-                    try:
-                        if file_path.stat().st_mtime >= cutoff_ts:
-                            continue
-                    except Exception:
-                        continue
-                    try:
-                        file_path.unlink()
-                        removed.add(str(file_path))
-                    except Exception:
-                        continue
-            return removed
-
-        def _cleanup_user_image_paths(removed_paths: set[str]) -> int:
-            if not removed_paths:
-                return 0
+        def _cleanup_stale_user_image_paths() -> int:
             conn = db_connect(self.db_path)
             c = conn.cursor()
             c.execute(
@@ -138,8 +115,6 @@ class OccupancySnapshotScheduler:
                 paths = [path for path in str(raw_paths or "").split(";") if path]
                 kept_paths: list[str] = []
                 for path_text in paths:
-                    if path_text in removed_paths:
-                        continue
                     if not Path(path_text).exists():
                         continue
                     kept_paths.append(path_text)
@@ -238,27 +213,19 @@ class OccupancySnapshotScheduler:
 
             if now >= next_retention_run:
                 try:
-                    face_retention_days = _resolve_int_setting(
-                        "face_snapshot_retention_days",
-                        int(getattr(config, "face_snapshot_retention_days", 30)),
-                        minimum=1,
-                        maximum=365,
-                    )
                     event_retention_days = _resolve_int_setting(
                         "recognition_event_retention_days",
                         int(getattr(config, "recognition_event_retention_days", 365)),
                         minimum=1,
                         maximum=3650,
                     )
-                    face_cutoff = now - timedelta(days=face_retention_days)
-                    removed_paths = _purge_face_snapshots(Path(config.base_save_dir), face_cutoff)
-                    cleaned_users = _cleanup_user_image_paths(removed_paths)
+                    cleaned_users = _cleanup_stale_user_image_paths()
                     event_cutoff = now - timedelta(days=event_retention_days)
                     deleted_events = _purge_recognition_events(event_cutoff)
-                    if removed_paths or cleaned_users or deleted_events:
+                    if cleaned_users or deleted_events:
                         log_step(
-                            f"Retention cleanup completed: removed_files={len(removed_paths)} "
-                            f"updated_users={cleaned_users} deleted_events={deleted_events}",
+                            f"Retention cleanup completed: updated_users={cleaned_users} "
+                            f"deleted_events={deleted_events}",
                             status="OK",
                         )
                 except Exception as exc:

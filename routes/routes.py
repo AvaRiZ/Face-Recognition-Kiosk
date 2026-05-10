@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import struct
 import csv
 import io
@@ -874,7 +873,6 @@ def create_routes_blueprint(deps):
         "recognition_confidence_threshold": {"min": 0.1, "max": 0.99},
         "occupancy_warning_threshold": {"min": 0.5, "max": 0.99},
         "occupancy_snapshot_interval_seconds": {"min": 60, "max": 3600},
-        "face_snapshot_retention_days": {"min": 1, "max": 365},
         "recognition_event_retention_days": {"min": 1, "max": 3650},
     }
     SETTINGS_AUDIT_ACTION = "UPDATE_SETTINGS"
@@ -1030,22 +1028,6 @@ def create_routes_blueprint(deps):
         )
         config.occupancy_snapshot_interval_seconds = occupancy_snapshot_interval_seconds
 
-        face_retention_bounds = SETTINGS_BOUNDS["face_snapshot_retention_days"]
-        face_retention_setting = _get_setting(
-            deps["db_path"],
-            "face_snapshot_retention_days",
-            str(getattr(config, "face_snapshot_retention_days", 30)),
-        )
-        face_snapshot_retention_days = _coerce_int_value(
-            face_retention_setting,
-            getattr(config, "face_snapshot_retention_days", 30),
-        )
-        face_snapshot_retention_days = max(
-            int(face_retention_bounds["min"]),
-            min(int(face_retention_bounds["max"]), face_snapshot_retention_days),
-        )
-        config.face_snapshot_retention_days = face_snapshot_retention_days
-
         event_retention_bounds = SETTINGS_BOUNDS["recognition_event_retention_days"]
         event_retention_setting = _get_setting(
             deps["db_path"],
@@ -1088,7 +1070,6 @@ def create_routes_blueprint(deps):
             "max_occupancy": int(max_occupancy),
             "occupancy_warning_threshold": float(occupancy_warning_threshold),
             "occupancy_snapshot_interval_seconds": int(occupancy_snapshot_interval_seconds),
-            "face_snapshot_retention_days": int(face_snapshot_retention_days),
             "recognition_event_retention_days": int(recognition_event_retention_days),
             "entry_cctv_stream_source": entry_cctv_stream_source,
             "exit_cctv_stream_source": exit_cctv_stream_source,
@@ -1166,7 +1147,6 @@ def create_routes_blueprint(deps):
             "max_occupancy": settings_state["max_occupancy"],
             "occupancy_warning_threshold": settings_state["occupancy_warning_threshold"],
             "occupancy_snapshot_interval_seconds": settings_state["occupancy_snapshot_interval_seconds"],
-            "face_snapshot_retention_days": settings_state["face_snapshot_retention_days"],
             "recognition_event_retention_days": settings_state["recognition_event_retention_days"],
             "entry_cctv_stream_source": settings_state["entry_cctv_stream_source"],
             "exit_cctv_stream_source": settings_state["exit_cctv_stream_source"],
@@ -3182,9 +3162,6 @@ def create_routes_blueprint(deps):
             conn.commit()
             conn.close()
 
-            if os.path.exists(deps["base_save_dir"]):
-                shutil.rmtree(deps["base_save_dir"])
-
             deps["reset_database_state"]()
             return {"success": True, "message": "Database reset successfully"}
         except Exception as e:
@@ -3873,7 +3850,6 @@ def create_routes_blueprint(deps):
                         "threshold",
                         "quality_threshold",
                         "recognition_confidence_threshold",
-                        "face_snapshot_retention_days",
                         "recognition_event_retention_days",
                         "entry_cctv_stream_source",
                         "exit_cctv_stream_source",
@@ -4007,23 +3983,6 @@ def create_routes_blueprint(deps):
                     )
 
             if role == "super_admin":
-                face_retention_bounds = SETTINGS_BOUNDS["face_snapshot_retention_days"]
-                face_retention_value, face_retention_error = _parse_bounded_int_payload(
-                    payload,
-                    "face_snapshot_retention_days",
-                    int(face_retention_bounds["min"]),
-                    int(face_retention_bounds["max"]),
-                )
-                if face_retention_error:
-                    return jsonify({"success": False, "message": face_retention_error}), 400
-                if face_retention_value is not None:
-                    next_settings["face_snapshot_retention_days"] = face_retention_value
-                    if face_retention_value != current_settings["face_snapshot_retention_days"]:
-                        changed_fields["face_snapshot_retention_days"] = (
-                            current_settings["face_snapshot_retention_days"],
-                            face_retention_value,
-                        )
-
                 event_retention_bounds = SETTINGS_BOUNDS["recognition_event_retention_days"]
                 event_retention_value, event_retention_error = _parse_bounded_int_payload(
                     payload,
@@ -4085,7 +4044,6 @@ def create_routes_blueprint(deps):
                 deps["config"].occupancy_snapshot_interval_seconds = int(
                     next_settings["occupancy_snapshot_interval_seconds"]
                 )
-                deps["config"].face_snapshot_retention_days = int(next_settings["face_snapshot_retention_days"])
                 deps["config"].recognition_event_retention_days = int(
                     next_settings["recognition_event_retention_days"]
                 )
@@ -4101,7 +4059,6 @@ def create_routes_blueprint(deps):
                     "max_occupancy",
                     "occupancy_warning_threshold",
                     "occupancy_snapshot_interval_seconds",
-                    "face_snapshot_retention_days",
                     "recognition_event_retention_days",
                     "entry_cctv_stream_source",
                     "exit_cctv_stream_source",

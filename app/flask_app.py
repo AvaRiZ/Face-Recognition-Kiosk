@@ -30,7 +30,6 @@ def create_flask_app(config: AppConfig, state: AppStateManager, repository: User
     deps = {
         "config": config,
         "db_path": config.db_path,
-        "base_save_dir": config.base_save_dir,
         "repository": repository,
         "worker_runtime_attached": bool(cli),
         "embedding_service": EmbeddingService(config),

@@ -113,10 +113,7 @@ def main():
         sr_code = _random_sr_code(i)
         course = _random_course()
         embeddings = _random_embeddings(args.embedding_dim, count=3)
-        image_paths = [f"faces_improved/{sr_code}/face_seed_{j}.jpg" for j in range(1, 4)]
-        user_id = save_user_with_multiple_embeddings(
-            args.db, embeddings, image_paths, name, sr_code, course
-        )
+        user_id = save_user_with_multiple_embeddings(args.db, embeddings, [], name, sr_code, course)
         user_ids.append(user_id)
 
     _insert_logs(args.db, user_ids, args.days, args.avg_logs)

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import os
 import time
 from typing import Any
 
-import cv2
 import numpy as np
 
 from core.config import AppConfig
 from core.models import RecognitionResult, RegistrationSample, recognized_user_payload
 from core.state import AppStateManager
 from database.repository import UserRepository
-from services.dataset_service import DetectorDatasetService
 from services.embedding_service import EmbeddingService, count_embeddings, first_embedding
 
 
@@ -27,7 +24,6 @@ class FaceRecognitionService:
         self.state = state
         self.repository = repository
         self.embedding_service = embedding_service
-        self.detector_dataset_service = DetectorDatasetService(config)
         self._vector_indexes: dict[str, dict[str, Any]] = {}
         self._index_signature: tuple[tuple[int, int, int], ...] | None = None
         self._recognition_event_locks: dict[tuple[int, str], float] = {}
@@ -344,20 +340,6 @@ class FaceRecognitionService:
                     f"(lock={float(getattr(self.config, 'recognition_event_lock_seconds', 8)):.1f}s)"
                 )
 
-            timestamp = int(time.time() * 1000)
-            user_folder = os.path.join(self.config.base_save_dir, best_match.user.sr_code)
-            os.makedirs(user_folder, exist_ok=True)
-            filename = os.path.join(user_folder, f"face_{timestamp}_learned.jpg")
-            cv2.imwrite(filename, face_crop)
-            dataset_entry = self.detector_dataset_service.save_recognized_face_crop(
-                face_crop=face_crop,
-                sr_code=best_match.user.sr_code,
-                timestamp=timestamp,
-            )
-            if dataset_entry:
-                dataset_image_path, _dataset_label_path = dataset_entry
-                print(f"[OK] Added recognized crop to detector training dataset: {dataset_image_path}")
-
             primary_new = first_embedding(embeddings, self.config.primary_model)
             secondary_new = first_embedding(embeddings, self.config.secondary_model)
             if primary_new is not None:
@@ -365,7 +347,7 @@ class FaceRecognitionService:
             if secondary_new is not None:
                 best_match.user.embeddings.setdefault(self.config.secondary_model, []).append(secondary_new)
 
-            updated_user = self.repository.update_embeddings(best_match.user_id, embeddings, image_path=filename)
+            updated_user = self.repository.update_embeddings(best_match.user_id, embeddings, image_path=None)
             if updated_user:
                 self.state.replace_user(updated_user)
                 active_user = updated_user

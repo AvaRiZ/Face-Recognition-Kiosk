@@ -36,18 +36,6 @@ class AppConfig:
     # ------------------------------------------------------------------
     model_path: str = "model-training\Yolo-model\yolov8n-face.pt"
     db_path: str = ""
-    base_save_dir: str = "faces_improved"
-    detector_dataset_dir: str = "detector_dataset"
-    detector_train_split: str = "train"
-    real_val_dataset_dir: str = "real_val_dataset"
-
-    # ------------------------------------------------------------------
-    # Dataset capture / validation collection
-    # ------------------------------------------------------------------
-    real_val_capture_enabled: bool = False
-    real_val_capture_every_n_frames: int = 90
-    real_val_capture_max_frames: int = 300
-
     # ------------------------------------------------------------------
     # Recognition models and identity thresholds
     # ------------------------------------------------------------------
@@ -93,8 +81,8 @@ class AppConfig:
     #   are captured for each required pose during registration.
     # - `registration_retained_samples_per_pose` controls how many top-quality
     #   images per pose are kept for final enrollment.
-    registration_samples_per_pose_target: int = 5
-    registration_retained_samples_per_pose: int = 5
+    registration_samples_per_pose_target: int = 3
+    registration_retained_samples_per_pose: int = 3
     registration_session_timeout_seconds: int = 180
     registration_worker_heartbeat_ttl_seconds: int = 10
 
@@ -146,8 +134,6 @@ class AppConfig:
     occupancy_warning_threshold: float = 0.90
 
     # Retention policies (in days).
-    # Face snapshots should be purged after the retention window.
-    face_snapshot_retention_days: int = 30
     recognition_event_retention_days: int = 365
 
     # ------------------------------------------------------------------

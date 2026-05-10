@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pickle
-import shutil
 import subprocess
 import sys
 import threading
@@ -15,7 +14,6 @@ from core.config import AppConfig
 from core.models import User
 from core.state import AppStateManager
 from database.repository import UserRepository
-from services.dataset_service import DetectorDatasetService
 from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
 from services.quality_service import FaceQualityService
 from services.recognition_service import FaceRecognitionService
@@ -54,7 +52,6 @@ class CLIApplication:
         self.yolo_model = yolo_model
         self.yolo_device = yolo_device
         self.worker_role = str(worker_role or "entry").strip().lower()
-        self.detector_dataset_service = DetectorDatasetService(config)
         self._detection_pause_event = threading.Event()
         self._pause_notice_shown = False
         self._stream_status_lock = threading.Lock()
@@ -629,7 +626,6 @@ class CLIApplication:
         fps_start_time = time.time()
         current_fps = 0
         frame_index = 0
-        saved_real_val_frames = self.detector_dataset_service.count_real_val_frames()
         registration_prompted = False
         last_visible_track_ids: list[int] = []
         last_face_crops = []
@@ -682,16 +678,6 @@ class CLIApplication:
                 last_face_crops = []
                 last_face_qualities = []
                 registration_prompted = False
-
-            if (
-                self.config.real_val_capture_enabled
-                and saved_real_val_frames < self.config.real_val_capture_max_frames
-                and frame_index % max(self.config.real_val_capture_every_n_frames, 1) == 0
-            ):
-                saved_frame_path = self.detector_dataset_service.save_real_val_frame(frame, frame_index)
-                if saved_frame_path:
-                    saved_real_val_frames += 1
-                    print(f"[OK] Saved real validation frame: {saved_frame_path}")
 
             run_detection = self._should_run_detection(frame_index)
             if run_detection:

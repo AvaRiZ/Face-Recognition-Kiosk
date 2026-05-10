@@ -20,7 +20,6 @@ from database.repository import UserRepository
 from database.schema import init_canonical_schema
 from db import is_postgres_target, resolve_database_target
 from routes.routes import init_imported_logs_table
-from services.dataset_service import DetectorDatasetService
 from services.embedding_service import EmbeddingService
 from services.quality_service import FaceQualityService
 from services.recognition_service import FaceRecognitionService
@@ -66,9 +65,7 @@ def _load_default_local_env(repo_root: Path) -> None:
 
 def build_runtime() -> HostRuntime:
     config = AppConfig()
-    os.makedirs(config.base_save_dir, exist_ok=True)
     ensure_profile_upload_dir()
-    DetectorDatasetService(config).ensure_structure()
 
     repository = UserRepository(config.db_path)
     repository.init_db()
@@ -205,16 +202,6 @@ def _apply_app_settings(runtime: HostRuntime) -> None:
         config.occupancy_snapshot_interval_seconds,
         60,
         3600,
-    )
-    config.face_snapshot_retention_days = _coerce_int(
-        get_app_setting(
-            config.db_path,
-            "face_snapshot_retention_days",
-            str(getattr(config, "face_snapshot_retention_days", 30)),
-        ),
-        getattr(config, "face_snapshot_retention_days", 30),
-        1,
-        365,
     )
     config.recognition_event_retention_days = _coerce_int(
         get_app_setting(

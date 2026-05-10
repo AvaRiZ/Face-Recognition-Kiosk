@@ -13,7 +13,6 @@ from database.repository import UserRepository
 from database.schema import init_canonical_schema
 from db import get_app_setting, is_postgres_target, resolve_database_target
 from routes.routes import init_imported_logs_table
-from services.dataset_service import DetectorDatasetService
 from services.staff_service import ensure_profile_upload_dir
 from utils.logging import log_header, log_step
 
@@ -127,16 +126,6 @@ def _apply_app_settings(runtime: AppRuntime) -> None:
         60,
         3600,
     )
-    config.face_snapshot_retention_days = _coerce_int(
-        get_app_setting(
-            config.db_path,
-            "face_snapshot_retention_days",
-            str(getattr(config, "face_snapshot_retention_days", 30)),
-        ),
-        getattr(config, "face_snapshot_retention_days", 30),
-        1,
-        365,
-    )
     config.recognition_event_retention_days = _coerce_int(
         get_app_setting(
             config.db_path,
@@ -165,9 +154,7 @@ def _apply_app_settings(runtime: AppRuntime) -> None:
 
 def build_runtime() -> AppRuntime:
     config = AppConfig()
-    os.makedirs(config.base_save_dir, exist_ok=True)
     ensure_profile_upload_dir()
-    DetectorDatasetService(config).ensure_structure()
 
     repository = UserRepository(config.db_path)
     repository.init_db()
