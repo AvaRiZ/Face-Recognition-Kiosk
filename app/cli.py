@@ -512,13 +512,7 @@ class CLIApplication:
         locked_track_id: int | None,
         track_id: int,
     ) -> bool:
-        if not registration_enabled:
-            return False
-        if not reg_state.manual_active:
-            return False
-        if locked_track_id is None:
-            return False
-        return track_id != locked_track_id
+        return False
 
     @staticmethod
     def _reset_registration_recognition_streak(track_state) -> None:

@@ -271,7 +271,7 @@ class FaceRecognitionService:
         registration_quality=None,
     ):
         reg_state = self.state.registration_state
-        if reg_state.in_progress:
+        if reg_state.in_progress and allow_registration:
             return {
                 "status": "registration_pending",
                 "reason_code": "registration_pending",

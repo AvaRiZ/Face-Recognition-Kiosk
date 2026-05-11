@@ -1,8 +1,15 @@
 import unittest
 import tempfile
+import sys
+import types
 
 import numpy as np
 
+realtime_stub = types.ModuleType("app.realtime")
+realtime_stub.emit_analytics_update = lambda *args, **kwargs: None
+sys.modules.setdefault("app.realtime", realtime_stub)
+
+from app.cli import CLIApplication
 from core.config import AppConfig
 from core.models import RegistrationSample
 from core.state import AppStateManager
@@ -23,6 +30,19 @@ def _sample(pose: str) -> RegistrationSample:
 class _FailingEmbeddingService:
     def extract_embedding_ensemble(self, face_crop):
         raise AssertionError("Embedding extraction should not run for a wrong registration pose")
+
+
+class _RecordingEmbeddingService:
+    def __init__(self, config):
+        self.config = config
+        self.calls = 0
+
+    def extract_embedding_ensemble(self, face_crop):
+        self.calls += 1
+        return {
+            self.config.primary_model: [np.ones(4, dtype=np.float32)],
+            self.config.secondary_model: [np.ones(4, dtype=np.float32)],
+        }
 
 
 class _NoopRepository:
@@ -152,6 +172,20 @@ class RegistrationPoseFlowTests(unittest.TestCase):
         self.assertEqual(state.registration_state.phase, "ready")
         self.assertTrue(state.is_registration_ready())
 
+    def test_registration_lock_does_not_skip_non_target_tracks(self):
+        state = self._state()
+        self.assertTrue(state.start_registration_session())
+        state.start_manual_registration(10)
+
+        self.assertFalse(
+            CLIApplication._should_skip_track_during_registration(
+                registration_enabled=True,
+                reg_state=state.registration_state,
+                locked_track_id=10,
+                track_id=11,
+            )
+        )
+
     def test_registration_pose_mismatch_skips_embedding_extraction(self):
         config = AppConfig()
         state = AppStateManager(config)
@@ -175,6 +209,34 @@ class RegistrationPoseFlowTests(unittest.TestCase):
         self.assertEqual(result["status"], "pose_mismatch")
         self.assertEqual(result["expected_pose"], "front")
         self.assertEqual(result["detected_pose"], "right")
+
+    def test_ready_registration_session_still_allows_recognition(self):
+        config = AppConfig()
+        state = AppStateManager(config)
+        embedding_service = _RecordingEmbeddingService(config)
+        service = FaceRecognitionService(
+            config=config,
+            state=state,
+            repository=_NoopRepository(),
+            embedding_service=embedding_service,
+        )
+
+        self.assertTrue(state.start_registration_session())
+        for pose in ("front", "left", "right"):
+            for _ in range(int(config.registration_samples_per_pose_target)):
+                state.capture_registration_sample(_sample(pose))
+
+        self.assertEqual(state.registration_state.phase, "ready")
+        result = service.register_or_recognize_face(
+            np.zeros((260, 260, 3), dtype=np.uint8),
+            quality_service=_PoseMismatchQualityService(),
+            allow_registration=False,
+            precomputed_quality=(1.0, "Good", {"failed_checks": [], "component_scores": {}}),
+            quality_context="entry",
+        )
+
+        self.assertEqual(embedding_service.calls, 1)
+        self.assertEqual(result["status"], "no_match")
 
     def test_registration_samples_remain_in_memory_until_completion(self):
         state = self._state()
