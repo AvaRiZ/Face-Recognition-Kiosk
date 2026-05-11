@@ -12,6 +12,32 @@ def _checkerboard_face(size=260):
 
 
 class FaceQualityProfileTests(unittest.TestCase):
+    def test_default_pose_classifier_has_stable_neutral_band(self):
+        config = AppConfig()
+        service = FaceQualityService(config)
+
+        landmarks = {
+            "left_eye": (80, 100),
+            "right_eye": (180, 100),
+            "nose": (141, 130),
+        }
+
+        self.assertIsNone(service.classify_face_pose(landmarks, width=260, height=260))
+
+    def test_pose_classifier_uses_neutral_band_between_front_and_side(self):
+        config = AppConfig()
+        config.registration_pose_front_max_yaw_ratio = 0.20
+        config.registration_pose_side_min_yaw_ratio = 0.25
+        service = FaceQualityService(config)
+
+        landmarks = {
+            "left_eye": (80, 100),
+            "right_eye": (180, 100),
+            "nose": (141, 130),
+        }
+
+        self.assertIsNone(service.classify_face_pose(landmarks, width=260, height=260))
+
     def test_quality_service_uses_context_specific_sharpness_thresholds(self):
         config = AppConfig()
         profiles = config.quality_profiles_to_dict()

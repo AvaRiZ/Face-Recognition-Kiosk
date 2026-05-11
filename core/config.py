@@ -115,9 +115,9 @@ class AppConfig:
     # ------------------------------------------------------------------
     primary_model: str = "ArcFace"
     secondary_model: str = "Facenet"
-    primary_threshold: float = 0.80
-    secondary_threshold: float = 0.76
-    base_threshold: float = 0.70
+    primary_threshold: float = 0.77
+    secondary_threshold: float = 0.75
+    base_threshold: float = 0.75
     vector_index_top_k: int = 20
 
     # ------------------------------------------------------------------
@@ -160,18 +160,19 @@ class AppConfig:
     registration_session_timeout_seconds: int = 180
     registration_worker_heartbeat_ttl_seconds: int = 10
 
-    confidence_smoothing_window: int = 3
+    confidence_smoothing_window: int = 2
     detection_every_n_frames: int = 1
     recognition_cooldown_seconds: int = 1
-    recognition_event_lock_seconds: int = 8
+    registration_capture_cooldown_seconds: float = 0.25
+    recognition_event_lock_seconds: int = 10
     recognition_confidence_threshold: float = 0.72
 
-    registration_recognition_confirm_frames: int = 3
+    registration_recognition_confirm_frames: int = 2
     registration_recognition_confidence_margin: float = 0.08
     registration_recognition_uncertain_margin: float = 0.04
 
-    unknown_person_attempt_threshold: int = 3
-    stability_time_required: float = 0.3
+    unknown_person_attempt_threshold: int = 1
+    stability_time_required: float = 0.2
     position_tolerance: int = 200
     track_stale_seconds: float = 5.0
 

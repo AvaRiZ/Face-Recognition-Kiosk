@@ -370,6 +370,8 @@ def create_internal_blueprint(deps):
                 "force_new_identity": bool(getattr(reg_state, "force_new_identity", False)),
                 "registration_kind": str(getattr(reg_state, "registration_kind", "student") or "student"),
             }
+        registration_progress_getter = deps.get("get_registration_progress")
+        registration_progress = registration_progress_getter() if callable(registration_progress_getter) else None
         return jsonify(
             {
                 "settings_version": get_settings_version(deps["db_path"]),
@@ -385,6 +387,7 @@ def create_internal_blueprint(deps):
                 "entry_cctv_stream_source": str(config.entry_cctv_stream_source),
                 "exit_cctv_stream_source": str(config.exit_cctv_stream_source),
                 "registration_control": registration_control,
+                "registration_progress": registration_progress,
                 "entry_worker_online": _entry_worker_online(),
                 "entry_worker_last_seen_at": _entry_worker_last_seen_at(),
             }
@@ -468,12 +471,26 @@ def create_internal_blueprint(deps):
         reg_state = reg_state_getter()
         active_session_id = str(getattr(reg_state, "session_id", "") or "").strip()
         current_phase = str(getattr(reg_state, "phase", "idle") or "idle").strip().lower()
+        expected_pose = str(getattr(reg_state, "current_pose", "") or "").strip().lower()
         if not active_session_id:
             _log_reject("no_active_session", 409)
             return _json_error("No active registration session is available for sample ingestion.", 409)
         if current_phase != "capturing":
             _log_reject("session_not_capturing", 409)
             return _json_error("Registration session is not accepting new samples.", 409)
+        if not expected_pose:
+            _log_reject("no_expected_pose", 409)
+            return _json_error("Registration session is not accepting pose samples right now.", 409)
+        if pose != expected_pose:
+            print(
+                "[REG-SAMPLE][POSE-MISMATCH] "
+                f"sample_id={sample_id} session_id={session_id} payload_pose={pose} expected_pose={expected_pose}"
+            )
+            _log_reject("pose_mismatch", 409)
+            return _json_error(
+                f"Registration sample pose mismatch: expected {expected_pose}, received {pose}.",
+                409,
+            )
         if session_id != active_session_id:
             print(
                 "[REG-SAMPLE][SESSION-MISMATCH] "
