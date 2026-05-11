@@ -31,7 +31,6 @@ class AppStateManager:
         self._base_threshold = float(config.base_threshold)
         self._face_quality_threshold = float(config.face_quality_threshold)
         self._worker_heartbeats: dict[str, dict[str, object]] = {}
-        self._registration_ingested_sample_ids_by_session: dict[str, set[str]] = {}
         self._tracking_refresh_event = threading.Event()
         self._reset_registration_collections()
         self._registration_state.phase = "idle"
@@ -94,7 +93,6 @@ class AppStateManager:
         state.session_started_at = now
         state.last_activity_at = now
         self._set_session_expiry(now=now)
-        self._registration_ingested_sample_ids_by_session = {session_id: set()}
         self.set_registration_status_reason(reason_code, reason_message)
         return session_id
 
@@ -107,7 +105,6 @@ class AppStateManager:
         state.force_new_identity = False
         state.capture_track_id = None
         state.selected_track_id = None
-        self._registration_ingested_sample_ids_by_session = {}
         if not preserve_phase:
             state.phase = "idle"
 
@@ -510,17 +507,6 @@ class AppStateManager:
             reason_code="session_canceled",
             reason_message="Registration session canceled.",
         )
-
-    def claim_registration_sample_id(self, session_id: str, sample_id: str) -> bool:
-        normalized_session_id = str(session_id or "").strip()
-        normalized_sample_id = str(sample_id or "").strip()
-        if not normalized_session_id or not normalized_sample_id:
-            return False
-        seen = self._registration_ingested_sample_ids_by_session.setdefault(normalized_session_id, set())
-        if normalized_sample_id in seen:
-            return False
-        seen.add(normalized_sample_id)
-        return True
 
     def record_worker_heartbeat(
         self,

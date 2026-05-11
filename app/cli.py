@@ -6,7 +6,6 @@ import sys
 import threading
 import time
 import math
-import uuid
 
 import cv2
 
@@ -910,26 +909,6 @@ class CLIApplication:
                                     "no_match",
                                     "No match yet. Continue holding position for registration capture.",
                                 )
-                    if (
-                        status == "registration_captured"
-                        and registration_enabled
-                        and hasattr(self.repository, "enqueue_registration_sample")
-                    ):
-                        session_id = str(getattr(self.state.registration_state, "session_id", "") or "").strip()
-                        registration_sample = result.get("registration_sample")
-                        if session_id and registration_sample is not None:
-                            try:
-                                self.repository.enqueue_registration_sample(
-                                    sample_id=f"sample-{uuid.uuid4().hex}",
-                                    session_id=session_id,
-                                    pose=str(getattr(registration_sample, "pose", "front") or "front"),
-                                    quality=float(getattr(registration_sample, "quality", 0.0) or 0.0),
-                                    face_crop=getattr(registration_sample, "face_crop", None),
-                                    embeddings=getattr(registration_sample, "embeddings", {}) or {},
-                                )
-                            except Exception as exc:
-                                print(f"[WARN] Failed to queue registration sample for API sync: {exc}")
-
             reg_state = self.state.registration_state
             selected_track_id = self._locked_registration_track_id() if registration_enabled else None
 

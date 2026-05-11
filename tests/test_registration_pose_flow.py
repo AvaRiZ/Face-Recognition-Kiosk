@@ -1,6 +1,5 @@
 import unittest
 import tempfile
-import time
 
 import numpy as np
 
@@ -47,20 +46,13 @@ class _PoseMismatchQualityService:
         return ""
 
 
-class _RegistrationSampleApiClient:
-    def __init__(self, delay_seconds: float = 0.0):
+class _RecordingApiClient:
+    def __init__(self):
         self.posts = []
-        self.delay_seconds = float(delay_seconds)
 
     def post_json(self, path, payload):
-        if self.delay_seconds > 0:
-            time.sleep(self.delay_seconds)
         self.posts.append((path, payload))
-        return {
-            "success": True,
-            "duplicate": False,
-            "capture_count": len(self.posts),
-        }
+        return {"success": True}
 
 
 class RegistrationPoseFlowTests(unittest.TestCase):
@@ -184,9 +176,52 @@ class RegistrationPoseFlowTests(unittest.TestCase):
         self.assertEqual(result["expected_pose"], "front")
         self.assertEqual(result["detected_pose"], "right")
 
-    def test_worker_repository_flushes_registration_sample_after_enqueue(self):
+    def test_registration_samples_remain_in_memory_until_completion(self):
+        state = self._state()
+
+        self.assertTrue(state.start_registration_session())
+        for pose in ("front", "left", "right"):
+            for _ in range(3):
+                state.capture_registration_sample(_sample(pose))
+
+        self.assertEqual(state.registration_state.phase, "ready")
+        self.assertTrue(state.is_registration_ready())
+        self.assertEqual(len(state.registration_state.captured_samples), 9)
+
+        state.complete_registration()
+
+        self.assertEqual(state.registration_state.phase, "idle")
+        self.assertEqual(state.registration_state.captured_samples, [])
+        self.assertEqual(state.registration_state.pose_capture_counts, {"front": 0, "left": 0, "right": 0})
+
+    def test_registration_samples_are_purged_on_cancel(self):
+        state = self._state()
+
+        self.assertTrue(state.start_registration_session())
+        state.capture_registration_sample(_sample("front"))
+
+        self.assertEqual(len(state.registration_state.captured_samples), 1)
+        state.cancel_registration_session()
+
+        self.assertEqual(state.registration_state.captured_samples, [])
+        self.assertEqual(state.registration_state.pose_capture_counts, {"front": 0, "left": 0, "right": 0})
+
+    def test_registration_samples_are_purged_on_expiry(self):
+        state = self._state()
+        state._config.registration_session_timeout_seconds = 1
+
+        self.assertTrue(state.start_registration_session())
+        state.capture_registration_sample(_sample("front"))
+        state.registration_state.expires_at = 0
+
+        self.assertTrue(state.expire_registration_session_if_needed())
+        self.assertEqual(state.registration_state.phase, "expired")
+        self.assertEqual(state.registration_state.captured_samples, [])
+        self.assertEqual(state.registration_state.pose_capture_counts, {"front": 0, "left": 0, "right": 0})
+
+    def test_worker_repository_has_no_registration_sample_enqueue_api(self):
         with tempfile.TemporaryDirectory() as queue_dir:
-            api_client = _RegistrationSampleApiClient()
+            api_client = _RecordingApiClient()
             queue = DurableOutboundQueue(queue_dir)
             repository = WorkerApiRepository(
                 api_client=api_client,
@@ -195,60 +230,13 @@ class RegistrationPoseFlowTests(unittest.TestCase):
                 camera_id=1,
             )
 
-            entry_id = repository.enqueue_registration_sample(
-                sample_id="sample-1",
-                session_id="session-1",
-                pose="front",
-                quality=0.95,
-                face_crop=np.zeros((24, 24, 3), dtype=np.uint8),
-                embeddings={"ArcFace": [np.ones(4, dtype=np.float32)]},
-            )
-
-            self.assertIsNotNone(entry_id)
-            deadline = time.time() + 2.0
-            while queue.count_pending("registration_sample", session_id="session-1") and time.time() < deadline:
-                time.sleep(0.01)
-
-            self.assertEqual(queue.count_pending("registration_sample", session_id="session-1"), 0)
-            self.assertEqual(len(api_client.posts), 1)
-            self.assertEqual(api_client.posts[0][0], "/api/internal/registrations/samples")
-            self.assertEqual(api_client.posts[0][1]["sample_id"], "sample-1")
-
-    def test_worker_repository_registration_enqueue_does_not_wait_for_slow_api(self):
-        with tempfile.TemporaryDirectory() as queue_dir:
-            api_client = _RegistrationSampleApiClient(delay_seconds=0.25)
-            queue = DurableOutboundQueue(queue_dir)
-            repository = WorkerApiRepository(
-                api_client=api_client,
-                outbound_queue=queue,
-                station_id="entry-station-1",
-                camera_id=1,
-            )
-
-            started_at = time.perf_counter()
-            entry_id = repository.enqueue_registration_sample(
-                sample_id="sample-1",
-                session_id="session-1",
-                pose="front",
-                quality=0.95,
-                face_crop=np.zeros((24, 24, 3), dtype=np.uint8),
-                embeddings={"ArcFace": [np.ones(4, dtype=np.float32)]},
-            )
-            elapsed = time.perf_counter() - started_at
-
-            self.assertIsNotNone(entry_id)
-            self.assertLess(elapsed, 0.15)
-
-            deadline = time.time() + 2.0
-            while queue.count_pending("registration_sample", session_id="session-1") and time.time() < deadline:
-                time.sleep(0.01)
+            self.assertFalse(hasattr(repository, "enqueue_registration_sample"))
             self.assertEqual(queue.count_pending("registration_sample", session_id="session-1"), 0)
 
-    def test_registration_queue_preserves_session_order_after_failure(self):
+    def test_durable_queue_no_longer_blocks_registration_sample_entries(self):
         with tempfile.TemporaryDirectory() as queue_dir:
             queue = DurableOutboundQueue(queue_dir)
             queue.enqueue("registration_sample", {"session_id": "session-1", "pose": "front"})
-            time.sleep(0.002)
             queue.enqueue("registration_sample", {"session_id": "session-1", "pose": "left"})
             sent_poses = []
 
@@ -260,7 +248,7 @@ class RegistrationPoseFlowTests(unittest.TestCase):
 
             self.assertEqual(sent, 0)
             self.assertEqual(remaining, 2)
-            self.assertEqual(sent_poses, ["front"])
+            self.assertEqual(sent_poses, ["front", "left"])
             self.assertEqual(queue.count_pending("registration_sample", session_id="session-1"), 2)
 
 

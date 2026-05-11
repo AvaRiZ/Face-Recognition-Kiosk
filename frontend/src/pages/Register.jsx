@@ -1427,6 +1427,22 @@ export default function RegisterPage() {
                               </button>
                             ) : null}
 
+                            {primaryAction === 'submit' && sessionActive ? (
+                              <button className="btn btn-outline-danger px-4" type="button" onClick={handleCancelSession} disabled={!canCancelSession}>
+                                {sessionAction === 'cancel' ? (
+                                  <>
+                                    <span className="spinner-border spinner-border-sm me-2" role="status" />
+                                    Canceling Session...
+                                  </>
+                                ) : (
+                                  <>
+                                    <i className="bi bi-x-circle me-2"></i>
+                                    Cancel Session
+                                  </>
+                                )}
+                              </button>
+                            ) : null}
+
                           </div>
                         </div>
                       </form>
