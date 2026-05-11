@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import math
+import uuid
 
 import cv2
 
@@ -264,9 +265,39 @@ class CLIApplication:
             return value
         return f"{value[:max(0, max_chars - 3)].rstrip()}..."
 
-    def _maybe_trigger_greeting_popup(self, recognized_user: dict[str, str] | None, now: float | None = None) -> None:
-        if not self._registration_allowed_on_this_worker():
-            return
+    def _play_recognition_beep(self) -> None:
+        worker_role = "exit" if self.worker_role == "exit" else "entry"
+
+        def _beep() -> None:
+            try:
+                try:
+                    import winsound
+                except Exception:
+                    winsound = None
+
+                if winsound is not None:
+                    if worker_role == "exit":
+                        winsound.Beep(520, 120)
+                    else:
+                        winsound.Beep(880, 140)
+                    return
+
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+                if worker_role == "exit":
+                    time.sleep(0.08)
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_beep,
+            daemon=True,
+            name=f"{worker_role}-recognition-beep",
+        ).start()
+
+    def _maybe_trigger_recognition_alert(self, recognized_user: dict[str, str] | None, now: float | None = None) -> None:
         user_name = self._normalize_display_name((recognized_user or {}).get("name"))
         if not user_name:
             return
@@ -289,8 +320,10 @@ class CLIApplication:
             self._greeting_last_shown_by_user.pop(key, None)
 
         self._greeting_last_shown_by_user[normalized_key] = observed_now
-        self._greeting_popup_name = user_name
-        self._greeting_popup_active_until = observed_now + duration
+        self._play_recognition_beep()
+        if self._registration_allowed_on_this_worker():
+            self._greeting_popup_name = user_name
+            self._greeting_popup_active_until = observed_now + duration
 
     def _draw_greeting_popup(self, frame, frame_width: int, frame_height: int, now: float | None = None) -> None:
         if not self._registration_allowed_on_this_worker():
@@ -850,6 +883,7 @@ class CLIApplication:
                     track_state.last_recognition_confidence = result.get("match_confidence")
                     track_state.last_recognition_threshold = result.get("match_threshold")
                     local_capture_count = None
+                    registration_sample = None
                     if registration_capture_allowed and status == "registration_captured":
                         registration_sample = result.get("registration_sample")
                         if registration_sample is not None:
@@ -859,7 +893,7 @@ class CLIApplication:
                         track_state.recognized = True
                         track_state.user = dict(self.state.recognized_user) if self.state.recognized_user else None
                         track_state.failed_good_quality_attempts = 0
-                        self._maybe_trigger_greeting_popup(track_state.user, now=current_time)
+                        self._maybe_trigger_recognition_alert(track_state.user, now=current_time)
                     else:
                         track_state.recognized = False
                         track_state.user = None
@@ -909,6 +943,25 @@ class CLIApplication:
                                     "no_match",
                                     "No match yet. Continue holding position for registration capture.",
                                 )
+                    if (
+                        registration_capture_allowed
+                        and status == "registration_captured"
+                        and registration_sample is not None
+                        and hasattr(self.repository, "post_registration_sample")
+                    ):
+                        session_id = str(getattr(self.state.registration_state, "session_id", "") or "").strip()
+                        if session_id:
+                            try:
+                                self.repository.post_registration_sample(
+                                    sample_id=f"sample-{uuid.uuid4().hex}",
+                                    session_id=session_id,
+                                    pose=str(getattr(registration_sample, "pose", "front") or "front"),
+                                    quality=float(getattr(registration_sample, "quality", 0.0) or 0.0),
+                                    face_crop=getattr(registration_sample, "face_crop", None),
+                                    embeddings=getattr(registration_sample, "embeddings", {}) or {},
+                                )
+                            except Exception as exc:
+                                print(f"[WARN] Failed to hand off registration sample to host memory: {exc}")
             reg_state = self.state.registration_state
             selected_track_id = self._locked_registration_track_id() if registration_enabled else None
 

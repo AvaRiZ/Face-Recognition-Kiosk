@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 
+import cv2
 import numpy as np
 
 from core.models import User
@@ -148,6 +150,66 @@ class WorkerApiRepository:
                 },
             )
         return None
+
+    def post_registration_sample(
+        self,
+        *,
+        sample_id: str,
+        session_id: str,
+        pose: str,
+        quality: float,
+        face_crop: np.ndarray,
+        embeddings: dict[str, list[np.ndarray]],
+    ) -> dict | None:
+        if face_crop is None or getattr(face_crop, "size", 0) == 0:
+            print("[REG-SAMPLE][LOCAL-SKIP] empty face_crop")
+            return None
+
+        success, encoded = cv2.imencode(".jpg", face_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        if not success:
+            print("[REG-SAMPLE][LOCAL-SKIP] jpeg encode failed")
+            return None
+
+        payload_embeddings: dict[str, list[list[float]]] = {}
+        for model_name, vectors in (embeddings or {}).items():
+            serialized_vectors: list[list[float]] = []
+            for vector in vectors or []:
+                if not isinstance(vector, np.ndarray):
+                    continue
+                if vector.ndim != 1 or vector.size == 0:
+                    continue
+                serialized_vectors.append(vector.astype(np.float32, copy=False).tolist())
+            if serialized_vectors:
+                payload_embeddings[str(model_name)] = serialized_vectors
+        if not payload_embeddings:
+            print("[REG-SAMPLE][LOCAL-SKIP] no valid embeddings")
+            return None
+
+        payload = {
+            "sample_id": str(sample_id or f"sample-{uuid.uuid4().hex}"),
+            "session_id": str(session_id or "").strip(),
+            "pose": str(pose or "").strip().lower(),
+            "quality": float(quality),
+            "face_jpeg_base64": base64.b64encode(encoded.tobytes()).decode("ascii"),
+            "embeddings": payload_embeddings,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "worker_role": "exit" if int(self.camera_id) == 2 else "entry",
+            "station_id": self.station_id,
+            "camera_id": int(self.camera_id),
+        }
+        if not payload["session_id"] or payload["pose"] not in {"front", "left", "right"}:
+            print(
+                f"[REG-SAMPLE][LOCAL-SKIP] invalid payload session_id='{payload['session_id']}' pose='{payload['pose']}'"
+            )
+            return None
+
+        response = self.api_client.post_json("/api/internal/registrations/samples", payload)
+        print(
+            "[REG-SAMPLE][LOCAL-ACK] "
+            f"sample_id={payload['sample_id']} session_id={payload['session_id']} "
+            f"capture_count={response.get('capture_count')} ready={bool(response.get('ready_to_submit'))}"
+        )
+        return response
 
     def send_outbound_entry(self, entry: dict) -> bool:
         kind = str(entry.get("kind") or "")

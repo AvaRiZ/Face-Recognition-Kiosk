@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
 from datetime import datetime, timezone
 
+import cv2
 import numpy as np
 from flask import Blueprint, jsonify, request
 
 from app.realtime import emit_analytics_update, emit_capacity_threshold_alert, emit_unrecognized_detection
 from core.config import QUALITY_CONTEXTS, QUALITY_PROFILE_BOUNDS, QUALITY_PROFILE_FIELDS
-from core.models import User
+from core.models import RegistrationSample, User
 from db import connect as db_connect
 from db import get_app_setting
 from services.occupancy_service import OccupancyService, resolve_capacity_limit
@@ -147,6 +149,24 @@ def _deserialize_embeddings(payload_embeddings: dict) -> dict[str, list[np.ndarr
         if vec_list:
             normalized[str(model_name)] = vec_list
     return normalized
+
+
+def _decode_face_jpeg_base64(encoded_image: str) -> np.ndarray | None:
+    text = str(encoded_image or "").strip()
+    if not text:
+        return None
+    if "," in text and text.lower().startswith("data:"):
+        _, text = text.split(",", 1)
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    buffer = np.frombuffer(raw, dtype=np.uint8)
+    if buffer.size == 0:
+        return None
+    return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
 
 
 def _parse_observed_timestamp(value) -> float:
@@ -399,6 +419,107 @@ def create_internal_blueprint(deps):
                 "recorded_at": float(recorded_at),
                 "entry_worker_online": _entry_worker_online(),
                 "entry_worker_last_seen_at": _entry_worker_last_seen_at(),
+            }
+        )
+
+    @bp.route("/registrations/samples", methods=["POST"], endpoint="registrations_samples_ingest")
+    def registration_samples_ingest():
+        payload = request.get_json(silent=True) or {}
+        sample_id = str(payload.get("sample_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        worker_role = str(payload.get("worker_role") or "").strip().lower() or "entry"
+        station_id = str(payload.get("station_id") or "").strip() or None
+        camera_id = _optional_int(payload.get("camera_id"))
+        pose = str(payload.get("pose") or "").strip().lower()
+        quality = _optional_float(payload.get("quality"))
+        embeddings = _deserialize_embeddings(payload.get("embeddings") or {})
+
+        def _log_reject(reason: str, status: int):
+            print(
+                "[REG-SAMPLE][REJECT] "
+                f"reason={reason} status={status} sample_id={sample_id} session_id={session_id} "
+                f"worker_role={worker_role} station_id={station_id} camera_id={camera_id} pose={pose}"
+            )
+
+        if not sample_id:
+            _log_reject("missing_sample_id", 400)
+            return _json_error("`sample_id` is required.", 400)
+        if not session_id:
+            _log_reject("missing_session_id", 400)
+            return _json_error("`session_id` is required.", 400)
+        if worker_role != "entry":
+            _log_reject("non_entry_worker", 403)
+            return _json_error("Registration sample ingestion only accepts entry worker payloads.", 403)
+        if pose not in {"front", "left", "right"}:
+            _log_reject("invalid_pose", 400)
+            return _json_error("`pose` must be one of: front, left, right.", 400)
+        if quality is None:
+            _log_reject("missing_quality", 400)
+            return _json_error("`quality` is required and must be numeric.", 400)
+        if not embeddings:
+            _log_reject("invalid_embeddings", 400)
+            return _json_error("`embeddings` is required and must contain valid vectors.", 400)
+
+        reg_state_getter = deps.get("get_registration_state")
+        capture_sample = deps.get("capture_registration_sample")
+        if not callable(reg_state_getter) or not callable(capture_sample):
+            _log_reject("ingestion_dependencies_unavailable", 503)
+            return _json_error("Registration sample ingestion dependencies are unavailable.", 503)
+
+        reg_state = reg_state_getter()
+        active_session_id = str(getattr(reg_state, "session_id", "") or "").strip()
+        current_phase = str(getattr(reg_state, "phase", "idle") or "idle").strip().lower()
+        expected_pose = str(getattr(reg_state, "current_pose", "") or "").strip().lower()
+        if not active_session_id:
+            _log_reject("no_active_session", 409)
+            return _json_error("No active registration session is available for sample ingestion.", 409)
+        if session_id != active_session_id:
+            _log_reject("stale_session", 409)
+            return _json_error("Registration session is stale. Start a new session and retry capture.", 409)
+        if current_phase != "capturing":
+            _log_reject("session_not_capturing", 409)
+            return _json_error("Registration session is not accepting new samples.", 409)
+        if not expected_pose:
+            _log_reject("no_expected_pose", 409)
+            return _json_error("Registration session is not accepting pose samples right now.", 409)
+        if pose != expected_pose:
+            _log_reject("pose_mismatch", 409)
+            return _json_error(
+                f"Registration sample pose mismatch: expected {expected_pose}, received {pose}.",
+                409,
+            )
+
+        face_crop = _decode_face_jpeg_base64(payload.get("face_jpeg_base64"))
+        if face_crop is None or getattr(face_crop, "size", 0) == 0:
+            _log_reject("invalid_face_jpeg_base64", 400)
+            return _json_error("`face_jpeg_base64` must contain a valid JPEG image.", 400)
+
+        sample = RegistrationSample(
+            face_crop=face_crop,
+            embeddings=embeddings,
+            quality=float(quality),
+            pose=pose,
+        )
+        capture_count = int(capture_sample(sample))
+        reg_state = reg_state_getter()
+        print(
+            "[REG-SAMPLE][MEMORY-INGESTED] "
+            f"sample_id={sample_id} session_id={session_id} pose={pose} "
+            f"capture_count={capture_count}/{int(getattr(reg_state, 'max_captures', 0))} "
+            f"phase={str(getattr(reg_state, 'phase', 'idle') or 'idle')}"
+        )
+        return jsonify(
+            {
+                "success": True,
+                "sample_id": sample_id,
+                "session_id": session_id,
+                "capture_count": capture_count,
+                "max_captures": int(getattr(reg_state, "max_captures", 0)),
+                "phase": str(getattr(reg_state, "phase", "idle") or "idle"),
+                "ready_to_submit": bool(getattr(reg_state, "ready_to_submit", False)),
+                "worker_role": worker_role,
+                "station_id": station_id,
+                "camera_id": camera_id,
             }
         )
 

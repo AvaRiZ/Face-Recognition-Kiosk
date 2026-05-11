@@ -233,6 +233,33 @@ class RegistrationPoseFlowTests(unittest.TestCase):
             self.assertFalse(hasattr(repository, "enqueue_registration_sample"))
             self.assertEqual(queue.count_pending("registration_sample", session_id="session-1"), 0)
 
+    def test_worker_repository_posts_registration_sample_without_queueing(self):
+        with tempfile.TemporaryDirectory() as queue_dir:
+            api_client = _RecordingApiClient()
+            queue = DurableOutboundQueue(queue_dir)
+            repository = WorkerApiRepository(
+                api_client=api_client,
+                outbound_queue=queue,
+                station_id="entry-station-1",
+                camera_id=1,
+            )
+
+            response = repository.post_registration_sample(
+                sample_id="sample-1",
+                session_id="session-1",
+                pose="front",
+                quality=0.95,
+                face_crop=np.zeros((24, 24, 3), dtype=np.uint8),
+                embeddings={"ArcFace": [np.ones(4, dtype=np.float32)]},
+            )
+
+            self.assertEqual(response, {"success": True})
+            self.assertEqual(queue.count_pending("registration_sample", session_id="session-1"), 0)
+            self.assertEqual(len(api_client.posts), 1)
+            self.assertEqual(api_client.posts[0][0], "/api/internal/registrations/samples")
+            self.assertIn("face_jpeg_base64", api_client.posts[0][1])
+            self.assertEqual(api_client.posts[0][1]["sample_id"], "sample-1")
+
     def test_durable_queue_no_longer_blocks_registration_sample_entries(self):
         with tempfile.TemporaryDirectory() as queue_dir:
             queue = DurableOutboundQueue(queue_dir)
