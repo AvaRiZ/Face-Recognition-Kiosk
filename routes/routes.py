@@ -3753,6 +3753,7 @@ def create_routes_blueprint(deps):
 
         query = """
             SELECT
+                re.user_id,
                 u.name,
                 u.sr_code,
                 u.gender,
@@ -3769,7 +3770,7 @@ def create_routes_blueprint(deps):
         if selected_date:
             query += " WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s"
             params.append(selected_date)
-        query += " ORDER BY COALESCE(re.captured_at, re.ingested_at) DESC"
+        query += " ORDER BY COALESCE(re.captured_at, re.ingested_at) ASC, re.id ASC"
 
         c.execute(query, params)
         logs = c.fetchall()
@@ -3787,7 +3788,10 @@ def create_routes_blueprint(deps):
         program_lookup = build_program_lookup(catalog_entries)
 
         export_rows = []
+        open_sessions_by_user = {}
+
         for (
+            user_id,
             name,
             sr_code,
             gender,
@@ -3843,19 +3847,46 @@ def create_routes_blueprint(deps):
             timestamp_text = _normalize_timestamp_for_json(event_time)
             date_text = timestamp_text[:10] if timestamp_text else ""
             time_text = timestamp_text[11:19] if len(timestamp_text) >= 19 else timestamp_text
+            user_key = (
+                str(date_text or "").strip(),
+                int(user_id) if user_id is not None else None,
+                str(display_sr_code or "").strip().upper(),
+                str(display_name or "").strip().upper(),
+            )
 
-            export_rows.append(
-                {
+            if normalized_event_type == "entry":
+                row_data = {
                     "date": date_text,
                     "sr_code": display_sr_code,
                     "name": display_name,
                     "sex": display_gender,
                     "college_office": display_college,
                     "program": display_program,
-                    "entry_timestamp": time_text if normalized_event_type == "entry" else "",
-                    "exit_timestamp": time_text if normalized_event_type == "exit" else "",
+                    "entry_timestamp": time_text,
+                    "exit_timestamp": "",
                 }
-            )
+                open_sessions_by_user.setdefault(user_key, []).append(row_data)
+                export_rows.append(row_data)
+            elif normalized_event_type == "exit":
+                open_sessions = open_sessions_by_user.get(user_key) or []
+                if open_sessions:
+                    open_sessions[-1]["exit_timestamp"] = time_text
+                    open_sessions.pop()
+                    if not open_sessions:
+                        open_sessions_by_user.pop(user_key, None)
+                else:
+                    export_rows.append(
+                        {
+                            "date": date_text,
+                            "sr_code": display_sr_code,
+                            "name": display_name,
+                            "sex": display_gender,
+                            "college_office": display_college,
+                            "program": display_program,
+                            "entry_timestamp": "",
+                            "exit_timestamp": time_text,
+                        }
+                    )
 
         response = _build_entry_exit_logs_workbook(
             export_rows,
