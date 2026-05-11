@@ -358,19 +358,30 @@ class AppStateManager:
         expected_pose: str | None = None,
         force_new_identity: bool = False,
         registration_kind: str = "student",
+        pose_capture_counts: dict[str, int] | None = None,
     ) -> None:
         state = self._registration_state
         previous_phase = str(state.phase or "idle").strip().lower()
         previous_session_id = str(state.session_id or "").strip() or None
         next_session_id = str(session_id or "").strip() or None
         session_changed = previous_session_id != next_session_id
+        previous_pose_index = int(state.current_pose_index or 0)
+        previous_pose_counts = {
+            pose: int(state.pose_capture_counts.get(pose, 0) or 0)
+            for pose in state.required_poses
+        }
         normalized_phase = str(phase or "idle").strip().lower()
         if normalized_phase not in {"idle", "capturing", "ready", "expired"}:
             normalized_phase = "idle"
+        preserve_local_capture_progress = bool(
+            not session_changed
+            and normalized_phase == "capturing"
+            and previous_phase in {"capturing", "ready"}
+        )
         previous_active = previous_phase in {"capturing", "ready"}
         next_active = normalized_phase in {"capturing", "ready"}
         registration_lifecycle_changed = session_changed or (previous_active != next_active)
-        state.phase = normalized_phase
+        state.phase = "ready" if preserve_local_capture_progress and previous_phase == "ready" else normalized_phase
         state.session_id = next_session_id
         state.force_new_identity = bool(force_new_identity)
         normalized_kind = str(registration_kind or "student").strip().lower()
@@ -393,9 +404,21 @@ class AppStateManager:
         if state.phase == "capturing":
             pose = str(expected_pose or "").strip().lower()
             if pose in state.required_poses:
-                state.current_pose_index = state.required_poses.index(pose)
+                next_pose_index = state.required_poses.index(pose)
+                if preserve_local_capture_progress:
+                    next_pose_index = max(previous_pose_index, next_pose_index)
+                state.current_pose_index = next_pose_index
             elif state.current_pose_index >= len(state.required_poses):
                 state.current_pose_index = 0
+
+        if pose_capture_counts is not None:
+            synced_counts: dict[str, int] = {}
+            for pose in state.required_poses:
+                incoming_count = max(0, int(pose_capture_counts.get(pose, 0) or 0))
+                if preserve_local_capture_progress:
+                    incoming_count = max(previous_pose_counts.get(pose, 0), incoming_count)
+                synced_counts[pose] = incoming_count
+            state.pose_capture_counts = synced_counts
 
     def reset_registration_state(self) -> None:
         self._recognized_user = None
@@ -416,6 +439,10 @@ class AppStateManager:
             return state.capture_count
         current_pose = self.get_current_registration_pose()
         if current_pose is None:
+            return state.capture_count
+
+        sample_pose = str(getattr(sample, "pose", "") or "").strip().lower()
+        if sample_pose and sample_pose != current_pose:
             return state.capture_count
 
         sample.pose = current_pose

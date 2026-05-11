@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ import cv2
 import numpy as np
 
 from core.models import User
+from workers.api_client import ApiRequestError
 
 
 class WorkerApiRepository:
@@ -18,6 +20,9 @@ class WorkerApiRepository:
         self.station_id = str(station_id or "entry-station-1")
         self.camera_id = int(camera_id or 1)
         self.last_profiles_version = 0
+        self._drain_lock = threading.Lock()
+        self._registration_flush_lock = threading.Lock()
+        self._registration_flush_sessions: set[str] = set()
 
     def init_db(self) -> None:
         return None
@@ -141,6 +146,109 @@ class WorkerApiRepository:
             )
         return None
 
+    def send_outbound_entry(self, entry: dict) -> bool:
+        kind = str(entry.get("kind") or "")
+        payload = entry.get("payload") or {}
+
+        if kind == "recognition_event":
+            response = self.api_client.post_json("/api/internal/recognition-events", payload)
+            return bool(response.get("success"))
+        if kind == "embedding_update":
+            try:
+                response = self.api_client.post_json("/api/internal/embedding-updates", payload)
+            except ApiRequestError as exc:
+                if exc.status == 404:
+                    print(
+                        "[EMBED-UPDATE][DROP] "
+                        f"status={exc.status} queue_entry_id={entry.get('id')} reason=user_not_found"
+                    )
+                    return True
+                raise
+            return bool(response.get("success"))
+        if kind == "registration_sample":
+            return self._send_registration_sample(entry, payload)
+        return True
+
+    def _send_registration_sample(self, entry: dict, payload: dict) -> bool:
+        sample_id = str(payload.get("sample_id") or "")
+        session_id = str(payload.get("session_id") or "")
+        pose = str(payload.get("pose") or "")
+        print(
+            "[REG-SAMPLE][SEND] "
+            f"sample_id={sample_id} session_id={session_id} pose={pose} "
+            f"queue_entry_id={entry.get('id')}"
+        )
+        try:
+            response = self.api_client.post_json("/api/internal/registrations/samples", payload)
+        except ApiRequestError as exc:
+            if exc.status in {400, 403, 409}:
+                print(
+                    "[REG-SAMPLE][DROP] "
+                    f"status={exc.status} sample_id={sample_id} session_id={session_id} "
+                    f"queue_entry_id={entry.get('id')} reason=non_retryable"
+                )
+                return True
+            raise
+        print(
+            "[REG-SAMPLE][ACK] "
+            f"sample_id={sample_id} session_id={session_id} success={bool(response.get('success'))} "
+            f"duplicate={bool(response.get('duplicate'))} capture_count={response.get('capture_count')}"
+        )
+        return bool(response.get("success"))
+
+    @staticmethod
+    def _registration_sample_matches_session(entry: dict, session_id: str) -> bool:
+        if str(entry.get("kind") or "") != "registration_sample":
+            return False
+        payload = entry.get("payload") or {}
+        return str(payload.get("session_id") or "").strip() == session_id
+
+    def drain_outbound_queue(self) -> tuple[int, int]:
+        with self._drain_lock:
+            return self.outbound_queue.drain_once(self.send_outbound_entry)
+
+    def flush_registration_samples(self, session_id: str) -> tuple[int, int]:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return 0, 0
+        with self._drain_lock:
+            sent, remaining = self.outbound_queue.drain_once(
+                self.send_outbound_entry,
+                predicate=lambda entry: self._registration_sample_matches_session(entry, normalized_session_id),
+            )
+        if sent > 0:
+            print(
+                "[REG-SAMPLE][FLUSH] "
+                f"session_id={normalized_session_id} sent={sent} remaining={remaining}"
+            )
+        return sent, remaining
+
+    def request_registration_sample_flush(self, session_id: str) -> None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return
+
+        with self._registration_flush_lock:
+            if normalized_session_id in self._registration_flush_sessions:
+                return
+            self._registration_flush_sessions.add(normalized_session_id)
+
+        def _run() -> None:
+            try:
+                self.flush_registration_samples(normalized_session_id)
+            except Exception as exc:
+                print(f"[REG-SAMPLE][FLUSH-WARN] session_id={normalized_session_id} error={exc}")
+            finally:
+                with self._registration_flush_lock:
+                    self._registration_flush_sessions.discard(normalized_session_id)
+
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"registration-sample-flush-{normalized_session_id[:8]}",
+        )
+        thread.start()
+
     def enqueue_registration_sample(
         self,
         *,
@@ -197,5 +305,6 @@ class WorkerApiRepository:
             f"entry_id={entry_id} sample_id={payload['sample_id']} session_id={payload['session_id']} "
             f"pose={payload['pose']} quality={payload['quality']:.4f} camera_id={payload['camera_id']}"
         )
+        self.request_registration_sample_flush(payload["session_id"])
         return entry_id
 

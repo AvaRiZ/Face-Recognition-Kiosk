@@ -16,7 +16,7 @@ from services.quality_service import FaceQualityService
 from services.recognition_service import FaceRecognitionService
 from services.tracking_service import TrackingService
 from utils.logging import log_gpu_info, log_header, log_step
-from workers.api_client import ApiClient, ApiRequestError
+from workers.api_client import ApiClient
 from workers.durable_queue import DurableOutboundQueue
 from workers.worker_repository import WorkerApiRepository
 
@@ -77,54 +77,6 @@ def _normalize_stream_source(value: object) -> str | int | None:
     return text
 
 
-def _send_outbound_entry(api_client: ApiClient, entry: dict) -> bool:
-    kind = str(entry.get("kind") or "")
-    payload = entry.get("payload") or {}
-
-    if kind == "recognition_event":
-        response = api_client.post_json("/api/internal/recognition-events", payload)
-        return bool(response.get("success"))
-    if kind == "embedding_update":
-        try:
-            response = api_client.post_json("/api/internal/embedding-updates", payload)
-        except ApiRequestError as exc:
-            if exc.status == 404:
-                print(
-                    "[EMBED-UPDATE][DROP] "
-                    f"status={exc.status} queue_entry_id={entry.get('id')} reason=user_not_found"
-                )
-                return True
-            raise
-        return bool(response.get("success"))
-    if kind == "registration_sample":
-        sample_id = str(payload.get("sample_id") or "")
-        session_id = str(payload.get("session_id") or "")
-        pose = str(payload.get("pose") or "")
-        print(
-            "[REG-SAMPLE][SEND] "
-            f"sample_id={sample_id} session_id={session_id} pose={pose} "
-            f"queue_entry_id={entry.get('id')}"
-        )
-        try:
-            response = api_client.post_json("/api/internal/registrations/samples", payload)
-        except ApiRequestError as exc:
-            if exc.status in {400, 403, 409}:
-                print(
-                    "[REG-SAMPLE][DROP] "
-                    f"status={exc.status} sample_id={sample_id} session_id={session_id} "
-                    f"queue_entry_id={entry.get('id')} reason=non_retryable"
-                )
-                return True
-            raise
-        print(
-            "[REG-SAMPLE][ACK] "
-            f"sample_id={sample_id} session_id={session_id} success={bool(response.get('success'))} "
-            f"duplicate={bool(response.get('duplicate'))} capture_count={response.get('capture_count')}"
-        )
-        return bool(response.get("success"))
-    return True
-
-
 def _safe_fetch_profiles(repository: WorkerApiRepository) -> list:
     try:
         return repository.get_all_users()
@@ -158,6 +110,8 @@ def _apply_registration_control(runtime: WorkerRuntime, payload: dict) -> None:
     registration_control = payload.get("registration_control") or {}
     if not isinstance(registration_control, dict):
         return
+    registration_progress = payload.get("registration_progress") or {}
+    pose_capture_counts = _registration_pose_capture_counts(registration_progress)
     if runtime.worker_role != "entry":
         runtime.state.sync_registration_control(
             session_id=None,
@@ -165,6 +119,7 @@ def _apply_registration_control(runtime: WorkerRuntime, payload: dict) -> None:
             expected_pose=None,
             force_new_identity=False,
             registration_kind=str(registration_control.get("registration_kind") or "student"),
+            pose_capture_counts=pose_capture_counts,
         )
         return
 
@@ -174,18 +129,29 @@ def _apply_registration_control(runtime: WorkerRuntime, payload: dict) -> None:
         expected_pose=str(registration_control.get("expected_pose") or "").strip().lower() or None,
         force_new_identity=bool(registration_control.get("force_new_identity")),
         registration_kind=str(registration_control.get("registration_kind") or "student"),
+        pose_capture_counts=pose_capture_counts,
     )
 
 
-def _start_sync_loop(runtime: WorkerRuntime, poll_interval_seconds: float = 3.0):
+def _registration_pose_capture_counts(registration_progress: dict) -> dict[str, int] | None:
+    pose_progress = registration_progress.get("pose_progress") if isinstance(registration_progress, dict) else None
+    if not isinstance(pose_progress, dict):
+        return None
+    counts: dict[str, int] = {}
+    for pose, progress in pose_progress.items():
+        if not isinstance(progress, dict):
+            continue
+        counts[str(pose)] = int(progress.get("captured", 0) or 0)
+    return counts
+
+
+def _start_sync_loop(runtime: WorkerRuntime, poll_interval_seconds: float = 1.0):
     status = {"profiles_version": 0, "settings_version": 0}
 
     def _loop():
         while True:
             try:
-                sent, remaining = runtime.queue.drain_once(
-                    lambda entry: _send_outbound_entry(runtime.api_client, entry)
-                )
+                sent, remaining = runtime.repository.drain_outbound_queue()
                 if sent > 0:
                     log_step(f"Flushed worker queue: sent={sent}, remaining={remaining}")
 
@@ -295,6 +261,7 @@ def build_runtime() -> WorkerRuntime:
                 expected_pose=str(registration_control.get("expected_pose") or "").strip().lower() or None,
                 force_new_identity=bool(registration_control.get("force_new_identity")),
                 registration_kind=str(registration_control.get("registration_kind") or "student"),
+                pose_capture_counts=_registration_pose_capture_counts(runtime_payload.get("registration_progress") or {}),
             )
     except Exception as exc:
         log_step(f"Runtime config fetch failed; using local defaults ({exc})", status="WARN")

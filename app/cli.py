@@ -804,7 +804,18 @@ class CLIApplication:
                         track_id=track_id,
                     ):
                         continue
-                    if (current_time - track_state.last_recognition_time) < self.config.recognition_cooldown_seconds:
+
+                    registration_capture_allowed = (
+                        registration_enabled
+                        and reg_state.manual_active
+                        and track_id == locked_track_id
+                    )
+                    cooldown_seconds = (
+                        float(getattr(self.config, "registration_capture_cooldown_seconds", 0.25) or 0.25)
+                        if registration_capture_allowed
+                        else float(self.config.recognition_cooldown_seconds)
+                    )
+                    if (current_time - track_state.last_recognition_time) < cooldown_seconds:
                         continue
 
                     bbox = track_state.last_bbox
@@ -815,11 +826,6 @@ class CLIApplication:
                     if face_crop is None or clamped_bbox is None:
                         continue
 
-                    registration_capture_allowed = (
-                        registration_enabled
-                        and reg_state.manual_active
-                        and track_id == locked_track_id
-                    )
                     result = self.recognition_service.register_or_recognize_face(
                         face_crop,
                         quality_service=self.quality_service,

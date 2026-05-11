@@ -35,10 +35,42 @@ class DurableOutboundQueue:
         files.sort()
         return [os.path.join(self.queue_dir, name) for name in files]
 
-    def drain_once(self, sender: Callable[[dict], bool]) -> tuple[int, int]:
+    @staticmethod
+    def _remove_entry_file(entry_path: str) -> bool:
+        for _ in range(5):
+            try:
+                os.remove(entry_path)
+                return True
+            except FileNotFoundError:
+                return True
+            except PermissionError:
+                time.sleep(0.02)
+        return False
+
+    def count_pending(self, kind: str | None = None, session_id: str | None = None) -> int:
+        pending = 0
+        target_kind = str(kind or "").strip()
+        target_session_id = str(session_id or "").strip()
+        for entry_path in self._iter_entry_paths():
+            try:
+                with open(entry_path, "r", encoding="utf-8") as fp:
+                    entry = json.load(fp)
+            except Exception:
+                continue
+            if target_kind and str(entry.get("kind") or "") != target_kind:
+                continue
+            if target_session_id:
+                payload = entry.get("payload") or {}
+                if str(payload.get("session_id") or "").strip() != target_session_id:
+                    continue
+            pending += 1
+        return pending
+
+    def drain_once(self, sender: Callable[[dict], bool], predicate: Callable[[dict], bool] | None = None) -> tuple[int, int]:
         sent = 0
         remaining = 0
         now = time.time()
+        blocked_registration_sessions: set[str] = set()
         for entry_path in self._iter_entry_paths():
             try:
                 with open(entry_path, "r", encoding="utf-8") as fp:
@@ -47,7 +79,21 @@ class DurableOutboundQueue:
                 remaining += 1
                 continue
 
+            payload = entry.get("payload") or {}
+            registration_session_id = ""
+            if str(entry.get("kind") or "") == "registration_sample":
+                registration_session_id = str(payload.get("session_id") or "").strip()
+                if registration_session_id in blocked_registration_sessions:
+                    remaining += 1
+                    continue
+
+            if predicate is not None and not bool(predicate(entry)):
+                remaining += 1
+                continue
+
             if float(entry.get("next_attempt_at", 0.0) or 0.0) > now:
+                if registration_session_id:
+                    blocked_registration_sessions.add(registration_session_id)
                 remaining += 1
                 continue
 
@@ -58,17 +104,18 @@ class DurableOutboundQueue:
                 entry["last_error"] = str(exc)
 
             if ok:
-                try:
-                    os.remove(entry_path)
-                except FileNotFoundError:
-                    pass
-                sent += 1
-                continue
+                if self._remove_entry_file(entry_path):
+                    sent += 1
+                    continue
+                entry["last_error"] = "sent but queue file could not be removed"
+                ok = False
 
             attempts = int(entry.get("attempts", 0) or 0) + 1
             backoff = min(self.max_backoff_seconds, self.base_backoff_seconds * (2 ** max(0, attempts - 1)))
             entry["attempts"] = attempts
             entry["next_attempt_at"] = time.time() + backoff
+            if registration_session_id:
+                blocked_registration_sessions.add(registration_session_id)
 
             with open(entry_path, "w", encoding="utf-8") as fp:
                 json.dump(entry, fp, ensure_ascii=True)

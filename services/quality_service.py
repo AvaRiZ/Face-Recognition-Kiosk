@@ -96,6 +96,8 @@ class FaceQualityService:
 
         if abs_yaw_ratio <= self.config.registration_pose_front_max_yaw_ratio:
             return "front"
+        if abs_yaw_ratio < self.config.registration_pose_side_min_yaw_ratio:
+            return None
         # Signed yaw is measured in image coordinates.
         return "left" if signed_yaw_ratio < 0 else "right"
 

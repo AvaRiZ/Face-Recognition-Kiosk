@@ -325,6 +325,57 @@ class FaceRecognitionService:
                     "match_threshold": None,
                 }
 
+        registration_capture_active = bool(allow_registration and reg_state.phase == "capturing")
+        current_pose = None
+        detected_pose = None
+        if registration_capture_active:
+            if registration_quality is None:
+                registration_quality = quality_service.assess_face_quality(
+                    face_crop,
+                    detection_confidence=detection_confidence,
+                    landmarks=landmarks,
+                    context="registration",
+                )
+            reg_quality_score, reg_quality_status, reg_quality_debug = registration_quality
+            registration_threshold = self.config.quality_profile_for_context("registration").face_quality_threshold
+            if reg_quality_score < registration_threshold:
+                message = f"  Skipping low quality registration sample: {reg_quality_score:.2f} ({reg_quality_status})"
+                if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
+                    primary_issue = reg_quality_debug.get("primary_issue_label")
+                    if primary_issue:
+                        message += f" | main issue: {primary_issue}"
+                if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
+                    message += f" | {quality_service.quality_debug_summary(reg_quality_debug)}"
+                print(message)
+                return {
+                    "status": "low_quality",
+                    "reason_code": "low_quality",
+                    "quality_score": reg_quality_score,
+                    "quality_status": reg_quality_status,
+                    "quality_debug": reg_quality_debug,
+                    "match_confidence": None,
+                    "match_threshold": None,
+                }
+
+            current_pose = self.state.get_current_registration_pose() or "front"
+            detected_pose = quality_service.detect_face_pose(face_crop, landmarks=landmarks)
+            if detected_pose != current_pose:
+                pose_label = detected_pose or "unknown"
+                print(
+                    f"  Skipped registration sample: expected pose '{current_pose}', detected '{pose_label}'"
+                )
+                return {
+                    "status": "pose_mismatch",
+                    "reason_code": "pose_mismatch",
+                    "quality_score": reg_quality_score,
+                    "quality_status": reg_quality_status,
+                    "quality_debug": reg_quality_debug,
+                    "match_confidence": None,
+                    "match_threshold": None,
+                    "expected_pose": current_pose,
+                    "detected_pose": detected_pose,
+                }
+
         message = (
             f"  Face quality: {quality_score:.2f} ({quality_status}) "
             f"| sharpness={quality_debug.get('sharpness', 0.0):.1f} "
@@ -416,53 +467,8 @@ class FaceRecognitionService:
                 "payload": recognized_payload,
             }
 
-        if allow_registration and reg_state.phase == "capturing":
-            if registration_quality is None:
-                registration_quality = quality_service.assess_face_quality(
-                    face_crop,
-                    detection_confidence=detection_confidence,
-                    landmarks=landmarks,
-                    context="registration",
-                )
+        if registration_capture_active:
             reg_quality_score, reg_quality_status, reg_quality_debug = registration_quality
-            registration_threshold = self.config.quality_profile_for_context("registration").face_quality_threshold
-            if reg_quality_score < registration_threshold:
-                message = f"  Skipping low quality registration sample: {reg_quality_score:.2f} ({reg_quality_status})"
-                if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
-                    primary_issue = reg_quality_debug.get("primary_issue_label")
-                    if primary_issue:
-                        message += f" | main issue: {primary_issue}"
-                if self.config.quality_debug_enabled and self.config.quality_debug_show_all_scores:
-                    message += f" | {quality_service.quality_debug_summary(reg_quality_debug)}"
-                print(message)
-                return {
-                    "status": "low_quality",
-                    "reason_code": "low_quality",
-                    "quality_score": reg_quality_score,
-                    "quality_status": reg_quality_status,
-                    "quality_debug": reg_quality_debug,
-                    "match_confidence": None,
-                    "match_threshold": None,
-                }
-
-            current_pose = self.state.get_current_registration_pose() or "front"
-            detected_pose = quality_service.detect_face_pose(face_crop, landmarks=landmarks)
-            if detected_pose != current_pose:
-                pose_label = detected_pose or "unknown"
-                print(
-                    f"  Skipped registration sample: expected pose '{current_pose}', detected '{pose_label}'"
-                )
-                return {
-                    "status": "pose_mismatch",
-                    "reason_code": "pose_mismatch",
-                    "quality_score": reg_quality_score,
-                    "quality_status": reg_quality_status,
-                    "quality_debug": reg_quality_debug,
-                    "match_confidence": None,
-                    "match_threshold": None,
-                    "expected_pose": current_pose,
-                    "detected_pose": detected_pose,
-                }
 
             sample = RegistrationSample(
                 face_crop=face_crop,
