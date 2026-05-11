@@ -116,6 +116,13 @@ class WorkerApiRepository:
     def check_entry_capacity_gate(self) -> dict:
         return self.api_client.get_json("/api/internal/capacity-gate")
 
+    def check_presence_gate(self, user_id: int, event_type: str) -> dict:
+        normalized_event_type = str(event_type or "entry").strip().lower() or "entry"
+        if normalized_event_type not in {"entry", "exit"}:
+            normalized_event_type = "entry"
+        path = f"/api/internal/presence-gate?user_id={int(user_id)}&event_type={normalized_event_type}"
+        return self.api_client.get_json(path)
+
     def update_embeddings(self, user_id: int, new_embeddings: dict[str, list[np.ndarray]], image_path: str | None = None):
         payload_embeddings: dict[str, list[list[float]]] = {}
         for model_name, vectors in (new_embeddings or {}).items():

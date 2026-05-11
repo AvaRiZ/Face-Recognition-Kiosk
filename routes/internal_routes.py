@@ -264,6 +264,31 @@ def create_internal_blueprint(deps):
     def _registration_worker_heartbeat_ttl_seconds() -> int:
         return int(getattr(deps["config"], "registration_worker_heartbeat_ttl_seconds", 10) or 10)
 
+    def _entry_event_cooldown_seconds() -> float:
+        # Reuse recognition event lock as the canonical entry cooldown knob.
+        return max(0.0, float(getattr(deps["config"], "recognition_event_lock_seconds", 8) or 8.0))
+
+    def _resolve_user_presence(cursor, user_id: int) -> dict:
+        cursor.execute(
+            """
+            SELECT
+                MAX(CASE WHEN event_type = 'entry' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_entry_at,
+                MAX(CASE WHEN event_type = 'exit' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_exit_at
+            FROM recognition_events
+            WHERE user_id = %s
+            """,
+            (int(user_id),),
+        )
+        row = cursor.fetchone() or (None, None)
+        last_entry_at = row[0]
+        last_exit_at = row[1]
+        inside_now = bool(last_entry_at) and (last_exit_at is None or last_exit_at < last_entry_at)
+        return {
+            "last_entry_at": last_entry_at,
+            "last_exit_at": last_exit_at,
+            "inside_now": inside_now,
+        }
+
     def _entry_worker_online() -> bool:
         checker = deps.get("is_worker_online")
         if callable(checker):
@@ -589,6 +614,34 @@ def create_internal_blueprint(deps):
                         )
                         user_id = None
 
+            blocked_reason = None
+            cooldown_remaining_seconds = None
+            if decision == "allowed" and user_id is not None and event_type == "entry":
+                presence = _resolve_user_presence(c, int(user_id))
+                if presence["inside_now"]:
+                    blocked_reason = "already_inside"
+                else:
+                    cooldown_seconds = _entry_event_cooldown_seconds()
+                    last_entry_at = presence["last_entry_at"]
+                    last_exit_at = presence["last_exit_at"]
+                    if cooldown_seconds > 0 and isinstance(last_entry_at, datetime):
+                        # Cooldown applies only while a new entry has not yet been closed by exit.
+                        # If exit is detected after the last entry, cooldown is considered reset.
+                        cooldown_reset_by_exit = isinstance(last_exit_at, datetime) and last_exit_at >= last_entry_at
+                        if not cooldown_reset_by_exit:
+                            elapsed = (captured_at - last_entry_at).total_seconds()
+                            if elapsed < cooldown_seconds:
+                                blocked_reason = "entry_cooldown"
+                                cooldown_remaining_seconds = max(0.0, cooldown_seconds - max(0.0, elapsed))
+
+            if blocked_reason:
+                decision = "denied"
+                payload_for_json["decision"] = "denied"
+                payload_for_json["rejection_reason"] = blocked_reason
+                if cooldown_remaining_seconds is not None:
+                    payload_for_json["cooldown_remaining_seconds"] = round(float(cooldown_remaining_seconds), 2)
+                payload_json = json.dumps(payload_for_json, ensure_ascii=True)
+
             c.execute(
                 """
                 INSERT INTO recognition_events (
@@ -701,6 +754,9 @@ def create_internal_blueprint(deps):
                 "event_type": event_type,
                 "camera_id": camera_id,
                 "duplicate": not inserted,
+                "decision": decision,
+                "blocked_reason": payload_for_json.get("rejection_reason"),
+                "cooldown_remaining_seconds": payload_for_json.get("cooldown_remaining_seconds"),
             }
         )
 
@@ -742,6 +798,44 @@ def create_internal_blueprint(deps):
                 "occupancy_ratio": float(occ["occupancy_ratio"]),
                 "is_full": bool(occ["is_full"]),
                 "alert": alert,
+            }
+        )
+
+    @bp.route("/presence-gate", methods=["GET"], endpoint="presence_gate")
+    def presence_gate():
+        user_id_raw = (request.args.get("user_id") or "").strip()
+        event_type = str(request.args.get("event_type") or "entry").strip().lower() or "entry"
+        if event_type not in {"entry", "exit"}:
+            return _json_error("`event_type` must be 'entry' or 'exit'.", 400)
+        if not user_id_raw:
+            return _json_error("`user_id` is required.", 400)
+        try:
+            user_id = int(user_id_raw)
+        except ValueError:
+            return _json_error("`user_id` must be an integer.", 400)
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        try:
+            presence = _resolve_user_presence(c, user_id)
+        finally:
+            conn.close()
+
+        if event_type == "entry":
+            allow_event = not bool(presence["inside_now"])
+            reason = "ok" if allow_event else "already_inside"
+        else:
+            allow_event = bool(presence["inside_now"])
+            reason = "ok" if allow_event else "not_inside"
+
+        return jsonify(
+            {
+                "success": True,
+                "user_id": user_id,
+                "event_type": event_type,
+                "allow_event": allow_event,
+                "reason": reason,
+                "inside_now": bool(presence["inside_now"]),
             }
         )
 

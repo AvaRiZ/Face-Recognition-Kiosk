@@ -32,6 +32,19 @@ class FaceRecognitionService:
         camera_id = int(getattr(self.repository, "camera_id", 1) or 1)
         return "exit" if camera_id == 2 else "entry"
 
+    def _presence_gate_allows_event(self, user_id: int, event_type: str) -> tuple[bool, str]:
+        checker = getattr(self.repository, "check_presence_gate", None)
+        if not callable(checker):
+            return True, "gate_unavailable"
+        try:
+            payload = checker(int(user_id), str(event_type))
+            allow_event = bool((payload or {}).get("allow_event", True))
+            reason = str((payload or {}).get("reason") or ("ok" if allow_event else "blocked")).strip().lower()
+            return allow_event, reason
+        except Exception as exc:
+            print(f"  [WARN] Presence gate check failed; allowing recognition ({exc})")
+            return True, "gate_error"
+
     def _recognition_event_lock_seconds(self) -> float:
         return max(0.0, float(getattr(self.config, "recognition_event_lock_seconds", 8) or 8.0))
 
@@ -360,6 +373,23 @@ class FaceRecognitionService:
                 return {
                     "status": "uncertain",
                     "reason_code": "uncertain_match",
+                    "quality_score": quality_score,
+                    "quality_status": quality_status,
+                    "quality_debug": quality_debug,
+                    "match_confidence": best_match.confidence,
+                    "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
+                }
+
+            event_type = self._event_type_for_current_repository()
+            gate_allowed, gate_reason = self._presence_gate_allows_event(int(best_match.user_id), event_type)
+            if not gate_allowed:
+                print(
+                    f"  Skipped recognition for {best_match.user.name}: "
+                    f"presence gate blocked ({gate_reason})"
+                )
+                return {
+                    "status": "blocked",
+                    "reason_code": gate_reason or "presence_gate_blocked",
                     "quality_score": quality_score,
                     "quality_status": quality_status,
                     "quality_debug": quality_debug,

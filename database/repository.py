@@ -377,6 +377,44 @@ class UserRepository:
         conn.close()
         emit_analytics_update("database_reset")
 
+    def check_presence_gate(self, user_id: int, event_type: str) -> dict:
+        normalized_event_type = str(event_type or "entry").strip().lower() or "entry"
+        if normalized_event_type not in {"entry", "exit"}:
+            normalized_event_type = "entry"
+
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT
+                MAX(CASE WHEN event_type = 'entry' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_entry_at,
+                MAX(CASE WHEN event_type = 'exit' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_exit_at
+            FROM recognition_events
+            WHERE user_id = %s
+            """,
+            (int(user_id),),
+        )
+        row = c.fetchone() or (None, None)
+        conn.close()
+
+        last_entry_at, last_exit_at = row[0], row[1]
+        inside_now = bool(last_entry_at) and (last_exit_at is None or last_exit_at < last_entry_at)
+        if normalized_event_type == "entry":
+            allow_event = not inside_now
+            reason = "ok" if allow_event else "already_inside"
+        else:
+            allow_event = inside_now
+            reason = "ok" if allow_event else "not_inside"
+
+        return {
+            "success": True,
+            "user_id": int(user_id),
+            "event_type": normalized_event_type,
+            "allow_event": bool(allow_event),
+            "reason": reason,
+            "inside_now": bool(inside_now),
+        }
+
     def log_recognition(
         self,
         result: RecognitionResult,
@@ -395,8 +433,28 @@ class UserRepository:
         captured_at = datetime.now(timezone.utc)
         camera_id = int(getattr(self, "camera_id", 1) or 1)
         event_type = "exit" if camera_id == 2 else "entry"
+        decision = "allowed"
+        rejection_reason = None
 
         if table_columns(conn, "recognition_events"):
+            if event_type == "entry":
+                c.execute(
+                    """
+                    SELECT
+                        MAX(CASE WHEN event_type = 'entry' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_entry_at,
+                        MAX(CASE WHEN event_type = 'exit' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_exit_at
+                    FROM recognition_events
+                    WHERE user_id = %s
+                    """,
+                    (int(result.user_id),),
+                )
+                row = c.fetchone() or (None, None)
+                last_entry_at, last_exit_at = row[0], row[1]
+                inside_now = bool(last_entry_at) and (last_exit_at is None or last_exit_at < last_entry_at)
+                if inside_now:
+                    decision = "denied"
+                    rejection_reason = "already_inside"
+
             event_id = f"evt-{uuid.uuid4().hex}"
             payload_json = json.dumps(
                 {
@@ -405,7 +463,8 @@ class UserRepository:
                     "event_type": event_type,
                     "user_id": int(result.user_id),
                     "sr_code": result.user.sr_code,
-                    "decision": "allowed",
+                    "decision": decision,
+                    "rejection_reason": rejection_reason,
                     "confidence": confidence,
                     "primary_confidence": primary_confidence,
                     "secondary_confidence": secondary_confidence,
@@ -431,7 +490,7 @@ class UserRepository:
                     event_id,
                     int(result.user_id),
                     result.user.sr_code,
-                    "allowed",
+                    decision,
                     event_type,
                     confidence,
                     primary_confidence,
