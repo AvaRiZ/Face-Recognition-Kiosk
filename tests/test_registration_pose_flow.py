@@ -6,9 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
-realtime_stub = types.ModuleType("app.realtime")
+realtime_stub = sys.modules.setdefault("app.realtime", types.ModuleType("app.realtime"))
 realtime_stub.emit_analytics_update = lambda *args, **kwargs: None
-sys.modules.setdefault("app.realtime", realtime_stub)
+realtime_stub.emit_capacity_threshold_alert = lambda *args, **kwargs: None
+realtime_stub.emit_unrecognized_detection = lambda *args, **kwargs: None
 
 from app.cli import CLIApplication
 from core.config import AppConfig

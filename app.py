@@ -98,6 +98,18 @@ def _apply_app_settings(runtime: AppRuntime) -> None:
         0.1,
         0.95,
     )
+    config.primary_threshold = _coerce_float(
+        get_app_setting(config.db_path, "primary_threshold", str(config.primary_threshold)),
+        config.primary_threshold,
+        0.1,
+        0.95,
+    )
+    config.secondary_threshold = _coerce_float(
+        get_app_setting(config.db_path, "secondary_threshold", str(config.secondary_threshold)),
+        config.secondary_threshold,
+        0.1,
+        0.95,
+    )
     quality_threshold = _coerce_float(
         get_app_setting(config.db_path, "quality_threshold", str(state.face_quality_threshold)),
         state.face_quality_threshold,

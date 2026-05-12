@@ -12,10 +12,13 @@ class DurableOutboundQueue:
         self.queue_dir = queue_dir
         self.base_backoff_seconds = float(base_backoff_seconds)
         self.max_backoff_seconds = float(max_backoff_seconds)
+        self._next_sequence = 0
         os.makedirs(self.queue_dir, exist_ok=True)
 
     def enqueue(self, kind: str, payload: dict) -> str:
-        entry_id = f"{int(time.time() * 1000)}-{uuid.uuid4().hex}"
+        sequence = self._next_sequence
+        self._next_sequence += 1
+        entry_id = f"{time.time_ns()}-{sequence:016d}-{uuid.uuid4().hex}"
         entry_path = os.path.join(self.queue_dir, f"{entry_id}.json")
         entry = {
             "id": entry_id,

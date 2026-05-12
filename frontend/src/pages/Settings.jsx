@@ -7,6 +7,8 @@ const DEFAULT_BOUNDS = {
   max_occupancy: { min: 50, max: 2000 },
   vector_index_top_k: { min: 1, max: 100 },
   threshold: { min: 0.1, max: 0.95 },
+  primary_threshold: { min: 0.1, max: 0.95 },
+  secondary_threshold: { min: 0.1, max: 0.95 },
   quality_threshold: { min: 0.1, max: 0.95 },
   recognition_confidence_threshold: { min: 0.1, max: 0.99 },
   occupancy_warning_threshold: { min: 0.5, max: 0.99 },
@@ -186,6 +188,8 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = React.useState(TAB_OVERVIEW);
 
   const [threshold, setThreshold] = React.useState('0.3');
+  const [primaryThreshold, setPrimaryThreshold] = React.useState('0.77');
+  const [secondaryThreshold, setSecondaryThreshold] = React.useState('0.75');
   const [qualityThreshold, setQualityThreshold] = React.useState('0.2');
   const [recognitionConfidenceThreshold, setRecognitionConfidenceThreshold] = React.useState('0.72');
   const [vectorIndexTopK, setVectorIndexTopK] = React.useState('20');
@@ -209,6 +213,8 @@ export default function SettingsPage() {
   const applySettingsPayload = React.useCallback((payload) => {
     setData(payload || null);
     setThreshold(String(payload?.threshold ?? '0.3'));
+    setPrimaryThreshold(String(payload?.primary_threshold ?? '0.77'));
+    setSecondaryThreshold(String(payload?.secondary_threshold ?? '0.75'));
     setQualityThreshold(String(payload?.quality_threshold ?? '0.2'));
     setRecognitionConfidenceThreshold(String(payload?.recognition_confidence_threshold ?? '0.72'));
     setVectorIndexTopK(String(payload?.vector_index_top_k ?? '20'));
@@ -262,6 +268,8 @@ export default function SettingsPage() {
     }
     if (permissions.can_edit_thresholds) {
       payload.threshold = threshold;
+      payload.primary_threshold = primaryThreshold;
+      payload.secondary_threshold = secondaryThreshold;
       payload.quality_threshold = qualityThreshold;
       payload.recognition_confidence_threshold = recognitionConfidenceThreshold;
       payload.face_quality_profiles = faceQualityProfiles;
@@ -487,16 +495,22 @@ export default function SettingsPage() {
                 Live Snapshot
               </h6>
               <div className="row g-3 mb-4">
-                <div className="col-6 col-md-3">
+                <div className="col-6 col-md-4 col-xl-2">
                   <StatCard value={data?.user_count ?? 0} label="Registered Users" accent="#0d6efd" />
                 </div>
-                <div className="col-6 col-md-3">
-                  <StatCard value={asFixedNumber(threshold, 3)} label="Recognition Threshold" accent="#198754" />
+                <div className="col-6 col-md-4 col-xl-2">
+                  <StatCard value={asFixedNumber(threshold, 3)} label="Base Threshold" accent="#198754" />
                 </div>
-                <div className="col-6 col-md-3">
-                  <StatCard value={asFixedNumber(qualityThreshold, 2)} label="Min Face Quality" accent="#fd7e14" />
+                <div className="col-6 col-md-4 col-xl-2">
+                  <StatCard value={asFixedNumber(primaryThreshold, 3)} label="ArcFace Threshold" accent="#20c997" />
                 </div>
-                <div className="col-6 col-md-3">
+                <div className="col-6 col-md-4 col-xl-2">
+                  <StatCard value={asFixedNumber(secondaryThreshold, 3)} label="Facenet Threshold" accent="#fd7e14" />
+                </div>
+                <div className="col-6 col-md-4 col-xl-2">
+                  <StatCard value={asFixedNumber(qualityThreshold, 2)} label="Min Face Quality" accent="#6610f2" />
+                </div>
+                <div className="col-6 col-md-4 col-xl-2">
                   <StatCard value={maxOccupancy} label="Max Occupancy" accent="#6f42c1" />
                 </div>
               </div>
@@ -650,7 +664,7 @@ export default function SettingsPage() {
                 <div className="col-12">
                   <SliderField
                     id="threshold"
-                    label="Recognition Threshold"
+                    label="Base Threshold"
                     value={threshold}
                     displayValue={asFixedNumber(threshold, 3)}
                     onChange={ev => setThreshold(ev.target.value)}
@@ -658,6 +672,34 @@ export default function SettingsPage() {
                     max={bounds.threshold?.max ?? DEFAULT_BOUNDS.threshold.max}
                     disabled={!canEditThresholds}
                     helpText="Higher = stricter (requires higher confidence). Lower = more lenient."
+                  />
+                </div>
+
+                <div className="col-12 col-lg-6">
+                  <SliderField
+                    id="primary_threshold"
+                    label="ArcFace Model Threshold"
+                    value={primaryThreshold}
+                    displayValue={asFixedNumber(primaryThreshold, 3)}
+                    onChange={ev => setPrimaryThreshold(ev.target.value)}
+                    min={bounds.primary_threshold?.min ?? DEFAULT_BOUNDS.primary_threshold.min}
+                    max={bounds.primary_threshold?.max ?? DEFAULT_BOUNDS.primary_threshold.max}
+                    disabled={!canEditThresholds}
+                    helpText="ArcFace must meet this value or the base threshold, whichever is higher."
+                  />
+                </div>
+
+                <div className="col-12 col-lg-6">
+                  <SliderField
+                    id="secondary_threshold"
+                    label="Facenet Model Threshold"
+                    value={secondaryThreshold}
+                    displayValue={asFixedNumber(secondaryThreshold, 3)}
+                    onChange={ev => setSecondaryThreshold(ev.target.value)}
+                    min={bounds.secondary_threshold?.min ?? DEFAULT_BOUNDS.secondary_threshold.min}
+                    max={bounds.secondary_threshold?.max ?? DEFAULT_BOUNDS.secondary_threshold.max}
+                    disabled={!canEditThresholds}
+                    helpText="Facenet must meet this value or the base threshold, whichever is higher."
                   />
                 </div>
 

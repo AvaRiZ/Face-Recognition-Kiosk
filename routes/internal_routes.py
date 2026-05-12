@@ -462,6 +462,8 @@ def create_internal_blueprint(deps):
             {
                 "settings_version": get_settings_version(deps["db_path"]),
                 "base_threshold": float(threshold),
+                "primary_threshold": float(config.primary_threshold),
+                "secondary_threshold": float(config.secondary_threshold),
                 "face_quality_threshold": float(quality_threshold),
                 "face_quality_profiles": _resolve_face_quality_profiles(
                     deps["db_path"],

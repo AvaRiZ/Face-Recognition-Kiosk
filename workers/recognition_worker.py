@@ -89,6 +89,14 @@ def _apply_runtime_config(runtime: WorkerRuntime, payload: dict) -> None:
     base_threshold = float(payload.get("base_threshold", runtime.state.base_threshold))
     quality_threshold = float(payload.get("face_quality_threshold", runtime.state.face_quality_threshold))
     runtime.state.set_thresholds(base_threshold, quality_threshold)
+    runtime.config.primary_threshold = max(
+        0.1,
+        min(0.95, float(payload.get("primary_threshold", runtime.config.primary_threshold))),
+    )
+    runtime.config.secondary_threshold = max(
+        0.1,
+        min(0.95, float(payload.get("secondary_threshold", runtime.config.secondary_threshold))),
+    )
     vector_index_top_k = int(payload.get("vector_index_top_k", runtime.config.vector_index_top_k))
     runtime.config.vector_index_top_k = max(1, vector_index_top_k)
     recognition_confidence_threshold = float(
@@ -230,6 +238,14 @@ def build_runtime() -> WorkerRuntime:
         base_threshold = float(runtime_payload.get("base_threshold", state.base_threshold))
         quality_threshold = float(runtime_payload.get("face_quality_threshold", state.face_quality_threshold))
         state.set_thresholds(base_threshold, quality_threshold)
+        config.primary_threshold = max(
+            0.1,
+            min(0.95, float(runtime_payload.get("primary_threshold", config.primary_threshold))),
+        )
+        config.secondary_threshold = max(
+            0.1,
+            min(0.95, float(runtime_payload.get("secondary_threshold", config.secondary_threshold))),
+        )
         config.vector_index_top_k = max(
             1,
             int(runtime_payload.get("vector_index_top_k", config.vector_index_top_k)),

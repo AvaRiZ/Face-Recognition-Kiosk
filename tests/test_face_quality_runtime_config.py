@@ -53,6 +53,8 @@ class FaceQualityRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["settings_version"], 12)
+        self.assertEqual(payload["primary_threshold"], config.primary_threshold)
+        self.assertEqual(payload["secondary_threshold"], config.secondary_threshold)
         self.assertEqual(set(payload["face_quality_profiles"]), {"entry", "exit", "registration"})
         self.assertEqual(payload["face_quality_profiles"]["exit"]["quality_sharpness_min"], 55.0)
 

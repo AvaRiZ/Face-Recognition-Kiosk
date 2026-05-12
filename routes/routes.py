@@ -870,6 +870,8 @@ def create_routes_blueprint(deps):
         "max_occupancy": {"min": 50, "max": 2000},
         "vector_index_top_k": {"min": 1, "max": 100},
         "threshold": {"min": 0.1, "max": 0.95},
+        "primary_threshold": {"min": 0.1, "max": 0.95},
+        "secondary_threshold": {"min": 0.1, "max": 0.95},
         "quality_threshold": {"min": 0.1, "max": 0.95},
         "face_quality_profiles": QUALITY_PROFILE_BOUNDS,
         "recognition_confidence_threshold": {"min": 0.1, "max": 0.99},
@@ -881,7 +883,7 @@ def create_routes_blueprint(deps):
     SETTINGS_AUDIT_ROW_LIMIT = 25
 
     def _format_setting_value(field_name, value):
-        if field_name in {"threshold", "recognition_confidence_threshold"}:
+        if field_name in {"threshold", "primary_threshold", "secondary_threshold", "recognition_confidence_threshold"}:
             return f"{float(value):.3f}"
         if field_name in {"quality_threshold", "occupancy_warning_threshold"}:
             return f"{float(value):.2f}"
@@ -1016,6 +1018,32 @@ def create_routes_blueprint(deps):
         threshold = _coerce_float_value(threshold_setting, deps["get_thresholds"]()[0])
         threshold = max(float(threshold_bounds["min"]), min(float(threshold_bounds["max"]), threshold))
 
+        primary_bounds = SETTINGS_BOUNDS["primary_threshold"]
+        primary_threshold_setting = _get_setting(
+            deps["db_path"],
+            "primary_threshold",
+            str(config.primary_threshold),
+        )
+        primary_threshold = _coerce_float_value(primary_threshold_setting, config.primary_threshold)
+        primary_threshold = max(
+            float(primary_bounds["min"]),
+            min(float(primary_bounds["max"]), primary_threshold),
+        )
+        config.primary_threshold = primary_threshold
+
+        secondary_bounds = SETTINGS_BOUNDS["secondary_threshold"]
+        secondary_threshold_setting = _get_setting(
+            deps["db_path"],
+            "secondary_threshold",
+            str(config.secondary_threshold),
+        )
+        secondary_threshold = _coerce_float_value(secondary_threshold_setting, config.secondary_threshold)
+        secondary_threshold = max(
+            float(secondary_bounds["min"]),
+            min(float(secondary_bounds["max"]), secondary_threshold),
+        )
+        config.secondary_threshold = secondary_threshold
+
         quality_bounds = SETTINGS_BOUNDS["quality_threshold"]
         quality_threshold_setting = _get_setting(
             deps["db_path"], "quality_threshold", str(deps["get_thresholds"]()[1])
@@ -1137,6 +1165,8 @@ def create_routes_blueprint(deps):
 
         return {
             "threshold": float(threshold),
+            "primary_threshold": float(primary_threshold),
+            "secondary_threshold": float(secondary_threshold),
             "quality_threshold": float(quality_threshold),
             "recognition_confidence_threshold": float(recognition_confidence_threshold),
             "vector_index_top_k": int(vector_index_top_k),
@@ -1215,6 +1245,8 @@ def create_routes_blueprint(deps):
             "role": role_name,
             "user_count": _read_registered_user_count(),
             "threshold": settings_state["threshold"],
+            "primary_threshold": settings_state["primary_threshold"],
+            "secondary_threshold": settings_state["secondary_threshold"],
             "quality_threshold": settings_state["quality_threshold"],
             "recognition_confidence_threshold": settings_state["recognition_confidence_threshold"],
             "vector_index_top_k": settings_state["vector_index_top_k"],
@@ -3954,6 +3986,8 @@ def create_routes_blueprint(deps):
                     key
                     for key in (
                         "threshold",
+                        "primary_threshold",
+                        "secondary_threshold",
                         "quality_threshold",
                         "face_quality_profiles",
                         "recognition_confidence_threshold",
@@ -3992,6 +4026,40 @@ def create_routes_blueprint(deps):
                     next_settings["threshold"] = threshold_value
                     if threshold_value != current_settings["threshold"]:
                         changed_fields["threshold"] = (current_settings["threshold"], threshold_value)
+
+                primary_bounds = SETTINGS_BOUNDS["primary_threshold"]
+                primary_threshold_value, primary_threshold_error = _parse_bounded_float_payload(
+                    payload,
+                    "primary_threshold",
+                    float(primary_bounds["min"]),
+                    float(primary_bounds["max"]),
+                )
+                if primary_threshold_error:
+                    return jsonify({"success": False, "message": primary_threshold_error}), 400
+                if primary_threshold_value is not None:
+                    next_settings["primary_threshold"] = primary_threshold_value
+                    if primary_threshold_value != current_settings["primary_threshold"]:
+                        changed_fields["primary_threshold"] = (
+                            current_settings["primary_threshold"],
+                            primary_threshold_value,
+                        )
+
+                secondary_bounds = SETTINGS_BOUNDS["secondary_threshold"]
+                secondary_threshold_value, secondary_threshold_error = _parse_bounded_float_payload(
+                    payload,
+                    "secondary_threshold",
+                    float(secondary_bounds["min"]),
+                    float(secondary_bounds["max"]),
+                )
+                if secondary_threshold_error:
+                    return jsonify({"success": False, "message": secondary_threshold_error}), 400
+                if secondary_threshold_value is not None:
+                    next_settings["secondary_threshold"] = secondary_threshold_value
+                    if secondary_threshold_value != current_settings["secondary_threshold"]:
+                        changed_fields["secondary_threshold"] = (
+                            current_settings["secondary_threshold"],
+                            secondary_threshold_value,
+                        )
 
                 quality_bounds = SETTINGS_BOUNDS["quality_threshold"]
                 quality_threshold_value, quality_error = _parse_bounded_float_payload(
@@ -4170,6 +4238,8 @@ def create_routes_blueprint(deps):
                     float(next_settings["quality_threshold"]),
                 )
                 deps["config"].apply_quality_profiles(next_settings.get("face_quality_profiles"))
+                deps["config"].primary_threshold = float(next_settings["primary_threshold"])
+                deps["config"].secondary_threshold = float(next_settings["secondary_threshold"])
                 deps["config"].vector_index_top_k = int(next_settings["vector_index_top_k"])
                 deps["config"].recognition_confidence_threshold = float(
                     next_settings["recognition_confidence_threshold"]
@@ -4188,6 +4258,8 @@ def create_routes_blueprint(deps):
 
                 ordered_keys = [
                     "threshold",
+                    "primary_threshold",
+                    "secondary_threshold",
                     "quality_threshold",
                     "recognition_confidence_threshold",
                     "vector_index_top_k",
