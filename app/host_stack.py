@@ -74,7 +74,10 @@ def build_runtime() -> HostRuntime:
     config = AppConfig()
     ensure_profile_upload_dir()
 
-    repository = UserRepository(config.db_path)
+    repository = UserRepository(
+        config.db_path,
+        stale_inside_reentry_seconds=int(getattr(config, "stale_inside_reentry_seconds", 30 * 60)),
+    )
     repository.init_db()
     init_auth_db()
     init_imported_logs_table(config.db_path)

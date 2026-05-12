@@ -4,7 +4,8 @@ import base64
 import json
 import os
 import time
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import cv2
 import numpy as np
@@ -169,6 +170,14 @@ def _decode_face_jpeg_base64(encoded_image: str) -> np.ndarray | None:
     return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
 
 
+def _as_aware_utc(value):
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _parse_observed_timestamp(value) -> float:
     if isinstance(value, (int, float)):
         return float(value)
@@ -268,6 +277,9 @@ def create_internal_blueprint(deps):
         # Reuse recognition event lock as the canonical entry cooldown knob.
         return max(0.0, float(getattr(deps["config"], "recognition_event_lock_seconds", 8) or 8.0))
 
+    def _stale_inside_reentry_seconds() -> float:
+        return max(0.0, float(getattr(deps["config"], "stale_inside_reentry_seconds", 30 * 60) or 0.0))
+
     def _resolve_user_presence(cursor, user_id: int) -> dict:
         cursor.execute(
             """
@@ -282,12 +294,79 @@ def create_internal_blueprint(deps):
         row = cursor.fetchone() or (None, None)
         last_entry_at = row[0]
         last_exit_at = row[1]
+        last_entry_at = _as_aware_utc(last_entry_at)
+        last_exit_at = _as_aware_utc(last_exit_at)
         inside_now = bool(last_entry_at) and (last_exit_at is None or last_exit_at < last_entry_at)
         return {
             "last_entry_at": last_entry_at,
             "last_exit_at": last_exit_at,
             "inside_now": inside_now,
         }
+
+    def _entry_presence_decision(presence: dict, observed_at: datetime) -> dict:
+        observed_at = _as_aware_utc(observed_at) or datetime.now(timezone.utc)
+        last_entry_at = presence.get("last_entry_at")
+        inside_now = bool(presence.get("inside_now"))
+        stale_seconds = _stale_inside_reentry_seconds()
+        stale_inside_reentry = bool(
+            inside_now
+            and stale_seconds > 0
+            and isinstance(last_entry_at, datetime)
+            and (observed_at - last_entry_at).total_seconds() >= stale_seconds
+        )
+        return {
+            **presence,
+            "allow_entry": (not inside_now) or stale_inside_reentry,
+            "reason": "stale_inside_reentry" if stale_inside_reentry else "ok" if not inside_now else "already_inside",
+            "stale_inside_reentry": stale_inside_reentry,
+        }
+
+    def _insert_recognition_event(
+        cursor,
+        *,
+        event_id: str,
+        user_id: int | None,
+        sr_code: str | None,
+        decision: str,
+        event_type: str,
+        confidence: float | None,
+        primary_confidence: float | None,
+        secondary_confidence: float | None,
+        primary_distance: float | None,
+        secondary_distance: float | None,
+        face_quality: float | None,
+        method: str,
+        captured_at: datetime,
+        payload_json: dict,
+    ) -> bool:
+        cursor.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence,
+                primary_confidence, secondary_confidence, primary_distance, secondary_distance,
+                face_quality, method, captured_at, payload_json
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            (
+                event_id,
+                user_id,
+                sr_code,
+                decision,
+                event_type,
+                confidence,
+                primary_confidence,
+                secondary_confidence,
+                primary_distance,
+                secondary_distance,
+                face_quality,
+                method,
+                captured_at,
+                json.dumps(payload_json, ensure_ascii=True),
+            ),
+        )
+        return (cursor.rowcount or 0) > 0
 
     def _entry_worker_online() -> bool:
         checker = deps.get("is_worker_online")
@@ -573,6 +652,7 @@ def create_internal_blueprint(deps):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         inserted = False
+        auto_exit_inserted = False
         occupancy_state = None
 
         try:
@@ -609,8 +689,55 @@ def create_internal_blueprint(deps):
             cooldown_remaining_seconds = None
             if decision == "allowed" and user_id is not None and event_type == "entry":
                 presence = _resolve_user_presence(c, int(user_id))
-                if presence["inside_now"]:
+                entry_decision = _entry_presence_decision(presence, captured_at)
+                if entry_decision["inside_now"] and not entry_decision["stale_inside_reentry"]:
                     blocked_reason = "already_inside"
+                elif entry_decision["stale_inside_reentry"]:
+                    auto_exit_at = captured_at - timedelta(seconds=1)
+                    auto_exit_event_id = f"auto-exit-{uuid.uuid4().hex}"
+                    auto_payload_json = {
+                        "event_id": auto_exit_event_id,
+                        "camera_id": 2,
+                        "event_type": "exit",
+                        "user_id": int(user_id),
+                        "sr_code": sr_code,
+                        "decision": "allowed",
+                        "confidence": confidence,
+                        "primary_confidence": primary_confidence,
+                        "secondary_confidence": secondary_confidence,
+                        "primary_distance": primary_distance,
+                        "secondary_distance": secondary_distance,
+                        "face_quality": face_quality,
+                        "method": "auto-missed-exit",
+                        "captured_at": auto_exit_at.isoformat(),
+                        "auto_generated": True,
+                        "auto_reason": "missed_exit_reentry",
+                        "closed_entry_at": (
+                            entry_decision["last_entry_at"].isoformat()
+                            if isinstance(entry_decision["last_entry_at"], datetime)
+                            else None
+                        ),
+                        "trigger_entry_event_id": event_id,
+                    }
+                    auto_exit_inserted = _insert_recognition_event(
+                        c,
+                        event_id=auto_exit_event_id,
+                        user_id=int(user_id),
+                        sr_code=sr_code,
+                        decision="allowed",
+                        event_type="exit",
+                        confidence=confidence,
+                        primary_confidence=primary_confidence,
+                        secondary_confidence=secondary_confidence,
+                        primary_distance=primary_distance,
+                        secondary_distance=secondary_distance,
+                        face_quality=face_quality,
+                        method="auto-missed-exit",
+                        captured_at=auto_exit_at,
+                        payload_json=auto_payload_json,
+                    )
+                    if auto_exit_inserted:
+                        _upsert_daily_occupancy_state(c, auto_exit_at, "exit")
                 else:
                     cooldown_seconds = _entry_event_cooldown_seconds()
                     last_entry_at = presence["last_entry_at"]
@@ -631,6 +758,9 @@ def create_internal_blueprint(deps):
                 payload_for_json["rejection_reason"] = blocked_reason
                 if cooldown_remaining_seconds is not None:
                     payload_for_json["cooldown_remaining_seconds"] = round(float(cooldown_remaining_seconds), 2)
+                payload_json = json.dumps(payload_for_json, ensure_ascii=True)
+            elif auto_exit_inserted:
+                payload_for_json["auto_closed_missed_exit"] = True
                 payload_json = json.dumps(payload_for_json, ensure_ascii=True)
 
             c.execute(
@@ -813,11 +943,13 @@ def create_internal_blueprint(deps):
             conn.close()
 
         if event_type == "entry":
-            allow_event = not bool(presence["inside_now"])
-            reason = "ok" if allow_event else "already_inside"
+            decision = _entry_presence_decision(presence, datetime.now(timezone.utc))
+            allow_event = bool(decision["allow_entry"])
+            reason = str(decision["reason"])
         else:
             allow_event = bool(presence["inside_now"])
             reason = "ok" if allow_event else "not_inside"
+            decision = {**presence, "stale_inside_reentry": False}
 
         return jsonify(
             {
@@ -827,6 +959,9 @@ def create_internal_blueprint(deps):
                 "allow_event": allow_event,
                 "reason": reason,
                 "inside_now": bool(presence["inside_now"]),
+                "stale_inside_reentry": bool(decision["stale_inside_reentry"]),
+                "last_entry_at": presence["last_entry_at"].isoformat() if isinstance(presence["last_entry_at"], datetime) else None,
+                "last_exit_at": presence["last_exit_at"].isoformat() if isinstance(presence["last_exit_at"], datetime) else None,
             }
         )
 

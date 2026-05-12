@@ -21,6 +21,17 @@ class EntryExitExportContractTests(unittest.TestCase):
         self.assertIn("Export Excel", source)
         self.assertNotIn("Export CSV", source)
 
+    def test_stale_reentry_auto_exit_metadata_feeds_export_pairing(self) -> None:
+        internal_source = Path("routes/internal_routes.py").read_text(encoding="utf-8")
+        repository_source = Path("database/repository.py").read_text(encoding="utf-8")
+
+        for source in (internal_source, repository_source):
+            self.assertIn('"auto_reason": "missed_exit_reentry"', source)
+            self.assertIn('"trigger_entry_event_id": event_id', source)
+
+        self.assertIn('_upsert_daily_occupancy_state(c, auto_exit_at, "exit")', internal_source)
+        self.assertIn('open_sessions[-1]["exit_timestamp"] = time_text', Path("routes/routes.py").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

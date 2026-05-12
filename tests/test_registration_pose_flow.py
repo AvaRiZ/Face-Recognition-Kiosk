@@ -2,6 +2,7 @@ import unittest
 import tempfile
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
@@ -13,6 +14,7 @@ from app.cli import CLIApplication
 from core.config import AppConfig
 from core.models import RegistrationSample, User
 from core.state import AppStateManager
+from database.repository import UserRepository
 from services.recognition_service import FaceRecognitionService
 from workers.durable_queue import DurableOutboundQueue
 from workers.worker_repository import WorkerApiRepository
@@ -302,6 +304,30 @@ class RegistrationPoseFlowTests(unittest.TestCase):
         self.assertEqual(result["payload"]["name"], "Ada Lovelace")
         self.assertEqual(state.recognized_user["name"], "Ada Lovelace")
         self.assertFalse(repository.log_called)
+
+    def test_stale_inside_reentry_decision_allows_entry_after_timeout(self):
+        repository = UserRepository("unused", stale_inside_reentry_seconds=30 * 60)
+        last_entry_at = datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
+        observed_at = last_entry_at + timedelta(minutes=31)
+
+        decision = repository._entry_presence_decision(last_entry_at, None, observed_at)
+
+        self.assertTrue(decision["inside_now"])
+        self.assertTrue(decision["stale_inside_reentry"])
+        self.assertTrue(decision["allow_entry"])
+        self.assertEqual(decision["reason"], "stale_inside_reentry")
+
+    def test_stale_inside_reentry_decision_blocks_before_timeout(self):
+        repository = UserRepository("unused", stale_inside_reentry_seconds=30 * 60)
+        last_entry_at = datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
+        observed_at = last_entry_at + timedelta(minutes=29, seconds=59)
+
+        decision = repository._entry_presence_decision(last_entry_at, None, observed_at)
+
+        self.assertTrue(decision["inside_now"])
+        self.assertFalse(decision["stale_inside_reentry"])
+        self.assertFalse(decision["allow_entry"])
+        self.assertEqual(decision["reason"], "already_inside")
 
     def test_registration_samples_remain_in_memory_until_completion(self):
         state = self._state()

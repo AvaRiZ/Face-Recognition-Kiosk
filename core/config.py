@@ -165,6 +165,7 @@ class AppConfig:
     recognition_cooldown_seconds: int = 1
     registration_capture_cooldown_seconds: float = 0.25
     recognition_event_lock_seconds: int = 10
+    stale_inside_reentry_seconds: int = 30 * 60
     recognition_confidence_threshold: float = 0.72
 
     registration_recognition_confirm_frames: int = 2

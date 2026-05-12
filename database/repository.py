@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import pickle
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import threading
 from typing import Optional
 
@@ -61,8 +61,89 @@ from services.embedding_service import (
 
 
 class UserRepository:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, stale_inside_reentry_seconds: int = 30 * 60):
         self.db_path = db_path
+        self.stale_inside_reentry_seconds = int(stale_inside_reentry_seconds or (30 * 60))
+
+    @staticmethod
+    def _as_aware_utc(value):
+        if not isinstance(value, datetime):
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _stale_inside_reentry_seconds(self) -> float:
+        return max(0.0, float(getattr(self, "stale_inside_reentry_seconds", 30 * 60) or 0.0))
+
+    def _entry_presence_decision(self, last_entry_at, last_exit_at, observed_at: datetime) -> dict:
+        last_entry_at = self._as_aware_utc(last_entry_at)
+        last_exit_at = self._as_aware_utc(last_exit_at)
+        observed_at = self._as_aware_utc(observed_at) or datetime.now(timezone.utc)
+        inside_now = bool(last_entry_at) and (last_exit_at is None or last_exit_at < last_entry_at)
+        stale_reentry_seconds = self._stale_inside_reentry_seconds()
+        stale_inside_reentry = bool(
+            inside_now
+            and stale_reentry_seconds > 0
+            and last_entry_at is not None
+            and (observed_at - last_entry_at).total_seconds() >= stale_reentry_seconds
+        )
+        return {
+            "inside_now": inside_now,
+            "stale_inside_reentry": stale_inside_reentry,
+            "allow_entry": (not inside_now) or stale_inside_reentry,
+            "reason": "stale_inside_reentry" if stale_inside_reentry else "ok" if not inside_now else "already_inside",
+            "last_entry_at": last_entry_at,
+            "last_exit_at": last_exit_at,
+        }
+
+    @staticmethod
+    def _insert_recognition_event(
+        cursor,
+        *,
+        event_id: str,
+        user_id: int | None,
+        sr_code: str | None,
+        decision: str,
+        event_type: str,
+        confidence: float | None,
+        primary_confidence: float | None,
+        secondary_confidence: float | None,
+        primary_distance: float | None,
+        secondary_distance: float | None,
+        face_quality: float | None,
+        method: str,
+        captured_at: datetime,
+        payload_json: dict,
+    ) -> bool:
+        cursor.execute(
+            """
+            INSERT INTO recognition_events (
+                event_id, user_id, sr_code, decision, event_type, confidence,
+                primary_confidence, secondary_confidence, primary_distance, secondary_distance,
+                face_quality, method, captured_at, payload_json
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            (
+                event_id,
+                user_id,
+                sr_code,
+                decision,
+                event_type,
+                confidence,
+                primary_confidence,
+                secondary_confidence,
+                primary_distance,
+                secondary_distance,
+                face_quality,
+                method,
+                captured_at,
+                json.dumps(payload_json, ensure_ascii=True),
+            ),
+        )
+        return (cursor.rowcount or 0) > 0
 
     def init_db(self) -> None:
         conn = db_connect(self.db_path)
@@ -398,10 +479,11 @@ class UserRepository:
         conn.close()
 
         last_entry_at, last_exit_at = row[0], row[1]
-        inside_now = bool(last_entry_at) and (last_exit_at is None or last_exit_at < last_entry_at)
+        entry_decision = self._entry_presence_decision(last_entry_at, last_exit_at, datetime.now(timezone.utc))
+        inside_now = bool(entry_decision["inside_now"])
         if normalized_event_type == "entry":
-            allow_event = not inside_now
-            reason = "ok" if allow_event else "already_inside"
+            allow_event = bool(entry_decision["allow_entry"])
+            reason = str(entry_decision["reason"])
         else:
             allow_event = inside_now
             reason = "ok" if allow_event else "not_inside"
@@ -413,6 +495,9 @@ class UserRepository:
             "allow_event": bool(allow_event),
             "reason": reason,
             "inside_now": bool(inside_now),
+            "stale_inside_reentry": bool(entry_decision["stale_inside_reentry"]),
+            "last_entry_at": last_entry_at.isoformat() if isinstance(last_entry_at, datetime) else None,
+            "last_exit_at": last_exit_at.isoformat() if isinstance(last_exit_at, datetime) else None,
         }
 
     def log_recognition(
@@ -435,6 +520,8 @@ class UserRepository:
         event_type = "exit" if camera_id == 2 else "entry"
         decision = "allowed"
         rejection_reason = None
+        event_id = f"evt-{uuid.uuid4().hex}"
+        auto_exit_inserted = False
 
         if table_columns(conn, "recognition_events"):
             if event_type == "entry":
@@ -450,12 +537,55 @@ class UserRepository:
                 )
                 row = c.fetchone() or (None, None)
                 last_entry_at, last_exit_at = row[0], row[1]
-                inside_now = bool(last_entry_at) and (last_exit_at is None or last_exit_at < last_entry_at)
-                if inside_now:
+                entry_decision = self._entry_presence_decision(last_entry_at, last_exit_at, captured_at)
+                if entry_decision["inside_now"] and not entry_decision["stale_inside_reentry"]:
                     decision = "denied"
                     rejection_reason = "already_inside"
+                elif entry_decision["stale_inside_reentry"]:
+                    auto_exit_at = captured_at - timedelta(seconds=1)
+                    auto_exit_event_id = f"auto-exit-{uuid.uuid4().hex}"
+                    auto_payload = {
+                        "event_id": auto_exit_event_id,
+                        "camera_id": 2,
+                        "event_type": "exit",
+                        "user_id": int(result.user_id),
+                        "sr_code": result.user.sr_code,
+                        "decision": "allowed",
+                        "confidence": confidence,
+                        "primary_confidence": primary_confidence,
+                        "secondary_confidence": secondary_confidence,
+                        "primary_distance": primary_distance,
+                        "secondary_distance": secondary_distance,
+                        "face_quality": quality_value,
+                        "method": "auto-missed-exit",
+                        "captured_at": auto_exit_at.isoformat(),
+                        "auto_generated": True,
+                        "auto_reason": "missed_exit_reentry",
+                        "closed_entry_at": (
+                            entry_decision["last_entry_at"].isoformat()
+                            if isinstance(entry_decision["last_entry_at"], datetime)
+                            else None
+                        ),
+                        "trigger_entry_event_id": event_id,
+                    }
+                    auto_exit_inserted = self._insert_recognition_event(
+                        c,
+                        event_id=auto_exit_event_id,
+                        user_id=int(result.user_id),
+                        sr_code=result.user.sr_code,
+                        decision="allowed",
+                        event_type="exit",
+                        confidence=confidence,
+                        primary_confidence=primary_confidence,
+                        secondary_confidence=secondary_confidence,
+                        primary_distance=primary_distance,
+                        secondary_distance=secondary_distance,
+                        face_quality=quality_value,
+                        method="auto-missed-exit",
+                        captured_at=auto_exit_at,
+                        payload_json=auto_payload,
+                    )
 
-            event_id = f"evt-{uuid.uuid4().hex}"
             payload_json = json.dumps(
                 {
                     "event_id": event_id,
@@ -473,6 +603,7 @@ class UserRepository:
                     "face_quality": quality_value,
                     "method": method,
                     "captured_at": captured_at.isoformat(),
+                    "auto_closed_missed_exit": bool(auto_exit_inserted),
                 },
                 ensure_ascii=True,
             )
