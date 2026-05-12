@@ -8,6 +8,7 @@ realtime_stub.emit_analytics_update = lambda *args, **kwargs: None
 sys.modules.setdefault("app.realtime", realtime_stub)
 
 from app.cli import CLIApplication
+from core.models import TrackingState
 
 
 def _cli_for_role(worker_role: str) -> CLIApplication:
@@ -51,6 +52,27 @@ class CliRecognitionAlertTests(unittest.TestCase):
             cli._maybe_trigger_recognition_alert({"name": "Ada Lovelace"}, now=108.0)
 
         self.assertEqual(beep.call_count, 2)
+
+    def test_blocked_recognition_payload_keeps_track_recognized_for_display(self):
+        cli = _cli_for_role("entry")
+        track_state = TrackingState(failed_good_quality_attempts=2)
+        result = {
+            "status": "blocked",
+            "reason_code": "already_inside",
+            "payload": {"name": "Ada Lovelace", "sr_code": "SR-42"},
+        }
+
+        with patch.object(cli, "_play_recognition_beep") as beep:
+            applied = cli._apply_identified_recognition_result(track_state, result, now=100.0)
+
+        label, label_color = cli._build_identity_label(track_state, types.SimpleNamespace(), False)
+        self.assertTrue(applied)
+        self.assertTrue(track_state.recognized)
+        self.assertEqual(track_state.user["name"], "Ada Lovelace")
+        self.assertEqual(track_state.failed_good_quality_attempts, 0)
+        self.assertEqual(label, "Recognized: Ada Lovelace")
+        self.assertEqual(label_color, (0, 255, 0))
+        beep.assert_called_once_with()
 
 
 if __name__ == "__main__":

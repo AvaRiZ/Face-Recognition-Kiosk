@@ -434,6 +434,8 @@ class FaceRecognitionService:
             event_type = self._event_type_for_current_repository()
             gate_allowed, gate_reason = self._presence_gate_allows_event(int(best_match.user_id), event_type)
             if not gate_allowed:
+                recognized_payload = recognized_user_payload(best_match)
+                self.state.set_recognized_user(recognized_payload)
                 print(
                     f"  Skipped recognition for {best_match.user.name}: "
                     f"presence gate blocked ({gate_reason})"
@@ -446,6 +448,7 @@ class FaceRecognitionService:
                     "quality_debug": quality_debug,
                     "match_confidence": best_match.confidence,
                     "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
+                    "payload": recognized_payload,
                 }
 
             if self._should_emit_recognition_event(int(best_match.user_id)):

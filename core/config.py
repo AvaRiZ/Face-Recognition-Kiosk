@@ -189,7 +189,7 @@ class AppConfig:
 
     # Exit camera stream source (accessible to exit-worker).
     # Use "0", "1", ... for a local webcam, or provide a stream URL or file path.
-    exit_cctv_stream_source: str = "1"
+    exit_cctv_stream_source: str = "2"
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
     cli_top_bar_enabled: bool = False

@@ -11,7 +11,7 @@ sys.modules.setdefault("app.realtime", realtime_stub)
 
 from app.cli import CLIApplication
 from core.config import AppConfig
-from core.models import RegistrationSample
+from core.models import RegistrationSample, User
 from core.state import AppStateManager
 from services.recognition_service import FaceRecognitionService
 from workers.durable_queue import DurableOutboundQueue
@@ -53,6 +53,28 @@ class _NoopRepository:
 
     def update_embeddings(self, *args, **kwargs):
         return None
+
+
+class _BlockingPresenceRepository(_NoopRepository):
+    def __init__(self):
+        self.log_called = False
+
+    def check_presence_gate(self, user_id: int, event_type: str) -> dict:
+        return {
+            "success": True,
+            "user_id": int(user_id),
+            "event_type": str(event_type),
+            "allow_event": False,
+            "reason": "already_inside",
+            "inside_now": True,
+        }
+
+    def log_recognition(self, *args, **kwargs):
+        self.log_called = True
+        raise AssertionError("Presence-gated recognitions must not be logged")
+
+    def update_embeddings(self, *args, **kwargs):
+        raise AssertionError("Blocked recognitions should not update embeddings")
 
 
 class _PoseMismatchQualityService:
@@ -237,6 +259,49 @@ class RegistrationPoseFlowTests(unittest.TestCase):
 
         self.assertEqual(embedding_service.calls, 1)
         self.assertEqual(result["status"], "no_match")
+
+    def test_presence_gate_blocked_match_still_sets_recognized_payload_without_logging(self):
+        config = AppConfig()
+        config.primary_threshold = 0.5
+        config.secondary_threshold = 0.5
+        config.recognition_confidence_threshold = 0.5
+        state = AppStateManager(config)
+        state.load_users(
+            [
+                User(
+                    id=42,
+                    name="Ada Lovelace",
+                    sr_code="SR-42",
+                    gender="Female",
+                    program="Computer Science",
+                    embeddings={
+                        config.primary_model: [np.ones(4, dtype=np.float32)],
+                        config.secondary_model: [np.ones(4, dtype=np.float32)],
+                    },
+                )
+            ]
+        )
+        repository = _BlockingPresenceRepository()
+        service = FaceRecognitionService(
+            config=config,
+            state=state,
+            repository=repository,
+            embedding_service=_RecordingEmbeddingService(config),
+        )
+
+        result = service.register_or_recognize_face(
+            np.zeros((260, 260, 3), dtype=np.uint8),
+            quality_service=_PoseMismatchQualityService(),
+            allow_registration=False,
+            precomputed_quality=(1.0, "Good", {"failed_checks": [], "component_scores": {}}),
+            quality_context="entry",
+        )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["reason_code"], "already_inside")
+        self.assertEqual(result["payload"]["name"], "Ada Lovelace")
+        self.assertEqual(state.recognized_user["name"], "Ada Lovelace")
+        self.assertFalse(repository.log_called)
 
     def test_registration_samples_remain_in_memory_until_completion(self):
         state = self._state()

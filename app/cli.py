@@ -325,6 +325,23 @@ class CLIApplication:
             self._greeting_popup_name = user_name
             self._greeting_popup_active_until = observed_now + duration
 
+    def _apply_identified_recognition_result(self, track_state, result: dict, now: float | None = None) -> bool:
+        status = str((result or {}).get("status") or "").strip().lower()
+        if status not in {"recognized", "blocked"}:
+            return False
+
+        payload = (result or {}).get("payload")
+        if not isinstance(payload, dict) and getattr(self, "state", None) is not None:
+            payload = self.state.recognized_user
+        if not isinstance(payload, dict) or not self._normalize_display_name(payload.get("name")):
+            return False
+
+        track_state.recognized = True
+        track_state.user = dict(payload)
+        track_state.failed_good_quality_attempts = 0
+        self._maybe_trigger_recognition_alert(track_state.user, now=now)
+        return True
+
     def _draw_greeting_popup(self, frame, frame_width: int, frame_height: int, now: float | None = None) -> None:
         if not self._registration_allowed_on_this_worker():
             return
@@ -883,12 +900,7 @@ class CLIApplication:
                         if registration_sample is not None:
                             local_capture_count = int(self.state.capture_registration_sample(registration_sample))
 
-                    if status == "recognized":
-                        track_state.recognized = True
-                        track_state.user = dict(self.state.recognized_user) if self.state.recognized_user else None
-                        track_state.failed_good_quality_attempts = 0
-                        self._maybe_trigger_recognition_alert(track_state.user, now=current_time)
-                    else:
+                    if not self._apply_identified_recognition_result(track_state, result, now=current_time):
                         track_state.recognized = False
                         track_state.user = None
                         self._reset_registration_recognition_streak(track_state)
@@ -897,7 +909,7 @@ class CLIApplication:
                             track_state.failed_good_quality_attempts += 1
 
                     if registration_capture_allowed:
-                        if status == "recognized":
+                        if status in {"recognized", "blocked"}:
                             self._handle_existing_recognition_during_registration(track_state, result)
                         elif self.state.registration_state.in_progress:
                             self.state.stop_manual_registration()
