@@ -32,6 +32,14 @@ class EntryExitExportContractTests(unittest.TestCase):
         self.assertIn('_upsert_daily_occupancy_state(c, auto_exit_at, "exit")', internal_source)
         self.assertIn('open_sessions[-1]["exit_timestamp"] = time_text', Path("routes/routes.py").read_text(encoding="utf-8"))
 
+    def test_presence_gate_queries_are_date_scoped_for_daily_reset(self) -> None:
+        internal_source = Path("routes/internal_routes.py").read_text(encoding="utf-8")
+        repository_source = Path("database/repository.py").read_text(encoding="utf-8")
+
+        for source in (internal_source, repository_source):
+            self.assertIn("DATE(COALESCE(captured_at, ingested_at)) = %s", source)
+            self.assertIn("_presence_event_date", source)
+
 
 if __name__ == "__main__":
     unittest.main()

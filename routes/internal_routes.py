@@ -280,7 +280,12 @@ def create_internal_blueprint(deps):
     def _stale_inside_reentry_seconds() -> float:
         return max(0.0, float(getattr(deps["config"], "stale_inside_reentry_seconds", 30 * 60) or 0.0))
 
-    def _resolve_user_presence(cursor, user_id: int) -> dict:
+    def _presence_event_date(observed_at: datetime | None = None) -> str:
+        observed_at = _as_aware_utc(observed_at) or datetime.now(timezone.utc)
+        return observed_at.date().isoformat()
+
+    def _resolve_user_presence(cursor, user_id: int, observed_at: datetime | None = None) -> dict:
+        event_date = _presence_event_date(observed_at)
         cursor.execute(
             """
             SELECT
@@ -288,8 +293,9 @@ def create_internal_blueprint(deps):
                 MAX(CASE WHEN event_type = 'exit' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_exit_at
             FROM recognition_events
             WHERE user_id = %s
+              AND DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
-            (int(user_id),),
+            (int(user_id), event_date),
         )
         row = cursor.fetchone() or (None, None)
         last_entry_at = row[0]
@@ -301,6 +307,7 @@ def create_internal_blueprint(deps):
             "last_entry_at": last_entry_at,
             "last_exit_at": last_exit_at,
             "inside_now": inside_now,
+            "event_date": event_date,
         }
 
     def _entry_presence_decision(presence: dict, observed_at: datetime) -> dict:
@@ -688,7 +695,7 @@ def create_internal_blueprint(deps):
             blocked_reason = None
             cooldown_remaining_seconds = None
             if decision == "allowed" and user_id is not None and event_type == "entry":
-                presence = _resolve_user_presence(c, int(user_id))
+                presence = _resolve_user_presence(c, int(user_id), captured_at)
                 entry_decision = _entry_presence_decision(presence, captured_at)
                 if entry_decision["inside_now"] and not entry_decision["stale_inside_reentry"]:
                     blocked_reason = "already_inside"
@@ -938,7 +945,7 @@ def create_internal_blueprint(deps):
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
         try:
-            presence = _resolve_user_presence(c, user_id)
+            presence = _resolve_user_presence(c, user_id, datetime.now(timezone.utc))
         finally:
             conn.close()
 

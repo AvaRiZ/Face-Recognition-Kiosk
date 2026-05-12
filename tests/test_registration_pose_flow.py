@@ -329,6 +329,21 @@ class RegistrationPoseFlowTests(unittest.TestCase):
         self.assertFalse(decision["allow_entry"])
         self.assertEqual(decision["reason"], "already_inside")
 
+    def test_daily_presence_reset_treats_no_same_day_entry_as_not_inside(self):
+        repository = UserRepository("unused", stale_inside_reentry_seconds=30 * 60)
+        observed_at = datetime(2026, 5, 13, 8, 0, tzinfo=timezone.utc)
+
+        decision = repository._entry_presence_decision(None, None, observed_at)
+
+        self.assertFalse(decision["inside_now"])
+        self.assertTrue(decision["allow_entry"])
+        self.assertEqual(decision["reason"], "ok")
+
+    def test_presence_event_date_uses_observed_utc_date(self):
+        observed_at = datetime(2026, 5, 13, 0, 1, tzinfo=timezone.utc)
+
+        self.assertEqual(UserRepository._presence_event_date(observed_at), "2026-05-13")
+
     def test_registration_samples_remain_in_memory_until_completion(self):
         state = self._state()
 

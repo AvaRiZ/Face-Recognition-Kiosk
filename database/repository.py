@@ -76,6 +76,11 @@ class UserRepository:
     def _stale_inside_reentry_seconds(self) -> float:
         return max(0.0, float(getattr(self, "stale_inside_reentry_seconds", 30 * 60) or 0.0))
 
+    @classmethod
+    def _presence_event_date(cls, observed_at: datetime | None = None) -> str:
+        observed_at = cls._as_aware_utc(observed_at) or datetime.now(timezone.utc)
+        return observed_at.date().isoformat()
+
     def _entry_presence_decision(self, last_entry_at, last_exit_at, observed_at: datetime) -> dict:
         last_entry_at = self._as_aware_utc(last_entry_at)
         last_exit_at = self._as_aware_utc(last_exit_at)
@@ -463,6 +468,8 @@ class UserRepository:
         if normalized_event_type not in {"entry", "exit"}:
             normalized_event_type = "entry"
 
+        observed_at = datetime.now(timezone.utc)
+        event_date = self._presence_event_date(observed_at)
         conn = db_connect(self.db_path)
         c = conn.cursor()
         c.execute(
@@ -472,14 +479,15 @@ class UserRepository:
                 MAX(CASE WHEN event_type = 'exit' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_exit_at
             FROM recognition_events
             WHERE user_id = %s
+              AND DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
-            (int(user_id),),
+            (int(user_id), event_date),
         )
         row = c.fetchone() or (None, None)
         conn.close()
 
         last_entry_at, last_exit_at = row[0], row[1]
-        entry_decision = self._entry_presence_decision(last_entry_at, last_exit_at, datetime.now(timezone.utc))
+        entry_decision = self._entry_presence_decision(last_entry_at, last_exit_at, observed_at)
         inside_now = bool(entry_decision["inside_now"])
         if normalized_event_type == "entry":
             allow_event = bool(entry_decision["allow_entry"])
@@ -525,6 +533,7 @@ class UserRepository:
 
         if table_columns(conn, "recognition_events"):
             if event_type == "entry":
+                event_date = self._presence_event_date(captured_at)
                 c.execute(
                     """
                     SELECT
@@ -532,8 +541,9 @@ class UserRepository:
                         MAX(CASE WHEN event_type = 'exit' AND decision = 'allowed' THEN COALESCE(captured_at, ingested_at) END) AS last_exit_at
                     FROM recognition_events
                     WHERE user_id = %s
+                      AND DATE(COALESCE(captured_at, ingested_at)) = %s
                     """,
-                    (int(result.user_id),),
+                    (int(result.user_id), event_date),
                 )
                 row = c.fetchone() or (None, None)
                 last_entry_at, last_exit_at = row[0], row[1]
