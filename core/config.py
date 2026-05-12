@@ -167,6 +167,7 @@ class AppConfig:
     recognition_event_lock_seconds: int = 10
     stale_inside_reentry_seconds: int = 30 * 60
     recognition_confidence_threshold: float = 0.72
+    online_learning_confidence_threshold: float = 0.90
 
     registration_recognition_confirm_frames: int = 2
     registration_recognition_confidence_margin: float = 0.08

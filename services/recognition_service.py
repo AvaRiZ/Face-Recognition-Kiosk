@@ -459,29 +459,36 @@ class FaceRecognitionService:
                     f"(lock={float(getattr(self.config, 'recognition_event_lock_seconds', 8)):.1f}s)"
                 )
 
-            primary_new = first_embedding(embeddings, self.config.primary_model)
-            secondary_new = first_embedding(embeddings, self.config.secondary_model)
-            if primary_new is not None:
-                best_match.user.embeddings.setdefault(self.config.primary_model, []).append(primary_new)
-            if secondary_new is not None:
-                best_match.user.embeddings.setdefault(self.config.secondary_model, []).append(secondary_new)
+            learning_threshold = float(getattr(self.config, "online_learning_confidence_threshold", 0.90) or 0.90)
+            if float(best_match.confidence) >= learning_threshold:
+                primary_new = first_embedding(embeddings, self.config.primary_model)
+                secondary_new = first_embedding(embeddings, self.config.secondary_model)
+                if primary_new is not None:
+                    best_match.user.embeddings.setdefault(self.config.primary_model, []).append(primary_new)
+                if secondary_new is not None:
+                    best_match.user.embeddings.setdefault(self.config.secondary_model, []).append(secondary_new)
 
-            updated_user = self.repository.update_embeddings(best_match.user_id, embeddings, image_path=None)
-            if updated_user:
-                self.state.replace_user(updated_user)
-                active_user = updated_user
+                updated_user = self.repository.update_embeddings(best_match.user_id, embeddings, image_path=None)
+                if updated_user:
+                    self.state.replace_user(updated_user)
+                    active_user = updated_user
+                else:
+                    self.state.replace_user(best_match.user)
+                    active_user = best_match.user
+
+                # Force index rebuild after online learning updates the embedding bank.
+                self._index_signature = None
+
+                total_embeddings = count_embeddings(active_user.embeddings)
+                print(
+                    f"[OK] Learned new embedding for {active_user.name} "
+                    f"(total: {total_embeddings} embeddings across models)"
+                )
             else:
-                self.state.replace_user(best_match.user)
-                active_user = best_match.user
-
-            # Force index rebuild after online learning updates the embedding bank.
-            self._index_signature = None
-
-            total_embeddings = count_embeddings(active_user.embeddings)
-            print(
-                f"[OK] Learned new embedding for {active_user.name} "
-                f"(total: {total_embeddings} embeddings across models)"
-            )
+                print(
+                    f"  Skipped online learning for {best_match.user.name}: "
+                    f"{best_match.confidence:.2%} < {learning_threshold:.2%}"
+                )
 
             recognized_payload = recognized_user_payload(best_match)
             self.state.set_recognized_user(recognized_payload)

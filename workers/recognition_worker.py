@@ -103,6 +103,13 @@ def _apply_runtime_config(runtime: WorkerRuntime, payload: dict) -> None:
         payload.get("recognition_confidence_threshold", runtime.config.recognition_confidence_threshold)
     )
     runtime.config.recognition_confidence_threshold = max(0.0, min(1.0, recognition_confidence_threshold))
+    online_learning_confidence_threshold = float(
+        payload.get(
+            "online_learning_confidence_threshold",
+            runtime.config.online_learning_confidence_threshold,
+        )
+    )
+    runtime.config.online_learning_confidence_threshold = max(0.1, min(0.99, online_learning_confidence_threshold))
     runtime.config.apply_quality_profiles(payload.get("face_quality_profiles"))
     entry_source = _normalize_stream_source(payload.get("entry_cctv_stream_source"))
     if entry_source is not None:
@@ -258,6 +265,18 @@ def build_runtime() -> WorkerRuntime:
                     runtime_payload.get(
                         "recognition_confidence_threshold",
                         config.recognition_confidence_threshold,
+                    )
+                ),
+            ),
+        )
+        config.online_learning_confidence_threshold = max(
+            0.1,
+            min(
+                0.99,
+                float(
+                    runtime_payload.get(
+                        "online_learning_confidence_threshold",
+                        config.online_learning_confidence_threshold,
                     )
                 ),
             ),

@@ -11,6 +11,7 @@ const DEFAULT_BOUNDS = {
   secondary_threshold: { min: 0.1, max: 0.95 },
   quality_threshold: { min: 0.1, max: 0.95 },
   recognition_confidence_threshold: { min: 0.1, max: 0.99 },
+  online_learning_confidence_threshold: { min: 0.1, max: 0.99 },
   occupancy_warning_threshold: { min: 0.5, max: 0.99 },
   occupancy_snapshot_interval_seconds: { min: 60, max: 3600 },
   recognition_event_retention_days: { min: 1, max: 3650 }
@@ -192,6 +193,7 @@ export default function SettingsPage() {
   const [secondaryThreshold, setSecondaryThreshold] = React.useState('0.75');
   const [qualityThreshold, setQualityThreshold] = React.useState('0.2');
   const [recognitionConfidenceThreshold, setRecognitionConfidenceThreshold] = React.useState('0.72');
+  const [onlineLearningConfidenceThreshold, setOnlineLearningConfidenceThreshold] = React.useState('0.90');
   const [vectorIndexTopK, setVectorIndexTopK] = React.useState('20');
   const [maxOccupancy, setMaxOccupancy] = React.useState('300');
   const [occupancyWarningThreshold, setOccupancyWarningThreshold] = React.useState('0.9');
@@ -217,6 +219,7 @@ export default function SettingsPage() {
     setSecondaryThreshold(String(payload?.secondary_threshold ?? '0.75'));
     setQualityThreshold(String(payload?.quality_threshold ?? '0.2'));
     setRecognitionConfidenceThreshold(String(payload?.recognition_confidence_threshold ?? '0.72'));
+    setOnlineLearningConfidenceThreshold(String(payload?.online_learning_confidence_threshold ?? '0.90'));
     setVectorIndexTopK(String(payload?.vector_index_top_k ?? '20'));
     setMaxOccupancy(String(payload?.max_occupancy ?? '300'));
     setOccupancyWarningThreshold(String(payload?.occupancy_warning_threshold ?? '0.9'));
@@ -272,6 +275,7 @@ export default function SettingsPage() {
       payload.secondary_threshold = secondaryThreshold;
       payload.quality_threshold = qualityThreshold;
       payload.recognition_confidence_threshold = recognitionConfidenceThreshold;
+      payload.online_learning_confidence_threshold = onlineLearningConfidenceThreshold;
       payload.face_quality_profiles = faceQualityProfiles;
     }
     if (permissions.can_manage_advanced_ops) {
@@ -508,7 +512,7 @@ export default function SettingsPage() {
                   <StatCard value={asFixedNumber(secondaryThreshold, 3)} label="Facenet Threshold" accent="#fd7e14" />
                 </div>
                 <div className="col-6 col-md-4 col-xl-2">
-                  <StatCard value={asFixedNumber(qualityThreshold, 2)} label="Min Face Quality" accent="#6610f2" />
+                  <StatCard value={asFixedNumber(onlineLearningConfidenceThreshold, 3)} label="Learning Gate" accent="#6610f2" />
                 </div>
                 <div className="col-6 col-md-4 col-xl-2">
                   <StatCard value={maxOccupancy} label="Max Occupancy" accent="#6f42c1" />
@@ -727,6 +731,20 @@ export default function SettingsPage() {
                     max={bounds.recognition_confidence_threshold?.max ?? DEFAULT_BOUNDS.recognition_confidence_threshold.max}
                     disabled={!canEditThresholds}
                     helpText="Minimum confidence required before logging an entry or exit event."
+                  />
+                </div>
+
+                <div className="col-12">
+                  <SliderField
+                    id="online_learning_confidence_threshold"
+                    label="Online Learning Gate"
+                    value={onlineLearningConfidenceThreshold}
+                    displayValue={asFixedNumber(onlineLearningConfidenceThreshold, 3)}
+                    onChange={ev => setOnlineLearningConfidenceThreshold(ev.target.value)}
+                    min={bounds.online_learning_confidence_threshold?.min ?? DEFAULT_BOUNDS.online_learning_confidence_threshold.min}
+                    max={bounds.online_learning_confidence_threshold?.max ?? DEFAULT_BOUNDS.online_learning_confidence_threshold.max}
+                    disabled={!canEditThresholds}
+                    helpText="Minimum confidence required before adding new embeddings to a recognized user."
                   />
                 </div>
 

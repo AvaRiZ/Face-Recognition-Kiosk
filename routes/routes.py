@@ -875,6 +875,7 @@ def create_routes_blueprint(deps):
         "quality_threshold": {"min": 0.1, "max": 0.95},
         "face_quality_profiles": QUALITY_PROFILE_BOUNDS,
         "recognition_confidence_threshold": {"min": 0.1, "max": 0.99},
+        "online_learning_confidence_threshold": {"min": 0.1, "max": 0.99},
         "occupancy_warning_threshold": {"min": 0.5, "max": 0.99},
         "occupancy_snapshot_interval_seconds": {"min": 60, "max": 3600},
         "recognition_event_retention_days": {"min": 1, "max": 3650},
@@ -883,7 +884,13 @@ def create_routes_blueprint(deps):
     SETTINGS_AUDIT_ROW_LIMIT = 25
 
     def _format_setting_value(field_name, value):
-        if field_name in {"threshold", "primary_threshold", "secondary_threshold", "recognition_confidence_threshold"}:
+        if field_name in {
+            "threshold",
+            "primary_threshold",
+            "secondary_threshold",
+            "recognition_confidence_threshold",
+            "online_learning_confidence_threshold",
+        }:
             return f"{float(value):.3f}"
         if field_name in {"quality_threshold", "occupancy_warning_threshold"}:
             return f"{float(value):.2f}"
@@ -1070,6 +1077,22 @@ def create_routes_blueprint(deps):
             min(float(confidence_bounds["max"]), recognition_confidence_threshold),
         )
 
+        learning_bounds = SETTINGS_BOUNDS["online_learning_confidence_threshold"]
+        online_learning_confidence_setting = _get_setting(
+            deps["db_path"],
+            "online_learning_confidence_threshold",
+            str(config.online_learning_confidence_threshold),
+        )
+        online_learning_confidence_threshold = _coerce_float_value(
+            online_learning_confidence_setting,
+            config.online_learning_confidence_threshold,
+        )
+        online_learning_confidence_threshold = max(
+            float(learning_bounds["min"]),
+            min(float(learning_bounds["max"]), online_learning_confidence_threshold),
+        )
+        config.online_learning_confidence_threshold = online_learning_confidence_threshold
+
         vector_bounds = SETTINGS_BOUNDS["vector_index_top_k"]
         vector_index_top_k_setting = _get_setting(
             deps["db_path"],
@@ -1169,6 +1192,7 @@ def create_routes_blueprint(deps):
             "secondary_threshold": float(secondary_threshold),
             "quality_threshold": float(quality_threshold),
             "recognition_confidence_threshold": float(recognition_confidence_threshold),
+            "online_learning_confidence_threshold": float(online_learning_confidence_threshold),
             "vector_index_top_k": int(vector_index_top_k),
             "max_occupancy": int(max_occupancy),
             "occupancy_warning_threshold": float(occupancy_warning_threshold),
@@ -1249,6 +1273,7 @@ def create_routes_blueprint(deps):
             "secondary_threshold": settings_state["secondary_threshold"],
             "quality_threshold": settings_state["quality_threshold"],
             "recognition_confidence_threshold": settings_state["recognition_confidence_threshold"],
+            "online_learning_confidence_threshold": settings_state["online_learning_confidence_threshold"],
             "vector_index_top_k": settings_state["vector_index_top_k"],
             "max_occupancy": settings_state["max_occupancy"],
             "occupancy_warning_threshold": settings_state["occupancy_warning_threshold"],
@@ -3991,6 +4016,7 @@ def create_routes_blueprint(deps):
                         "quality_threshold",
                         "face_quality_profiles",
                         "recognition_confidence_threshold",
+                        "online_learning_confidence_threshold",
                         "recognition_event_retention_days",
                         "entry_cctv_stream_source",
                         "exit_cctv_stream_source",
@@ -4093,6 +4119,23 @@ def create_routes_blueprint(deps):
                         changed_fields["recognition_confidence_threshold"] = (
                             current_settings["recognition_confidence_threshold"],
                             recognition_confidence_value,
+                        )
+
+                learning_bounds = SETTINGS_BOUNDS["online_learning_confidence_threshold"]
+                online_learning_confidence_value, learning_error = _parse_bounded_float_payload(
+                    payload,
+                    "online_learning_confidence_threshold",
+                    float(learning_bounds["min"]),
+                    float(learning_bounds["max"]),
+                )
+                if learning_error:
+                    return jsonify({"success": False, "message": learning_error}), 400
+                if online_learning_confidence_value is not None:
+                    next_settings["online_learning_confidence_threshold"] = online_learning_confidence_value
+                    if online_learning_confidence_value != current_settings["online_learning_confidence_threshold"]:
+                        changed_fields["online_learning_confidence_threshold"] = (
+                            current_settings["online_learning_confidence_threshold"],
+                            online_learning_confidence_value,
                         )
 
                 profile_updates, profile_error = _parse_quality_profiles_payload(payload)
@@ -4244,6 +4287,9 @@ def create_routes_blueprint(deps):
                 deps["config"].recognition_confidence_threshold = float(
                     next_settings["recognition_confidence_threshold"]
                 )
+                deps["config"].online_learning_confidence_threshold = float(
+                    next_settings["online_learning_confidence_threshold"]
+                )
                 deps["config"].max_library_capacity = int(next_settings["max_occupancy"])
                 deps["config"].occupancy_warning_threshold = float(next_settings["occupancy_warning_threshold"])
                 deps["config"].occupancy_snapshot_interval_seconds = int(
@@ -4262,6 +4308,7 @@ def create_routes_blueprint(deps):
                     "secondary_threshold",
                     "quality_threshold",
                     "recognition_confidence_threshold",
+                    "online_learning_confidence_threshold",
                     "vector_index_top_k",
                     "max_occupancy",
                     "occupancy_warning_threshold",

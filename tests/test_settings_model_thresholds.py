@@ -122,6 +122,7 @@ class SettingsModelThresholdTests(unittest.TestCase):
                 "threshold": "0.74",
                 "primary_threshold": "0.81",
                 "secondary_threshold": "0.79",
+                "online_learning_confidence_threshold": "0.91",
             }
         )
 
@@ -132,6 +133,7 @@ class SettingsModelThresholdTests(unittest.TestCase):
         self.assertEqual(payload["threshold"], 0.74)
         self.assertEqual(payload["primary_threshold"], 0.81)
         self.assertEqual(payload["secondary_threshold"], 0.79)
+        self.assertEqual(payload["online_learning_confidence_threshold"], 0.91)
 
     def test_super_admin_post_persists_and_applies_model_thresholds(self):
         client, config, store, thresholds = self._build_client()
@@ -142,6 +144,7 @@ class SettingsModelThresholdTests(unittest.TestCase):
                 "threshold": "0.76",
                 "primary_threshold": "0.82",
                 "secondary_threshold": "0.78",
+                "online_learning_confidence_threshold": "0.93",
             },
         )
 
@@ -149,16 +152,22 @@ class SettingsModelThresholdTests(unittest.TestCase):
         self.assertEqual(store["settings"]["threshold"], "0.76")
         self.assertEqual(store["settings"]["primary_threshold"], "0.82")
         self.assertEqual(store["settings"]["secondary_threshold"], "0.78")
+        self.assertEqual(store["settings"]["online_learning_confidence_threshold"], "0.93")
         self.assertEqual(thresholds["base"], 0.76)
         self.assertEqual(config.primary_threshold, 0.82)
         self.assertEqual(config.secondary_threshold, 0.78)
+        self.assertEqual(config.online_learning_confidence_threshold, 0.93)
 
     def test_library_admin_cannot_modify_model_or_base_thresholds(self):
         client, _config, _store, _thresholds = self._build_client(role="library_admin")
 
         response = client.post(
             "/api/settings/recognition",
-            json={"threshold": "0.76", "primary_threshold": "0.82"},
+            json={
+                "threshold": "0.76",
+                "primary_threshold": "0.82",
+                "online_learning_confidence_threshold": "0.93",
+            },
         )
 
         self.assertEqual(response.status_code, 403)
@@ -173,6 +182,17 @@ class SettingsModelThresholdTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("primary_threshold", response.get_json()["message"])
+
+    def test_out_of_range_online_learning_threshold_returns_400(self):
+        client, _config, _store, _thresholds = self._build_client()
+
+        response = client.post(
+            "/api/settings/recognition",
+            json={"online_learning_confidence_threshold": "1.0"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("online_learning_confidence_threshold", response.get_json()["message"])
 
 
 if __name__ == "__main__":

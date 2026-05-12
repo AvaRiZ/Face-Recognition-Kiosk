@@ -129,6 +129,16 @@ def _apply_app_settings(runtime: AppRuntime) -> None:
         0.1,
         0.99,
     )
+    config.online_learning_confidence_threshold = _coerce_float(
+        get_app_setting(
+            config.db_path,
+            "online_learning_confidence_threshold",
+            str(config.online_learning_confidence_threshold),
+        ),
+        config.online_learning_confidence_threshold,
+        0.1,
+        0.99,
+    )
     config.vector_index_top_k = _coerce_int(
         get_app_setting(config.db_path, "vector_index_top_k", str(config.vector_index_top_k)),
         config.vector_index_top_k,

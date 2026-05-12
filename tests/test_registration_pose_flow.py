@@ -48,6 +48,20 @@ class _RecordingEmbeddingService:
         }
 
 
+class _FixedVectorEmbeddingService:
+    def __init__(self, config, confidence: float):
+        self.config = config
+        self.confidence = float(confidence)
+
+    def extract_embedding_ensemble(self, face_crop):
+        side = float(np.sqrt(max(0.0, 1.0 - (self.confidence ** 2))))
+        embedding = np.array([self.confidence, side, 0.0, 0.0], dtype=np.float32)
+        return {
+            self.config.primary_model: [embedding],
+            self.config.secondary_model: [embedding.copy()],
+        }
+
+
 class _NoopRepository:
     camera_id = 1
 
@@ -78,6 +92,21 @@ class _BlockingPresenceRepository(_NoopRepository):
 
     def update_embeddings(self, *args, **kwargs):
         raise AssertionError("Blocked recognitions should not update embeddings")
+
+
+class _LearningRepository:
+    camera_id = 1
+
+    def __init__(self):
+        self.log_called = False
+        self.update_called = False
+
+    def log_recognition(self, *args, **kwargs):
+        self.log_called = True
+
+    def update_embeddings(self, *args, **kwargs):
+        self.update_called = True
+        return None
 
 
 class _PoseMismatchQualityService:
@@ -305,6 +334,96 @@ class RegistrationPoseFlowTests(unittest.TestCase):
         self.assertEqual(result["payload"]["name"], "Ada Lovelace")
         self.assertEqual(state.recognized_user["name"], "Ada Lovelace")
         self.assertFalse(repository.log_called)
+
+    def test_online_learning_gate_skips_embedding_update_below_threshold(self):
+        config = AppConfig()
+        config.primary_threshold = 0.5
+        config.secondary_threshold = 0.5
+        config.recognition_confidence_threshold = 0.5
+        config.online_learning_confidence_threshold = 0.9
+        state = AppStateManager(config)
+        state.load_users(
+            [
+                User(
+                    id=42,
+                    name="Ada Lovelace",
+                    sr_code="SR-42",
+                    gender="Female",
+                    program="Computer Science",
+                    embeddings={
+                        config.primary_model: [np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
+                        config.secondary_model: [np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
+                    },
+                )
+            ]
+        )
+        repository = _LearningRepository()
+        service = FaceRecognitionService(
+            config=config,
+            state=state,
+            repository=repository,
+            embedding_service=_FixedVectorEmbeddingService(config, confidence=0.8),
+        )
+
+        result = service.register_or_recognize_face(
+            np.zeros((260, 260, 3), dtype=np.uint8),
+            quality_service=_PoseMismatchQualityService(),
+            allow_registration=False,
+            precomputed_quality=(1.0, "Good", {"failed_checks": [], "component_scores": {}}),
+            quality_context="entry",
+        )
+
+        self.assertEqual(result["status"], "recognized")
+        self.assertTrue(repository.log_called)
+        self.assertFalse(repository.update_called)
+        user = state.users[0]
+        self.assertEqual(len(user.embeddings[config.primary_model]), 1)
+        self.assertEqual(len(user.embeddings[config.secondary_model]), 1)
+
+    def test_online_learning_gate_allows_embedding_update_above_threshold(self):
+        config = AppConfig()
+        config.primary_threshold = 0.5
+        config.secondary_threshold = 0.5
+        config.recognition_confidence_threshold = 0.5
+        config.online_learning_confidence_threshold = 0.9
+        state = AppStateManager(config)
+        state.load_users(
+            [
+                User(
+                    id=42,
+                    name="Ada Lovelace",
+                    sr_code="SR-42",
+                    gender="Female",
+                    program="Computer Science",
+                    embeddings={
+                        config.primary_model: [np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
+                        config.secondary_model: [np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
+                    },
+                )
+            ]
+        )
+        repository = _LearningRepository()
+        service = FaceRecognitionService(
+            config=config,
+            state=state,
+            repository=repository,
+            embedding_service=_FixedVectorEmbeddingService(config, confidence=0.95),
+        )
+
+        result = service.register_or_recognize_face(
+            np.zeros((260, 260, 3), dtype=np.uint8),
+            quality_service=_PoseMismatchQualityService(),
+            allow_registration=False,
+            precomputed_quality=(1.0, "Good", {"failed_checks": [], "component_scores": {}}),
+            quality_context="entry",
+        )
+
+        self.assertEqual(result["status"], "recognized")
+        self.assertTrue(repository.log_called)
+        self.assertTrue(repository.update_called)
+        user = state.users[0]
+        self.assertEqual(len(user.embeddings[config.primary_model]), 2)
+        self.assertEqual(len(user.embeddings[config.secondary_model]), 2)
 
     def test_stale_inside_reentry_decision_allows_entry_after_timeout(self):
         repository = UserRepository("unused", stale_inside_reentry_seconds=30 * 60)
