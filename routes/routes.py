@@ -2576,6 +2576,27 @@ def create_routes_blueprint(deps):
         response.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         return response
 
+    def _parse_dashboard_date_param(value, label):
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError(f"`{label}` is required.")
+        try:
+            return date.fromisoformat(text)
+        except ValueError as exc:
+            raise ValueError(f"Invalid `{label}` format. Use YYYY-MM-DD.") from exc
+
+    def _dashboard_hour_label(hour):
+        if hour is None:
+            return "No visits"
+        hour_value = int(hour)
+        if hour_value == 0:
+            return "12 AM"
+        if hour_value < 12:
+            return f"{hour_value} AM"
+        if hour_value == 12:
+            return "12 PM"
+        return f"{hour_value - 12} PM"
+
     def _dashboard_filter_window(filter_key=None):
         filter_options = {
             "today": {"days": 1, "label": "Today"},
@@ -2585,11 +2606,13 @@ def create_routes_blueprint(deps):
             "last_90_days": {"days": 90, "label": "Last 90 Days"},
         }
         normalized_key = (filter_key or "last_14_days").strip().lower()
+        today = date.today()
+
         if normalized_key not in filter_options:
             normalized_key = "last_14_days"
 
         option = filter_options[normalized_key]
-        end_date = date.today()
+        end_date = today
         start_date = end_date - timedelta(days=option["days"] - 1)
         return {
             "key": normalized_key,
@@ -2599,16 +2622,39 @@ def create_routes_blueprint(deps):
             "end_date": end_date,
         }
 
-    def _dashboard_data(filter_key=None):
+    def _dashboard_heatmap_window(week_start_param=None):
+        today = date.today()
+        current_week_start = today - timedelta(days=today.weekday())
+        if week_start_param:
+            requested = _parse_dashboard_date_param(week_start_param, "heatmap_week_start")
+            week_start = requested - timedelta(days=requested.weekday())
+            if week_start > current_week_start:
+                week_start = current_week_start
+        else:
+            week_start = current_week_start
+        week_end = week_start + timedelta(days=6)
+        return {
+            "start_date": week_start,
+            "end_date": week_end,
+            "label": f"{calendar.month_abbr[week_start.month]} {week_start.day} - {calendar.month_abbr[week_end.month]} {week_end.day}",
+            "can_go_next": week_start < current_week_start,
+        }
+
+    def _dashboard_data(filter_key=None, heatmap_week_start_param=None):
         warnings.warn(
             "Dashboard analytics now use recognition_events (canonical event model). See docs/database_schema_policy.md",
             DeprecationWarning,
             stacklevel=2,
         )
         filter_window = _dashboard_filter_window(filter_key)
+        heatmap_window = _dashboard_heatmap_window(heatmap_week_start_param)
         start_date = filter_window["start_date"]
         end_date = filter_window["end_date"]
         range_params = (start_date.isoformat(), end_date.isoformat())
+        heatmap_params = (
+            heatmap_window["start_date"].isoformat(),
+            heatmap_window["end_date"].isoformat(),
+        )
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -2635,6 +2681,7 @@ def create_routes_blueprint(deps):
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
                             AND DATE(captured_at) BETWEEN %s AND %s
+                            AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
         """, range_params)
         unique_visitors = c.fetchone()[0]
 
@@ -2684,6 +2731,7 @@ def create_routes_blueprint(deps):
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
                             AND DATE(captured_at) BETWEEN %s AND %s
+                            AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
             GROUP BY day
             ORDER BY day ASC
         """, range_params)
@@ -2710,6 +2758,7 @@ def create_routes_blueprint(deps):
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
               AND u.course IS NOT NULL
               AND u.course != ''
               AND DATE(re.captured_at) BETWEEN %s AND %s
@@ -2729,6 +2778,7 @@ def create_routes_blueprint(deps):
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
               AND re.user_id IS NOT NULL
               AND DATE(re.captured_at) BETWEEN %s AND %s
             GROUP BY gender
@@ -2751,6 +2801,7 @@ def create_routes_blueprint(deps):
             LEFT JOIN imported_logs i
               ON NULLIF(TRIM(i.sr_code), '') = NULLIF(TRIM(u.sr_code), '')
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
               AND re.user_id IS NOT NULL
               AND DATE(re.captured_at) BETWEEN %s AND %s
             GROUP BY
@@ -2801,6 +2852,7 @@ def create_routes_blueprint(deps):
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
               AND DATE(re.captured_at) BETWEEN %s AND %s
             GROUP BY user_type
         """, range_params)
@@ -2808,16 +2860,15 @@ def create_routes_blueprint(deps):
             "enrolled": 0,
             "visitor": 0,
             "unrecognized": 0,
-            "staff": 0,
         }
         for user_type, count in c.fetchall():
             normalized_user_type = _normalize_user_type(user_type)
-            user_type_totals[normalized_user_type] += int(count or 0)
+            if normalized_user_type in user_type_totals:
+                user_type_totals[normalized_user_type] += int(count or 0)
         user_type_distribution = [
-            {"label": "Enrolled", "count": user_type_totals["enrolled"], "accent": "green"},
-            {"label": "Visitor", "count": user_type_totals["visitor"], "accent": "blue"},
+            {"label": "Students", "count": user_type_totals["enrolled"], "accent": "green"},
+            {"label": "Visitors", "count": user_type_totals["visitor"], "accent": "blue"},
             {"label": "Unrecognized", "count": user_type_totals["unrecognized"], "accent": "amber"},
-            {"label": "Staff", "count": user_type_totals["staff"], "accent": "rose"},
         ]
         unrecognized_count = user_type_totals["unrecognized"]
 
@@ -2827,10 +2878,41 @@ def create_routes_blueprint(deps):
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
                             AND DATE(captured_at) BETWEEN %s AND %s
+                            AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
             GROUP BY hour
         """, range_params)
         hour_map = {row[0]: row[1] for row in c.fetchall()}
         peak_hours = [hour_map.get(h, 0) for h in range(24)]
+        total_entry_visits = sum(item["count"] for item in daily_visitors)
+        active_day_count = sum(1 for item in daily_visitors if item["count"] > 0)
+        if total_entry_visits > 0:
+            busiest_day_offset, busiest_day_item = max(
+                enumerate(daily_visitors),
+                key=lambda item: (item[1]["count"], -item[0]),
+            )
+            busiest_day_count = int(busiest_day_item["count"] or 0)
+            busiest_day_date = start_date + timedelta(days=busiest_day_offset)
+            busiest_hour_count = max(peak_hours)
+            busiest_hour = peak_hours.index(busiest_hour_count)
+        else:
+            busiest_day_count = 0
+            busiest_day_date = None
+            busiest_hour_count = 0
+            busiest_hour = None
+        peak_pattern_summary = {
+            "busiest_day": {
+                "date": busiest_day_date.isoformat() if busiest_day_date else "",
+                "label": f"{calendar.month_abbr[busiest_day_date.month]} {busiest_day_date.day}" if busiest_day_date else "No visits",
+                "count": int(busiest_day_count or 0),
+            },
+            "busiest_hour": {
+                "hour": busiest_hour,
+                "label": _dashboard_hour_label(busiest_hour),
+                "count": int(busiest_hour_count or 0),
+            },
+            "average_daily_visits": round(total_entry_visits / max(filter_window["days"], 1), 1),
+            "active_day_count": active_day_count,
+        }
 
         # ── Top 10 frequent visitors ───────────────────────────────
 
@@ -2842,6 +2924,7 @@ def create_routes_blueprint(deps):
                         FROM recognition_events re
                         LEFT JOIN users u ON re.user_id = u.user_id
                         WHERE re.captured_at IS NOT NULL
+                            AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
                             AND DATE(re.captured_at) BETWEEN %s AND %s
                         GROUP BY
                             re.user_id,
@@ -2870,7 +2953,6 @@ def create_routes_blueprint(deps):
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
               AND DATE(re.captured_at) BETWEEN %s AND %s
-              AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
             ORDER BY event_time DESC, re.id DESC
             LIMIT 6
         """, range_params)
@@ -2904,10 +2986,11 @@ def create_routes_blueprint(deps):
             FROM recognition_events
             WHERE captured_at IS NOT NULL
               AND EXTRACT(HOUR FROM captured_at)::int BETWEEN 7 AND 19
+              AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
               AND DATE(captured_at) BETWEEN %s AND %s
             GROUP BY day_of_week, hour
             ORDER BY day_of_week, hour
-        """, range_params)
+        """, heatmap_params)
         heatmap_raw = c.fetchall()
  
         # Build 7x13 grid (7 days x 13 hours from 7AM to 7PM)
@@ -2930,6 +3013,7 @@ def create_routes_blueprint(deps):
                 COUNT(*) as count
             FROM recognition_events
             WHERE captured_at IS NOT NULL
+              AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
               AND DATE(captured_at) BETWEEN %s AND %s
             GROUP BY month
             ORDER BY month ASC
@@ -2983,9 +3067,14 @@ def create_routes_blueprint(deps):
             "year_level_distribution": year_level_distribution,
             "user_type_distribution": user_type_distribution,
             "peak_hours": peak_hours,
+            "peak_pattern_summary": peak_pattern_summary,
             "top_visitors": top_visitors,
             "recent_entries": recent_entries,
             "weekly_heatmap": weekly_heatmap,
+            "heatmap_week_start_date": heatmap_window["start_date"].isoformat(),
+            "heatmap_week_end_date": heatmap_window["end_date"].isoformat(),
+            "heatmap_week_label": heatmap_window["label"],
+            "heatmap_can_go_next": heatmap_window["can_go_next"],
             "monthly_visitors": monthly_visitors,
         }
 
@@ -3993,7 +4082,15 @@ def create_routes_blueprint(deps):
     @login_required
     @role_required("super_admin", "library_admin", "library_staff")
     def api_dashboard():
-        return jsonify(_dashboard_data(request.args.get("filter")))
+        try:
+            return jsonify(
+                _dashboard_data(
+                    request.args.get("filter"),
+                    request.args.get("heatmap_week_start"),
+                )
+            )
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
 
     @bp.route("/api/settings/recognition", methods=["GET", "POST"], endpoint="api_settings")
     @bp.route("/api/settings", methods=["GET", "POST"])

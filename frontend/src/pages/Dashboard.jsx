@@ -13,6 +13,7 @@ const FULL_DAY_END = 23;
 const FULL_DAY_COUNT = FULL_DAY_END - FULL_DAY_START + 1;
 const DAYS_OF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const CAPACITY_ALERT_POPUP_COOLDOWN_MS = 45000;
+const CAPACITY_ALERT_TIMER_MS = 5000;
 
 function toNonNegativeNumber(value) {
   const parsed = Number(value);
@@ -32,19 +33,6 @@ function normalizeCountList(raw, expectedLength) {
     normalized[i] = toNonNegativeNumber(raw[i]);
   }
   return normalized;
-}
-
-function normalizePeakHours(rawData) {
-  if (!Array.isArray(rawData)) {
-    return normalizeCountList([], PEAK_HOUR_COUNT);
-  }
-  if (rawData.length >= 24) {
-    return normalizeCountList(
-      rawData.slice(PEAK_HOUR_START, PEAK_HOUR_END + 1),
-      PEAK_HOUR_COUNT,
-    );
-  }
-  return normalizeCountList(rawData, PEAK_HOUR_COUNT);
 }
 
 function normalizeHourWindow(rawData, startHour, endHour) {
@@ -88,17 +76,54 @@ const DASHBOARD_FILTER_OPTIONS = [
 
 const WEEKDAY_SHORT_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-function getDashboardViewMode(filterKey) {
+function getDashboardViewMode(filterKey, filterDays = null) {
   if (filterKey === "today") return "today";
   if (filterKey === "last_7_days" || filterKey === "last_14_days") return "short";
   return "long";
 }
 
-function getDashboardViewLabel(filterKey) {
-  const mode = getDashboardViewMode(filterKey);
+function getDashboardViewLabel(filterKey, filterDays = null) {
+  const mode = getDashboardViewMode(filterKey, filterDays);
   if (mode === "today") return "Today Snapshot";
-  if (mode === "short") return "Short-Range Trend";
-  return "Long-Range Trend";
+  if (mode === "short") return "Short-Range Traffic";
+  return "Long-Range Traffic";
+}
+
+function getLocalDateInputValue(value = new Date()) {
+  const source = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(source.getTime())) {
+    return "";
+  }
+  const local = new Date(source.getTime() - source.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+function getLocalDateFromInput(value) {
+  if (value instanceof Date) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+  const parts = String(value || "").split("-").map((part) => Number(part));
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) {
+    return new Date();
+  }
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function shiftDateInput(value, dayOffset) {
+  const source = getLocalDateFromInput(value);
+  source.setDate(source.getDate() + dayOffset);
+  return getLocalDateInputValue(source);
+}
+
+function getWeekStartInputValue(value = new Date()) {
+  const source = getLocalDateFromInput(value);
+  const mondayOffset = (source.getDay() + 6) % 7;
+  source.setDate(source.getDate() - mondayOffset);
+  return getLocalDateInputValue(source);
+}
+
+function formatCompactHeatmapHourLabel(label) {
+  return String(label || "").replace(/\s+/g, "").toLowerCase();
 }
 
 function formatDashboardHourLabel(index, startHour = 7) {
@@ -189,29 +214,6 @@ function getConfidenceTone(confidencePercent) {
   if (value >= 75) return "info";
   if (value >= 60) return "warning";
   return "danger";
-}
-
-function buildUserTypeSummary(rows) {
-  const totals = {
-    enrolled: 0,
-    visitor: 0,
-    unrecognized: 0,
-    staff: 0,
-  };
-
-  for (const row of rows || []) {
-    const key = String(row?.user_type || "").trim().toLowerCase();
-    if (Object.prototype.hasOwnProperty.call(totals, key)) {
-      totals[key] += 1;
-    }
-  }
-
-  return [
-    { label: "Enrolled", count: totals.enrolled, accent: "green" },
-    { label: "Visitor", count: totals.visitor, accent: "blue" },
-    { label: "Unrecognized", count: totals.unrecognized, accent: "amber" },
-    { label: "Staff", count: totals.staff, accent: "rose" },
-  ].filter((item) => item.count > 0);
 }
 
 function normalizeProgramLabel(value) {
@@ -318,76 +320,61 @@ function normalizeYearLevelDistribution(items = []) {
     });
 }
 
-// Analyze occupancy trend from snapshot history (oldest to newest order)
-function calculateOccupancyTrend(snapshots) {
-  if (!Array.isArray(snapshots) || snapshots.length < 2) {
-    return { trend: "unknown", direction: "->", minutesOld: null, minCount: null, maxCount: null };
-  }
-
-  // Sort by timestamp ascending (oldest first) for analysis
-  const sorted = [...snapshots].sort((a, b) => {
-    const timeA = parseApiTimestamp(a.snapshot_timestamp)?.getTime() ?? 0;
-    const timeB = parseApiTimestamp(b.snapshot_timestamp)?.getTime() ?? 0;
-    return timeA - timeB;
-  });
-
-  const recent = sorted.slice(-6); // Last 6 snapshots (30 min if 5-min intervals)
-  const oldest = recent[0].occupancy_count;
-  const newest = recent[recent.length - 1].occupancy_count;
-  const minCount = Math.min(...recent.map((s) => s.occupancy_count));
-  const maxCount = Math.max(...recent.map((s) => s.occupancy_count));
-
-  let trend = "steady";
-  let direction = "->";
-  const diff = newest - oldest;
-  if (diff > 3) {
-    trend = "rising";
-    direction = "up";
-  } else if (diff < -3) {
-    trend = "falling";
-    direction = "down";
-  }
-
-  const oldestTime = parseApiTimestamp(recent[0].snapshot_timestamp)?.getTime() ?? new Date().getTime();
-  const nowTime = new Date().getTime();
-  const minutesOld = Math.max(0, Math.round((nowTime - oldestTime) / 60000));
-
-  return { trend, direction, minutesOld, minCount, maxCount };
-}
-
 // Generate plain-language status message for staff
-function getOccupancyStatusMessage(occupancyCount, capacityLimit, isFull, capacityWarning, trendData) {
+function getOccupancyStatusMessage(occupancyCount, capacityLimit, isFull, capacityWarning) {
   if (isFull) {
     return "At capacity. No new entries permitted.";
   }
 
   const ratio = capacityLimit > 0 ? occupancyCount / capacityLimit : 0;
-  const remainingSlots = capacityLimit - occupancyCount;
+  const remainingSlots = Math.max(capacityLimit - occupancyCount, 0);
 
   if (capacityWarning) {
-    const message = `Near capacity: ${remainingSlots} slot${remainingSlots === 1 ? "" : "s"} available`;
-    if (trendData.trend === "rising") {
-      return `${message} and still rising.`;
+    return `Near capacity: ${remainingSlots} slot${remainingSlots === 1 ? "" : "s"} available.`;
+  }
+
+  if (ratio >= 0.7) {
+    return `${remainingSlots} slot${remainingSlots === 1 ? "" : "s"} available. Monitor entry flow.`;
+  }
+
+  return `${remainingSlots} slot${remainingSlots === 1 ? "" : "s"} available.`;
+}
+
+function normalizeUserTypeDistribution(items = []) {
+  const totals = {
+    Students: 0,
+    Visitors: 0,
+    Unrecognized: 0,
+  };
+  const accents = {
+    Students: "green",
+    Visitors: "blue",
+    Unrecognized: "amber",
+  };
+  const aliases = {
+    enrolled: "Students",
+    student: "Students",
+    students: "Students",
+    visitor: "Visitors",
+    visitors: "Visitors",
+    unrecognized: "Unrecognized",
+  };
+
+  items.forEach((item) => {
+    const rawLabel = String(item?.label || item?.user_type || "").trim();
+    const normalizedLabel = rawLabel.toLowerCase();
+    const canonical = aliases[normalizedLabel];
+    if (!canonical) {
+      return;
     }
-    if (trendData.trend === "falling") {
-      return `${message}, but occupancy is declining.`;
-    }
-    return `${message}.`;
-  }
+    totals[canonical] += toNonNegativeNumber(item?.count);
+  });
 
-  if (ratio > 0.6 && trendData.trend === "rising") {
-    return `Rising trend: Consider preparing for capacity limits soon.`;
-  }
-
-  if (ratio < 0.3 && trendData.trend === "falling") {
-    return `Occupancy is declining, currently moderate.`;
-  }
-
-  if (trendData.trend === "steady") {
-    return `Stable occupancy. No action needed.`;
-  }
-
-  return `Occupancy is normal.`;
+  return ["Students", "Visitors", "Unrecognized"].map((label) => ({
+    label,
+    count: totals[label],
+    accent: accents[label],
+  }));
 }
 
 function sanitizeWorksheetName(name) {
@@ -447,10 +434,50 @@ function buildHeatmapSheetRows(weeklyHeatmap = []) {
   ];
 }
 
+function formatDirectionLabel(eventType) {
+  return String(eventType || "").trim().toLowerCase() === "exit" ? "Exit" : "Entry";
+}
+
+function getDirectionTone(eventType) {
+  return formatDirectionLabel(eventType) === "Exit" ? "amber" : "green";
+}
+
+function formatUserTypeTagLabel(userType) {
+  const normalized = String(userType || "").trim().toLowerCase();
+  if (normalized === "enrolled" || normalized === "student" || normalized === "students") {
+    return "Students";
+  }
+  if (normalized === "visitor" || normalized === "visitors") {
+    return "Visitors";
+  }
+  if (normalized === "unrecognized") {
+    return "Unrecognized";
+  }
+  if (normalized === "staff") {
+    return "Staff";
+  }
+  return "Unknown";
+}
+
+function getUserTypeTone(userType) {
+  const normalized = String(userType || "").trim().toLowerCase();
+  if (normalized === "enrolled" || normalized === "student" || normalized === "students") {
+    return "blue";
+  }
+  if (normalized === "visitor" || normalized === "visitors") {
+    return "green";
+  }
+  if (normalized === "unrecognized") {
+    return "amber";
+  }
+  return "rose";
+}
+
 function buildUserTypeSheetRows(userTypeDistribution = []) {
+  const normalizedDistribution = normalizeUserTypeDistribution(userTypeDistribution);
   return [
     ["User Type", "Count"],
-    ...(userTypeDistribution ?? []).map((item) => [item.label, item.count]),
+    ...normalizedDistribution.map((item) => [item.label, item.count]),
   ];
 }
 
@@ -496,7 +523,7 @@ function buildOccupancyHistorySheetRows(occupancyHistory = []) {
 }
 
 function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
-  const viewMode = getDashboardViewMode(filterKey);
+  const viewMode = getDashboardViewMode(filterKey, data?.filter_days);
   const workbook = XLSX.utils.book_new();
   const filterLabel =
     data?.filter_label ??
@@ -509,12 +536,15 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
   const liveOccupancy = data?.live_occupancy ?? null;
   const activeAlerts = data?.active_alerts ?? [];
   const occupancyHistory = data?.occupancy_history ?? [];
+  const peakPatternSummary = data?.peak_pattern_summary ?? {};
+  const busiestDay = peakPatternSummary?.busiest_day ?? {};
+  const busiestHour = peakPatternSummary?.busiest_hour ?? {};
 
   const summaryRows = [
     ["Dashboard Export"],
     [],
     ["Filter", filterLabel],
-    ["Dashboard View", getDashboardViewLabel(filterKey)],
+    ["Dashboard View", getDashboardViewLabel(filterKey, data?.filter_days)],
     ["Date Range", dateRangeLabel],
     [],
     ["Summary"],
@@ -528,6 +558,10 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
     ["Low-Confidence Events", data?.low_confidence_count ?? 0],
     ["Average Confidence", `${data?.avg_confidence ?? 0}%`],
     ["Active Alerts", activeAlerts.length],
+    ["Busiest Day", busiestDay?.label ? `${busiestDay.label} (${busiestDay.count ?? 0} entries)` : "No entries"],
+    ["Busiest Hour", busiestHour?.label ? `${busiestHour.label} (${busiestHour.count ?? 0} entries)` : "No entries"],
+    ["Average Entries Per Day", peakPatternSummary?.average_daily_visits ?? 0],
+    ["Active Days", peakPatternSummary?.active_day_count ?? 0],
   ];
 
   if (liveOccupancy) {
@@ -704,10 +738,9 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
 async function downloadDashboardExport(data, filterKey) {
   const XLSX = await import("xlsx");
   const workbook = buildDashboardWorkbook(XLSX, data, filterKey);
-  XLSX.writeFile(
-    workbook,
-    `dashboard-${filterKey ?? data?.filter_key ?? "export"}-${new Date().toISOString().slice(0, 10)}.xlsx`
-  );
+  const normalizedKey = filterKey ?? data?.filter_key ?? "export";
+  const dateSuffix = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(workbook, `dashboard-${normalizedKey}-${dateSuffix}.xlsx`);
 }
 
 function StatCard({ title, value, subtext, iconClass, cardClass }) {
@@ -933,28 +966,43 @@ function RecentEntriesList({ entries }) {
 
   return (
     <div className="dashboard-recent-list">
-      {entries.map((entry) => {
+      {entries.map((entry, index) => {
         const name =
           entry?.user_type === "unrecognized" || !String(entry?.name || "").trim()
             ? "Unknown"
             : entry.name;
         const confidenceTone = getConfidenceTone(entry?.conf_pct);
+        const directionLabel = formatDirectionLabel(entry?.event_type);
+        const directionTone = getDirectionTone(entry?.event_type);
+        const userTypeLabel = formatUserTypeTagLabel(entry?.user_type);
+        const userTypeTone = getUserTypeTone(entry?.user_type);
 
         return (
-          <div key={`${entry.id ?? entry.event_id ?? entry.timestamp}-${name}`} className="dashboard-recent-item">
+          <div
+            key={`${entry.id ?? entry.event_id ?? entry.timestamp ?? index}-${name}`}
+            className={`dashboard-recent-item dashboard-confidence-band-${confidenceTone}`}
+          >
             <div className={`dashboard-avatar dashboard-accent-${confidenceTone}`}>
               {getPersonInitials(name)}
             </div>
             <div className="dashboard-recent-copy">
               <div className="dashboard-recent-headline">
                 <span className="dashboard-recent-name">{name}</span>
-                <span className={`dashboard-confidence dashboard-tone-${confidenceTone}`}>
-                  {toNonNegativeNumber(entry?.conf_pct)}%
-                </span>
               </div>
               <div className="dashboard-recent-meta">
                 <span>{entry?.sr_code || "Visitor"}</span>
                 <span>{formatRelativeTime(entry?.timestamp)}</span>
+              </div>
+              <div className="dashboard-recent-tags">
+                <span className={`dashboard-recent-tag dashboard-accent-${directionTone}`}>
+                  {directionLabel}
+                </span>
+                <span className={`dashboard-recent-tag dashboard-accent-${userTypeTone}`}>
+                  {userTypeLabel}
+                </span>
+                <span className={`dashboard-recent-tag dashboard-tone-${confidenceTone}`}>
+                  {toNonNegativeNumber(entry?.conf_pct)}% confidence
+                </span>
               </div>
             </div>
           </div>
@@ -1275,22 +1323,30 @@ function TopVisitorsTable({ data }) {
 }
 
 // Weekly Heatmap
-function WeeklyHeatmap({ data }) {
+function WeeklyHeatmap({
+  data,
+  weekLabel,
+  canGoNext = false,
+  onPreviousWeek,
+  onNextWeek,
+}) {
   if (!data?.length) {
     return (
       <div className="text-muted small text-center py-4">No data available</div>
     );
   }
 
-  const hours = PEAK_HOUR_LABELS.map((label) => label.replace(" ", ""));
+  const hours = PEAK_HOUR_LABELS.map(formatCompactHeatmapHourLabel);
   const normalizedRows = data.map((row, index) => {
     const day =
       typeof row?.day === "string" && row.day
         ? row.day
         : DAYS_OF_WEEK[index] || `Day ${index + 1}`;
+    const values = normalizeCountList(row?.values, PEAK_HOUR_COUNT);
     return {
       day,
-      values: normalizeCountList(row?.values, PEAK_HOUR_COUNT),
+      values,
+      total: values.reduce((sum, value) => sum + toNonNegativeNumber(value), 0),
     };
   });
 
@@ -1313,88 +1369,78 @@ function WeeklyHeatmap({ data }) {
   }
 
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table
-        style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}
-      >
-        <thead>
-          <tr>
-            <th
-              style={{
-                padding: "4px 8px",
-                color: "#6c757d",
-                fontWeight: 500,
-                textAlign: "left",
-                minWidth: 40,
-              }}
-            >
-              Day
-            </th>
-            {hours.map((h) => (
+    <div className="dashboard-heatmap">
+      <div className="dashboard-heatmap-toolbar">
+        <span className="dashboard-heatmap-week">{weekLabel || "Current week"}</span>
+        <div className="dashboard-heatmap-actions">
+          <button
+            type="button"
+            className="btn btn-outline-secondary btn-sm"
+            onClick={onPreviousWeek}
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            className="btn btn-outline-secondary btn-sm"
+            onClick={onNextWeek}
+            disabled={!canGoNext}
+          >
+            Next
+          </button>
+        </div>
+      </div>
+      <div className="dashboard-heatmap-scroll">
+        <table className="dashboard-heatmap-table">
+          <thead>
+            <tr>
               <th
-                key={h}
-                style={{
-                  padding: "4px 4px",
-                  color: "#6c757d",
-                  fontWeight: 500,
-                  textAlign: "center",
-                  minWidth: 44,
-                }}
+                className="dashboard-heatmap-day-heading"
               >
-                {h}
+                Day
               </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {normalizedRows.map((row, i) => (
-            <tr key={`${row.day}-${i}`}>
-              <td
-                style={{
-                  padding: "4px 8px",
-                  fontWeight: 600,
-                  color: "#495057",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {row.day}
-              </td>
-              {row.values.map((val, j) => (
-                <td key={j} style={{ padding: 2 }}>
-                  <div
-                    title={`${row.day} ${hours[j]}: ${val} visits`}
-                    style={{
-                      background: getColor(val),
-                      color: getTextColor(val),
-                      borderRadius: 4,
-                      width: 40,
-                      height: 28,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontWeight: val > 0 ? 600 : 400,
-                      fontSize: 10,
-                      cursor: val > 0 ? "pointer" : "default",
-                      transition: "transform 0.1s",
-                    }}
-                    onMouseEnter={(e) =>
-                      (e.currentTarget.style.transform = "scale(1.15)")
-                    }
-                    onMouseLeave={(e) =>
-                      (e.currentTarget.style.transform = "scale(1)")
-                    }
-                  >
-                    {val > 0 ? val : ""}
-                  </div>
-                </td>
+              {hours.map((h) => (
+                <th key={h}>{h}</th>
               ))}
+              <th className="dashboard-heatmap-total-heading">Total</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {normalizedRows.map((row, i) => (
+              <tr key={`${row.day}-${i}`}>
+                <td className="dashboard-heatmap-day">{row.day}</td>
+                {row.values.map((val, j) => (
+                  <td key={j}>
+                    <div
+                      className="dashboard-heatmap-cell"
+                      title={`${row.day} ${hours[j]}: ${val} visits`}
+                      style={{
+                        background: getColor(val),
+                        color: getTextColor(val),
+                      }}
+                      onMouseEnter={(e) =>
+                        (e.currentTarget.style.transform = "scale(1.12)")
+                      }
+                      onMouseLeave={(e) =>
+                        (e.currentTarget.style.transform = "scale(1)")
+                      }
+                    >
+                      {val > 0 ? val : ""}
+                    </div>
+                  </td>
+                ))}
+                <td className="dashboard-heatmap-total">
+                  <span title={`${row.day}: ${row.total} visits`}>
+                    {row.total} visit{row.total === 1 ? "" : "s"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
-      {/* Legend */}
-      <div className="d-flex align-items-center gap-2 mt-3 flex-wrap">
+      <div className="dashboard-heatmap-legend">
         <span className="text-muted small me-1">Less</span>
         {["#cfe2ff", "#ffc107", "#fd7e14", "#dc3545"].map((color, i) => (
           <div
@@ -1664,11 +1710,15 @@ function DashboardCategoryChart({
 
 // Main Dashboard Page
 export default function Dashboard() {
+  const todayInputValue = React.useMemo(() => getLocalDateInputValue(), []);
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
   const [selectedFilter, setSelectedFilter] = React.useState("today");
+  const [heatmapWeekStart, setHeatmapWeekStart] = React.useState(
+    () => getWeekStartInputValue(todayInputValue)
+  );
   const [distributionTab, setDistributionTab] = React.useState("gender");
   const [occupancyData, setOccupancyData] = React.useState(null);
   const [occupancyHistory, setOccupancyHistory] = React.useState([]);
@@ -1680,12 +1730,23 @@ export default function Dashboard() {
   const hasLoadedDataRef = React.useRef(false);
   const lastCapacityPopupKeyRef = React.useRef("");
   const lastCapacityPopupAtRef = React.useRef(0);
+  const occupancyPanelRequestRef = React.useRef(null);
 
   React.useEffect(() => {
     hasLoadedDataRef.current = Boolean(data);
   }, [data]);
 
-  async function loadDashboardData({ silent = false, filterKey = selectedFilter } = {}) {
+  function buildDashboardQuery(filterKey, weekStart = heatmapWeekStart) {
+    const query = new URLSearchParams({ filter: filterKey });
+    query.set("heatmap_week_start", weekStart);
+    return query.toString();
+  }
+
+  async function loadDashboardData({
+    silent = false,
+    filterKey = selectedFilter,
+    weekStart = heatmapWeekStart,
+  } = {}) {
     const requestId = latestRequestRef.current + 1;
     latestRequestRef.current = requestId;
 
@@ -1694,7 +1755,7 @@ export default function Dashboard() {
     }
 
     try {
-      const query = new URLSearchParams({ filter: filterKey }).toString();
+      const query = buildDashboardQuery(filterKey, weekStart);
       const resp = await fetchJson(`/api/dashboard?${query}`);
       if (requestId !== latestRequestRef.current) return;
       setData(resp);
@@ -1713,28 +1774,39 @@ export default function Dashboard() {
   }
 
   async function loadOccupancyPanel({ silent = false } = {}) {
-    try {
-      const todayIso = new Date().toISOString().slice(0, 10);
-      const [currentResp, historyResp, alertsResp] = await Promise.all([
-        fetchJson("/api/occupancy/current"),
-        fetchJson(`/api/occupancy/history?date=${todayIso}&limit=24`),
-        fetchJson("/api/alerts?active=true&limit=20"),
-      ]);
-      setOccupancyData(currentResp || null);
-      setOccupancyHistory(
-        Array.isArray(historyResp?.snapshots)
-          ? [...historyResp.snapshots].reverse()
-          : [],
-      );
-      setActiveAlerts(Array.isArray(alertsResp?.alerts) ? alertsResp.alerts : []);
-      setOccupancyPanelError("");
-    } catch (err) {
-      if (!silent) {
-        setOccupancyPanelError(
-          getErrorMessage(err, "Failed to load occupancy and alert data."),
-        );
-      }
+    if (occupancyPanelRequestRef.current) {
+      return occupancyPanelRequestRef.current;
     }
+
+    const request = (async () => {
+      try {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const [currentResp, historyResp, alertsResp] = await Promise.all([
+          fetchJson("/api/occupancy/current"),
+          fetchJson(`/api/occupancy/history?date=${todayIso}&limit=24`),
+          fetchJson("/api/alerts?active=true&limit=20"),
+        ]);
+        setOccupancyData(currentResp || null);
+        setOccupancyHistory(
+          Array.isArray(historyResp?.snapshots)
+            ? [...historyResp.snapshots].reverse()
+            : [],
+        );
+        setActiveAlerts(Array.isArray(alertsResp?.alerts) ? alertsResp.alerts : []);
+        setOccupancyPanelError("");
+      } catch (err) {
+        if (!silent) {
+          setOccupancyPanelError(
+            getErrorMessage(err, "Failed to load occupancy and alert data."),
+          );
+        }
+      } finally {
+        occupancyPanelRequestRef.current = null;
+      }
+    })();
+
+    occupancyPanelRequestRef.current = request;
+    return request;
   }
 
   async function maybeShowCapacityPopup(payload) {
@@ -1778,26 +1850,47 @@ export default function Dashboard() {
       icon,
       title,
       text,
-      timer: 5000,
+      timer: CAPACITY_ALERT_TIMER_MS,
       showConfirmButton: false,
     });
   }
 
+  function handleFilterChange(filterKey) {
+    setSelectedFilter(filterKey);
+  }
+
+  function handlePreviousHeatmapWeek() {
+    setHeatmapWeekStart((current) => shiftDateInput(current, -7));
+  }
+
+  function handleNextHeatmapWeek() {
+    if (!data?.heatmap_can_go_next) return;
+    setHeatmapWeekStart((current) => shiftDateInput(current, 7));
+  }
+
   React.useEffect(() => {
-    loadDashboardData({ filterKey: selectedFilter });
+    loadDashboardData({ filterKey: selectedFilter, weekStart: heatmapWeekStart });
     loadOccupancyPanel();
 
     const timer = window.setInterval(() => {
-      loadDashboardData({ silent: true, filterKey: selectedFilter });
+      loadDashboardData({
+        silent: true,
+        filterKey: selectedFilter,
+        weekStart: heatmapWeekStart,
+      });
       loadOccupancyPanel({ silent: true });
     }, 30000);
 
     return () => window.clearInterval(timer);
-  }, [selectedFilter]);
+  }, [selectedFilter, heatmapWeekStart]);
 
   React.useEffect(() => {
     function handleAnalyticsUpdated() {
-      loadDashboardData({ silent: true, filterKey: selectedFilter });
+      loadDashboardData({
+        silent: true,
+        filterKey: selectedFilter,
+        weekStart: heatmapWeekStart,
+      });
       loadOccupancyPanel({ silent: true });
     }
 
@@ -1814,7 +1907,7 @@ export default function Dashboard() {
       socket.off("capacity_threshold_alert", handleCapacityAlert);
       socket.disconnect();
     };
-  }, [selectedFilter]);
+  }, [selectedFilter, heatmapWeekStart]);
 
   if (loading) {
     return (
@@ -1851,25 +1944,22 @@ export default function Dashboard() {
   const genderDistrib = normalizeGenderDistribution(data?.gender_distribution ?? []);
   const yearLevelDistrib = normalizeYearLevelDistribution(data?.year_level_distribution ?? []);
   const peakHoursRaw = data?.peak_hours ?? [];
-  const peakHours = normalizePeakHours(peakHoursRaw);
+  const peakHours = normalizeHourWindow(peakHoursRaw, PEAK_HOUR_START, PEAK_HOUR_END);
   const hourlyToday = normalizeHourWindow(peakHoursRaw, FULL_DAY_START, FULL_DAY_END);
-  const topVisitors = data?.top_visitors ?? [];
   const recentEntryEvents = data?.recent_entries ?? [];
-  const userTypeSummary = data?.user_type_distribution ?? [];
+  const userTypeSummary = normalizeUserTypeDistribution(data?.user_type_distribution ?? []);
   const weeklyHeatmap = data?.weekly_heatmap ?? [];
-  const monthlyVisitors = data?.monthly_visitors ?? [];
-  const viewMode = getDashboardViewMode(selectedFilter);
+  const peakPatternSummary = data?.peak_pattern_summary ?? {};
+  const busiestDay = peakPatternSummary?.busiest_day ?? {};
+  const busiestHour = peakPatternSummary?.busiest_hour ?? {};
+  const viewMode = getDashboardViewMode(selectedFilter, data?.filter_days);
   const isTodayView = viewMode === "today";
-  const isShortRangeView = viewMode === "short";
-  const weekdayPattern = buildWeekdayPatternRows(weeklyHeatmap).map(
-    ([label, count]) => ({ label, count })
-  );
   
   // Get filter label from selected filter, not from API response
   const selectedFilterOption = DASHBOARD_FILTER_OPTIONS.find(
     (opt) => opt.value === selectedFilter
   );
-  const filterLabel = selectedFilterOption?.label ?? "Last 14 Days";
+  const filterLabel = data?.filter_label ?? selectedFilterOption?.label ?? "Last 14 Days";
   const filterDateRange = formatRangeLabel(
     data?.filter_start_date,
     data?.filter_end_date
@@ -1880,9 +1970,13 @@ export default function Dashboard() {
   const peakHourIdx = peakHourMax > 0 ? peakHours.indexOf(peakHourMax) : -1;
   const peakHourLabel =
     peakHourIdx >= 0 ? formatDashboardHourLabel(peakHourIdx) : "N/A";
-  const fullLogPath = isTodayView
-    ? `/entry-exit-logs?direction=entry&tab=today&date=${data?.filter_end_date ?? ""}`
-    : "/entry-exit-logs?direction=entry";
+  const isSingleDateRange =
+    data?.filter_start_date &&
+    data?.filter_end_date &&
+    data.filter_start_date === data.filter_end_date;
+  const fullLogPath = isSingleDateRange
+    ? `/entry-exit-logs?date=${data.filter_end_date}`
+    : "/entry-exit-logs";
 
   async function handleExportClick() {
     if (!data) return;
@@ -1941,45 +2035,43 @@ export default function Dashboard() {
     : capacityWarning
       ? "Warning Threshold"
       : "Normal Capacity";
-  const occupancyStatusClass = isFull
-    ? "bg-danger"
-    : capacityWarning
-      ? "bg-warning text-dark"
-      : "bg-success";
   const heroTrafficLabels = isTodayView
     ? buildHourLabels(PEAK_HOUR_START, PEAK_HOUR_END).map((label) =>
         label.replace(" AM", "am").replace(" PM", "pm")
       )
     : dailyVisitors.map((item) => item.date);
   const heroTrafficValues = isTodayView ? peakHours : dailyVisitors.map((item) => item.count);
-  const snapshotTrendPoints = [...occupancyHistory]
-    .sort((a, b) => {
-      const timeA = parseApiTimestamp(a.snapshot_timestamp)?.getTime() ?? 0;
-      const timeB = parseApiTimestamp(b.snapshot_timestamp)?.getTime() ?? 0;
-      return timeA - timeB;
-    })
-    .slice(-8);
-  const trendLabels = isTodayView
-    ? snapshotTrendPoints.map((item) => formatSnapshotTime(item.snapshot_timestamp))
-    : isShortRangeView
-      ? dailyVisitors.map((item) => item.date)
-      : monthlyVisitors.map((item) => item.month);
-  const trendValues = isTodayView
-    ? snapshotTrendPoints.map((item) => item.occupancy_count)
-    : isShortRangeView
-      ? dailyVisitors.map((item) => item.count)
-      : monthlyVisitors.map((item) => item.count);
-  const occupancyTrend = calculateOccupancyTrend(occupancyHistory);
-  const occupancyStatusMessage =
-    occupancyHistory.length > 0
-      ? getOccupancyStatusMessage(
-          occupancyCount,
-          capacityLimit,
-          isFull,
-          capacityWarning,
-          occupancyTrend
-        )
-      : "Waiting for more snapshots to establish the live occupancy trend.";
+  const occupancyRemaining = Math.max(capacityLimit - occupancyCount, 0);
+  const occupancyUpdatedAt = occupancyData?.updated_at || occupancyData?.timestamp_utc || "";
+  const occupancyUpdatedLabel = occupancyUpdatedAt
+    ? `Updated ${formatRelativeTime(occupancyUpdatedAt)}`
+    : "Waiting for occupancy update";
+  const occupancyStatusMessage = getOccupancyStatusMessage(
+    occupancyCount,
+    capacityLimit,
+    isFull,
+    capacityWarning
+  );
+  const peakSummaryStats = [
+    {
+      label: "Busiest hour",
+      value: busiestHour?.label || "No visits",
+      detail: `${toNonNegativeNumber(busiestHour?.count)} entr${toNonNegativeNumber(busiestHour?.count) === 1 ? "y" : "ies"}`,
+      tone: "blue",
+    },
+    {
+      label: "Busiest day",
+      value: busiestDay?.label || "No visits",
+      detail: `${toNonNegativeNumber(busiestDay?.count)} entr${toNonNegativeNumber(busiestDay?.count) === 1 ? "y" : "ies"}`,
+      tone: "amber",
+    },
+    {
+      label: "Average/day",
+      value: peakPatternSummary?.average_daily_visits ?? 0,
+      detail: `${toNonNegativeNumber(peakPatternSummary?.active_day_count)} active day${toNonNegativeNumber(peakPatternSummary?.active_day_count) === 1 ? "" : "s"}`,
+      tone: "green",
+    },
+  ];
   const capacityTone = isFull ? "rose" : capacityWarning ? "amber" : "green";
   const netFlow = dailyEntries - dailyExits;
   const rangeNetFlow = totalEntries - totalExits;
@@ -2058,18 +2150,19 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="dashboard-header-actions">
-            <select
-              className="form-select form-select-sm"
-              value={selectedFilter}
-              onChange={(event) => setSelectedFilter(event.target.value)}
-              aria-label="Dashboard filter"
-            >
+            <div className="dashboard-filter-chips" role="group" aria-label="Dashboard filter">
               {DASHBOARD_FILTER_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`dashboard-filter-chip${selectedFilter === option.value ? " is-active dashboard-accent-blue" : ""}`}
+                  onClick={() => handleFilterChange(option.value)}
+                  disabled={exporting}
+                >
                   {option.label}
-                </option>
+                </button>
               ))}
-            </select>
+            </div>
             <button
               type="button"
               className="btn btn-primary btn-sm"
@@ -2148,31 +2241,37 @@ export default function Dashboard() {
                   <span className="dashboard-occupancy-capacity">/ {capacityLimit} capacity</span>
                 </div>
                 <p className="dashboard-occupancy-caption">
-                  {occupancyHistory.length > 1
-                    ? `${occupancyTrend.direction} ${occupancyTrend.trend}${
-                        occupancyTrend.minutesOld ? ` in the last ${occupancyTrend.minutesOld} min` : ""
-                      }`
-                    : "Trend will appear after more occupancy snapshots are captured."}
+                  {isFull
+                    ? "No seats available until exits are recorded."
+                    : `${occupancyRemaining} slot${occupancyRemaining === 1 ? "" : "s"} available now.`}
                 </p>
               </div>
               <div className="dashboard-occupancy-aside">
                 <div className="dashboard-occupancy-percent">{occupancyPercent}%</div>
-                <p className="dashboard-occupancy-caption">{occupancyStatusMessage}</p>
+                <p className="dashboard-occupancy-caption">
+                  {occupancyStatusMessage} {occupancyUpdatedLabel}.
+                </p>
               </div>
             </div>
 
-            <div
-              className="dashboard-capacity-meter"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={occupancyPercent}
-            >
+            {capacityLimit > 0 ? (
               <div
-                className={`dashboard-capacity-fill dashboard-accent-${capacityTone}`}
-                style={{ width: `${occupancyPercent}%` }}
-              ></div>
-            </div>
+                className="dashboard-capacity-meter"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={occupancyPercent}
+              >
+                <div
+                  className={`dashboard-capacity-fill dashboard-accent-${capacityTone}`}
+                  style={{ width: `${occupancyPercent}%` }}
+                ></div>
+              </div>
+            ) : (
+              <div className="dashboard-empty-state">
+                Capacity limit not configured.
+              </div>
+            )}
             <div className="dashboard-capacity-meta">
               <span>{dailyEntries} entries today</span>
               <span>{dailyExits} exits today</span>
@@ -2200,16 +2299,16 @@ export default function Dashboard() {
               <div>
                 <p className="dashboard-panel-eyebrow">Recognition feed</p>
                 <h2 className="dashboard-panel-title">
-                  {isTodayView ? "Recent entries" : "Latest entries in range"}
+                  {isTodayView ? "Recent activity" : "Latest activity in range"}
                 </h2>
               </div>
               <span className="dashboard-panel-meta">
-                {totalEntries} entry event{totalEntries === 1 ? "" : "s"} in {rangeLabelLower}
+                {totalEntries + totalExits} movement event{totalEntries + totalExits === 1 ? "" : "s"} in {rangeLabelLower}
               </span>
             </div>
             <RecentEntriesList entries={recentEntryEvents} />
             <div className="dashboard-panel-footer">
-              <span>Showing the most recent filtered entry detections.</span>
+              <span>Showing the most recent filtered entry and exit detections.</span>
               <Link to={fullLogPath}>View full log</Link>
             </div>
           </aside>
@@ -2257,25 +2356,28 @@ export default function Dashboard() {
           <article className="dashboard-panel">
             <div className="dashboard-panel-heading">
               <div>
-                <p className="dashboard-panel-eyebrow">Trend</p>
-                <h2 className="dashboard-panel-title">
-                  {isTodayView
-                    ? "Live occupancy trend"
-                    : isShortRangeView
-                      ? "Short-range traffic trend"
-                      : "Monthly traffic context"}
-                </h2>
+                <p className="dashboard-panel-eyebrow">Traffic patterns</p>
+                <h2 className="dashboard-panel-title">Peak traffic patterns</h2>
               </div>
-              <span className="dashboard-panel-meta">{getDashboardViewLabel(selectedFilter)}</span>
+              <span className="dashboard-panel-meta">{getDashboardViewLabel(selectedFilter, data?.filter_days)}</span>
             </div>
 
-            <DashboardLineChart
-              labels={trendLabels}
-              values={trendValues}
-              height={220}
-              valueLabel={isTodayView ? "people" : "visits"}
-              lineColor="#ED1B2F"
-              fillColor="rgba(237, 27, 47, 0.2)"
+            <div className="dashboard-pattern-summary-grid">
+              {peakSummaryStats.map((item) => (
+                <div key={item.label} className={`dashboard-pattern-stat dashboard-accent-${item.tone}`}>
+                  <span className="dashboard-pattern-label">{item.label}</span>
+                  <strong>{item.value}</strong>
+                  <span>{item.detail}</span>
+                </div>
+              ))}
+            </div>
+
+            <WeeklyHeatmap
+              data={weeklyHeatmap}
+              weekLabel={data?.heatmap_week_label}
+              canGoNext={Boolean(data?.heatmap_can_go_next)}
+              onPreviousWeek={handlePreviousHeatmapWeek}
+              onNextWeek={handleNextHeatmapWeek}
             />
 
             <div className="dashboard-section-divider"></div>
