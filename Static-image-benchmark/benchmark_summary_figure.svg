@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+<rect width="1600" height="1000" fill="#FFFFFF"/>
+<rect x="0" y="0" width="1600" height="18" fill="#0072BB"/>
+<text x="92" y="90" font-family="Arial, Helvetica, sans-serif" font-size="46" font-weight="700" fill="#1F2933" text-anchor="start">Static Image Recognition Benchmark</text>
+<text x="92" y="142" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="400" fill="#52616B" text-anchor="start">Average processing time per recognition stage, measured from saved test images</text>
+<rect x="92" y="190" width="330" height="92" rx="10" fill="#F4F7FA" stroke="#D7DEE6"/>
+<text x="116" y="228" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="600" fill="#52616B" text-anchor="start">Images processed</text>
+<text x="116" y="266" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#1F2933" text-anchor="start">141</text>
+<rect x="450" y="190" width="330" height="92" rx="10" fill="#F4F7FA" stroke="#D7DEE6"/>
+<text x="474" y="228" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="600" fill="#52616B" text-anchor="start">Images skipped</text>
+<text x="474" y="266" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#1F2933" text-anchor="start">8</text>
+<rect x="808" y="190" width="330" height="92" rx="10" fill="#F4F7FA" stroke="#D7DEE6"/>
+<text x="832" y="228" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="600" fill="#52616B" text-anchor="start">Users loaded</text>
+<text x="832" y="266" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#1F2933" text-anchor="start">129</text>
+<rect x="1166" y="190" width="330" height="92" rx="10" fill="#F4F7FA" stroke="#D7DEE6"/>
+<text x="1190" y="228" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="600" fill="#52616B" text-anchor="start">Embeddings loaded</text>
+<text x="1190" y="266" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#1F2933" text-anchor="start">4,376</text>
+<text x="92" y="288" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#1F2933" text-anchor="start">Processing Stage</text>
+<text x="520" y="288" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#1F2933" text-anchor="start">Average Time</text>
+<line x1="92" y1="312" x2="1508" y2="312" stroke="#D7DEE6" stroke-width="2"/>
+<text x="92" y="366" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="600" fill="#1F2933" text-anchor="start">Face Detection (YOLOv8)</text>
+<rect x="520" y="330" width="840" height="56" rx="8" fill="#EEF3F7"/>
+<rect x="520" y="330" width="102.61" height="56" rx="8" fill="#0072BB"/>
+<text x="642.6051370636633" y="367" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#1F2933" text-anchor="start">23.87 ms</text>
+<text x="1508" y="367" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="500" fill="#52616B" text-anchor="end">n=141</text>
+<text x="92" y="464" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="600" fill="#1F2933" text-anchor="start">ArcFace Embedding Generation</text>
+<rect x="520" y="428" width="840" height="56" rx="8" fill="#EEF3F7"/>
+<rect x="520" y="428" width="239.87" height="56" rx="8" fill="#2E7D32"/>
+<text x="779.8745715905329" y="465" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#1F2933" text-anchor="start">55.81 ms</text>
+<text x="1508" y="465" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="500" fill="#52616B" text-anchor="end">n=141</text>
+<text x="92" y="562" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="600" fill="#1F2933" text-anchor="start">FaceNet Embedding Generation</text>
+<rect x="520" y="526" width="840" height="56" rx="8" fill="#EEF3F7"/>
+<rect x="520" y="526" width="473.50" height="56" rx="8" fill="#8A4F00"/>
+<text x="1013.4954503006247" y="563" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#1F2933" text-anchor="start">110.17 ms</text>
+<text x="1508" y="563" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="500" fill="#52616B" text-anchor="end">n=141</text>
+<text x="92" y="660" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="600" fill="#1F2933" text-anchor="start">Database Query and Comparison</text>
+<rect x="520" y="624" width="840" height="56" rx="8" fill="#EEF3F7"/>
+<rect x="520" y="624" width="14.70" height="56" rx="8" fill="#6C757D"/>
+<text x="554.7040838227163" y="661" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#1F2933" text-anchor="start">3.42 ms</text>
+<text x="1508" y="661" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="500" fill="#52616B" text-anchor="end">n=141</text>
+<text x="92" y="758" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="600" fill="#1F2933" text-anchor="start">Total End-to-End Recognition Time</text>
+<rect x="520" y="722" width="840" height="56" rx="8" fill="#EEF3F7"/>
+<rect x="520" y="722" width="840.00" height="56" rx="8" fill="#ED1B2F"/>
+<text x="1340.0" y="759" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#FFFFFF" text-anchor="end">195.44 ms</text>
+<text x="1508" y="759" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="500" fill="#52616B" text-anchor="end">n=141</text>
+<rect x="92" y="838" width="1416" height="92" rx="10" fill="#F8FAFC" stroke="#D7DEE6"/>
+<text x="116" y="872" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" fill="#1F2933" text-anchor="start">Benchmark note</text>
+<text x="116" y="908" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="400" fill="#52616B" text-anchor="start">Profiles are loaded once from PostgreSQL; per-image matching uses the kiosk&#x27;s in-memory vector index.</text>
+<text x="92" y="966" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400" fill="#6B7785" text-anchor="start">Source: Static-image-benchmark/benchmark_results.json | Warm-up excluded from averages</text>
+</svg>

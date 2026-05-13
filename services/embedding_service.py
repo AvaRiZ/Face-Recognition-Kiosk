@@ -127,8 +127,10 @@ class EmbeddingService:
                 else:
                     print(f"  [WARN] Warm-up warning for {model_name}: {exc}")
 
-    def extract_embedding_ensemble(self, face_crop):
+    def extract_embedding_ensemble(self, face_crop, timing_callback=None):
         try:
+            import time
+
             deepface = self._get_deepface()
 
             if len(face_crop.shape) == 3 and face_crop.shape[2] == 3:
@@ -143,6 +145,7 @@ class EmbeddingService:
 
             for model_name in self.config.models:
                 try:
+                    started_at = time.perf_counter()
                     embedding_obj = deepface.represent(
                         img_path=face_rgb,
                         model_name=model_name,
@@ -152,6 +155,7 @@ class EmbeddingService:
                         align=False,
                         normalization="base",
                     )
+                    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
 
                     embedding = np.array(embedding_obj[0]["embedding"], dtype=np.float32)
                     norm = np.linalg.norm(embedding)
@@ -159,6 +163,8 @@ class EmbeddingService:
                         embedding = embedding / norm
 
                     embeddings[model_name] = [embedding]
+                    if callable(timing_callback):
+                        timing_callback(model_name, elapsed_ms)
                     print(f"  [OK] {model_name} embedding extracted")
                 except Exception as exc:
                     print(f"  [WARN] {model_name} failed: {exc}")

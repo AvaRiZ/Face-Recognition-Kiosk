@@ -36,3 +36,7 @@ backups/*
 detector_dataset/*
 faces_improved/*
 real_val_dataset/*
+
+#Static Images
+Static-image-benchmark/detector_dataset/*
+Static-image-benchmark/faces_improved/*
