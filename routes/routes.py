@@ -1727,6 +1727,7 @@ def create_routes_blueprint(deps):
             WHERE COALESCE(re.captured_at, re.ingested_at) IS NOT NULL
               AND EXTRACT(YEAR FROM COALESCE(re.captured_at, re.ingested_at)) = %s
               AND EXTRACT(MONTH FROM COALESCE(re.captured_at, re.ingested_at)) = %s
+              AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
             ORDER BY COALESCE(re.captured_at, re.ingested_at) ASC, re.id ASC
             """,
             (year, month),
