@@ -15,6 +15,11 @@ class ProgramMonthlyExportContractTests(unittest.TestCase):
         self.assertIn("program_monthly_visits_", source)
         self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", source)
 
+    def test_backend_program_monthly_unknown_events_are_unassigned(self) -> None:
+        source = Path("routes/routes.py").read_text(encoding="utf-8")
+        self.assertIn("LOWER(COALESCE(NULLIF(TRIM(re.decision), ''), 'allowed')) = 'unknown'", source)
+        self.assertIn("THEN 'Unassigned'", source)
+
     def test_frontend_program_monthly_export_downloads_xlsx(self) -> None:
         source = Path("frontend/src/pages/ProgramMonthlyVisits.jsx").read_text(encoding="utf-8")
         self.assertIn(".xlsx", source)

@@ -1572,7 +1572,15 @@ def create_routes_blueprint(deps):
         c.execute(
             """
             SELECT
-                COALESCE(NULLIF(TRIM(u.course), ''), 'Visitor') AS program,
+                CASE
+                    WHEN LOWER(COALESCE(NULLIF(TRIM(re.decision), ''), 'allowed')) = 'unknown'
+                        THEN 'Unassigned'
+                    WHEN LOWER(COALESCE(NULLIF(TRIM(u.user_type), ''), '')) = 'visitor'
+                        THEN 'Visitor'
+                    WHEN LOWER(COALESCE(NULLIF(TRIM(u.user_type), ''), '')) = 'staff'
+                        THEN 'Staff'
+                    ELSE COALESCE(NULLIF(TRIM(u.course), ''), 'Unassigned')
+                END AS program,
                 SUBSTR(CAST(re.captured_at AS TEXT), 6, 2) AS month_num,
                 COUNT(*) AS visit_count
             FROM recognition_events re
