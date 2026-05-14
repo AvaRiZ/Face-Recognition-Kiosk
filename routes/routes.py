@@ -524,6 +524,207 @@ def create_routes_blueprint(deps):
             )
         return inserted
 
+    def _sync_occupancy_after_event_change(event_time: datetime | None):
+        occupancy_service = OccupancyService(deps["db_path"])
+        occupancy_state = occupancy_service.recalculate_daily_state(
+            event_time.date() if isinstance(event_time, datetime) else None
+        )
+        capacity_limit = resolve_capacity_limit(
+            deps["db_path"],
+            default=int(deps["config"].max_library_capacity),
+        )
+        occ_view = occupancy_service.get_current_occupancy(
+            capacity_limit,
+            warning_threshold=deps["config"].occupancy_warning_threshold,
+        )
+        return occupancy_state, occ_view
+
+    def _approve_unrecognized_source_event(
+        *,
+        source_event_id: str | None,
+        user_id: int,
+        sr_code: str | None,
+        name: str,
+        gender: str,
+        program: str,
+        user_type: str,
+        captured_at: datetime,
+        metadata: dict,
+    ) -> dict | None:
+        if not source_event_id:
+            return None
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        try:
+            c.execute(
+                """
+                SELECT
+                    payload_json,
+                    COALESCE(NULLIF(TRIM(event_type), ''), 'entry') AS event_type,
+                    COALESCE(captured_at, ingested_at) AS event_time
+                FROM recognition_events
+                WHERE event_id = %s AND decision = 'unknown'
+                """,
+                (source_event_id,),
+            )
+            row = c.fetchone()
+            if not row:
+                conn.close()
+                return None
+
+            event_payload = _parse_payload_json_object(row[0])
+            if _recognition_payload_revoked(event_payload):
+                conn.close()
+                return None
+
+            event_type = str(row[1] or "entry").strip().lower() or "entry"
+            event_time = row[2] if isinstance(row[2], datetime) else captured_at
+            event_payload.update(
+                {
+                    "decision": "allowed",
+                    "source": "librarian_manual_resolution",
+                    "resolution_action": "unrecognized_approve",
+                    "resolution_metadata": metadata,
+                    "resolved_at": captured_at.isoformat(),
+                    "identity_user_id": int(user_id),
+                    "identity_user_type": user_type,
+                    "identity_name": name,
+                    "identity_sr_code": sr_code or "",
+                    "identity_gender": gender or "",
+                    "identity_program": program or "",
+                }
+            )
+            c.execute(
+                """
+                UPDATE recognition_events
+                SET user_id = %s, sr_code = %s, decision = 'allowed', payload_json = %s
+                WHERE event_id = %s AND decision = 'unknown'
+                """,
+                (
+                    int(user_id),
+                    sr_code,
+                    json.dumps(event_payload, ensure_ascii=True),
+                    source_event_id,
+                ),
+            )
+            updated = (c.rowcount or 0) > 0
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if not updated:
+            return None
+
+        occupancy_state, occ_view = _sync_occupancy_after_event_change(event_time)
+        emit_analytics_update(
+            "unrecognized_approved",
+            {
+                "event_id": source_event_id,
+                "user_id": int(user_id),
+                "event_type": event_type,
+                "daily_entries": occupancy_state["daily_entries"],
+                "daily_exits": occupancy_state["daily_exits"],
+                "occupancy_count": occupancy_state["occupancy_count"],
+                "capacity_warning": bool(occ_view["capacity_warning"]),
+            },
+        )
+        return {
+            "event_id": source_event_id,
+            "event_type": event_type,
+            "event_time": event_time,
+            "occupancy_state": occupancy_state,
+        }
+
+    def _revoke_unrecognized_source_event(
+        *,
+        source_event_id: str | None,
+        captured_at: datetime,
+        reason: str,
+        metadata: dict,
+    ) -> dict | None:
+        if not source_event_id:
+            return None
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        try:
+            c.execute(
+                """
+                SELECT
+                    payload_json,
+                    COALESCE(NULLIF(TRIM(event_type), ''), 'entry') AS event_type,
+                    COALESCE(captured_at, ingested_at) AS event_time
+                FROM recognition_events
+                WHERE event_id = %s AND decision = 'unknown'
+                """,
+                (source_event_id,),
+            )
+            row = c.fetchone()
+            if not row:
+                conn.close()
+                return None
+
+            event_payload = _parse_payload_json_object(row[0])
+            if _recognition_payload_revoked(event_payload):
+                conn.close()
+                return None
+
+            event_type = str(row[1] or "entry").strip().lower() or "entry"
+            event_time = row[2] if isinstance(row[2], datetime) else captured_at
+            event_payload.update(
+                {
+                    "revoked": True,
+                    "revoked_at": captured_at.isoformat(),
+                    "revocation_reason": reason,
+                    "source": "librarian_manual_resolution",
+                    "resolution_action": "unrecognized_deny",
+                    "resolution_metadata": metadata,
+                }
+            )
+            c.execute(
+                """
+                UPDATE recognition_events
+                SET payload_json = %s
+                WHERE event_id = %s AND decision = 'unknown'
+                """,
+                (json.dumps(event_payload, ensure_ascii=True), source_event_id),
+            )
+            updated = (c.rowcount or 0) > 0
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if not updated:
+            return None
+
+        occupancy_state, occ_view = _sync_occupancy_after_event_change(event_time)
+        return {
+            "event_id": source_event_id,
+            "event_type": event_type,
+            "event_time": event_time,
+            "occupancy_state": occupancy_state,
+            "capacity_warning": bool(occ_view["capacity_warning"]),
+        }
+
     def _visitor_presence_state(user_id: int) -> dict:
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
@@ -3740,6 +3941,17 @@ def create_routes_blueprint(deps):
         source_event_id = str(payload.get("event_id") or "").strip() or None
 
         if action == "unrecognized_deny":
+            metadata = {
+                "source_event_id": source_event_id,
+                "performed_by": performer,
+                "notes": notes or None,
+            }
+            revoked_source = _revoke_unrecognized_source_event(
+                source_event_id=source_event_id,
+                captured_at=captured_at,
+                reason=action,
+                metadata=metadata,
+            )
             denied_event_id = f"resolution-{uuid.uuid4().hex}"
             _record_manual_resolution_event(
                 event_id=denied_event_id,
@@ -3749,19 +3961,33 @@ def create_routes_blueprint(deps):
                 user_id=None,
                 sr_code=None,
                 event_type="entry",
-                metadata={
-                    "source_event_id": source_event_id,
-                    "performed_by": performer,
-                    "notes": notes or None,
+                metadata=metadata,
+            )
+            emit_analytics_update(
+                "unrecognized_denied",
+                {
+                    "event_id": source_event_id,
+                    "resolution_event_id": denied_event_id,
+                    "source_revoked": bool(revoked_source),
+                    "occupancy_count": (
+                        revoked_source["occupancy_state"]["occupancy_count"]
+                        if revoked_source
+                        else None
+                    ),
+                    "capacity_warning": (
+                        bool(revoked_source["capacity_warning"])
+                        if revoked_source
+                        else None
+                    ),
                 },
             )
-            emit_analytics_update("unrecognized_denied", {"event_id": source_event_id, "resolution_event_id": denied_event_id})
             return jsonify(
                 {
                     "success": True,
                     "action": action,
                     "event_id": source_event_id,
                     "resolution_event_id": denied_event_id,
+                    "source_revoked": bool(revoked_source),
                     "status": "denied",
                 }
             )
@@ -3783,20 +4009,35 @@ def create_routes_blueprint(deps):
                 program=program,
                 user_type=resolved_type,
             )
-            admitted_event_id = str(payload.get("admitted_event_id") or "").strip() or f"manual-{uuid.uuid4().hex}"
-            _record_manual_entry_event(
+            metadata = {
+                "source_event_id": source_event_id,
+                "performed_by": performer,
+                "notes": notes or None,
+            }
+            approved_source = _approve_unrecognized_source_event(
+                source_event_id=source_event_id,
                 user_id=user_id,
                 sr_code=sr_code,
-                event_id=admitted_event_id,
+                name=name,
+                gender=gender,
+                program=program,
+                user_type=resolved_type,
                 captured_at=captured_at,
-                method="manual-resolution",
-                resolution_action=action,
-                metadata={
-                    "source_event_id": source_event_id,
-                    "performed_by": performer,
-                    "notes": notes or None,
-                },
+                metadata=metadata,
             )
+            if approved_source:
+                admitted_event_id = source_event_id
+            else:
+                admitted_event_id = str(payload.get("admitted_event_id") or "").strip() or f"manual-{uuid.uuid4().hex}"
+                _record_manual_entry_event(
+                    user_id=user_id,
+                    sr_code=sr_code,
+                    event_id=admitted_event_id,
+                    captured_at=captured_at,
+                    method="manual-resolution",
+                    resolution_action=action,
+                    metadata=metadata,
+                )
             bump_profiles_version(deps["db_path"])
             return jsonify(
                 {
@@ -3804,6 +4045,7 @@ def create_routes_blueprint(deps):
                     "action": action,
                     "event_id": source_event_id,
                     "admitted_event_id": admitted_event_id,
+                    "source_event_updated": bool(approved_source),
                     "user_id": int(user_id),
                     "user_type": resolved_type,
                 }

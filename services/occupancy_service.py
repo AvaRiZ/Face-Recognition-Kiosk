@@ -16,6 +16,29 @@ from db import connect as db_connect
 DEFAULT_CAPACITY_LIMIT = 300
 MIN_CAPACITY_LIMIT = 50
 MAX_CAPACITY_LIMIT = 2000
+OCCUPANCY_COUNTED_DECISIONS = frozenset({"allowed", "unknown"})
+
+
+def normalize_occupancy_decision(decision: str | None) -> str:
+    """Normalize blank legacy decisions the same way the SQL filters do."""
+    text = str(decision or "").strip().lower()
+    return text or "allowed"
+
+
+def is_occupancy_counted_decision(decision: str | None) -> bool:
+    return normalize_occupancy_decision(decision) in OCCUPANCY_COUNTED_DECISIONS
+
+
+def occupancy_decision_filter_sql(column: str = "decision") -> str:
+    values = ", ".join(f"'{item}'" for item in sorted(OCCUPANCY_COUNTED_DECISIONS))
+    return f"LOWER(COALESCE(NULLIF(TRIM({column}), ''), 'allowed')) IN ({values})"
+
+
+def recognition_payload_not_revoked_filter_sql(column: str = "payload_json") -> str:
+    return (
+        f"COALESCE({column}, '') NOT LIKE '%%\"revoked\": true%%' "
+        f"AND COALESCE({column}, '') NOT LIKE '%%\"revoked\":true%%'"
+    )
 
 
 def resolve_capacity_limit(
@@ -116,6 +139,20 @@ class OccupancyService:
         return cursor.fetchone()
 
     @staticmethod
+    def _replace_daily_state(cursor, state_date: str, daily_entries: int, daily_exits: int, updated_at: datetime) -> None:
+        cursor.execute(
+            """
+            INSERT INTO daily_occupancy_state (state_date, daily_entries, daily_exits, updated_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT(state_date) DO UPDATE SET
+                daily_entries = EXCLUDED.daily_entries,
+                daily_exits = EXCLUDED.daily_exits,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (state_date, int(daily_entries), int(daily_exits), updated_at),
+        )
+
+    @staticmethod
     def _daily_state_payload(row, fallback_state_date: str, fallback_updated_at: datetime) -> dict:
         if not row:
             return {
@@ -194,24 +231,29 @@ class OccupancyService:
 
         date_str = target_date.isoformat()
 
-        # Count allowed entry events for the target date.
+        decision_filter = occupancy_decision_filter_sql("decision")
+        active_payload_filter = recognition_payload_not_revoked_filter_sql("payload_json")
+
+        # Count occupancy-relevant entry events for the target date.
         c.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM recognition_events
             WHERE event_type = 'entry'
-              AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
+              AND {decision_filter}
+              AND {active_payload_filter}
               AND DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
             (date_str,),
         )
         daily_entries = c.fetchone()[0] or 0
 
-        # Count allowed exit events for the target date.
+        # Count occupancy-relevant exit events for the target date.
         c.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM recognition_events
             WHERE event_type = 'exit'
-              AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
+              AND {decision_filter}
+              AND {active_payload_filter}
               AND DATE(COALESCE(captured_at, ingested_at)) = %s
             """,
             (date_str,),
@@ -229,6 +271,27 @@ class OccupancyService:
             "date_str": date_str,
         }
 
+    def recalculate_daily_state(self, target_date: date | datetime | str | None = None, calculated: dict | None = None) -> dict:
+        """Replace the tracked daily state with canonical recognition event counts."""
+        target_day = self._coerce_target_date(target_date)
+        actual = calculated or self.calculate_occupancy(target_day)
+        state_date = str(actual.get("date_str") or target_day.isoformat())
+        updated_at = datetime.now(timezone.utc)
+
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+        self._replace_daily_state(
+            c,
+            state_date,
+            int(actual["daily_entries"]),
+            int(actual["daily_exits"]),
+            updated_at,
+        )
+        conn.commit()
+        row = self._read_daily_state(c, state_date)
+        conn.close()
+        return self._daily_state_payload(row, state_date, updated_at)
+
     def get_current_occupancy(self, capacity_limit: int, warning_threshold: float = 0.90) -> dict:
         """
         Get current occupancy with capacity status.
@@ -240,7 +303,14 @@ class OccupancyService:
         - is_full (bool): occupancy >= capacity
         - capacity_warning (bool): occupancy >= 0.9 * capacity
         """
-        occ = self.get_daily_state() or self.calculate_occupancy()
+        occ = self.get_daily_state()
+        actual = self.calculate_occupancy()
+        if (
+            occ is None
+            or int(occ["daily_entries"]) != int(actual["daily_entries"])
+            or int(occ["daily_exits"]) != int(actual["daily_exits"])
+        ):
+            occ = self.recalculate_daily_state(actual["date_str"], calculated=actual)
 
         occupancy_count = max(0, occ["occupancy_count"])  # Never negative
         occupancy_ratio = (
@@ -372,19 +442,22 @@ class OccupancyService:
             target_date = datetime.fromisoformat(target_date).date()
 
         date_str = target_date.isoformat()
+        decision_filter = occupancy_decision_filter_sql("decision")
+        active_payload_filter = recognition_payload_not_revoked_filter_sql("payload_json")
 
         conn = db_connect(self.db_path)
         c = conn.cursor()
 
         # Final occupancy count for the day
         c.execute(
-            """
+            f"""
             SELECT
                 SUM(CASE WHEN event_type = 'entry' THEN 1 ELSE 0 END) as entries,
                 SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) as exits
             FROM recognition_events
             WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
-              AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
+              AND {decision_filter}
+              AND {active_payload_filter}
             """,
             (date_str,),
         )
@@ -432,18 +505,23 @@ class OccupancyService:
         """Return occupancy analytics for a single day."""
         target_day = self._coerce_target_date(target_date)
         date_str = target_day.isoformat()
+        event_decision_filter = occupancy_decision_filter_sql("decision")
+        event_payload_filter = recognition_payload_not_revoked_filter_sql("payload_json")
+        joined_decision_filter = occupancy_decision_filter_sql("re.decision")
+        joined_payload_filter = recognition_payload_not_revoked_filter_sql("re.payload_json")
 
         conn = db_connect(self.db_path)
         c = conn.cursor()
 
         c.execute(
-            """
+            f"""
             SELECT
                 SUM(CASE WHEN event_type = 'entry' THEN 1 ELSE 0 END) AS total_entries,
                 SUM(CASE WHEN event_type = 'exit' THEN 1 ELSE 0 END) AS total_exits
             FROM recognition_events
             WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
-              AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
+              AND {event_decision_filter}
+              AND {event_payload_filter}
             """,
             (date_str,),
         )
@@ -452,16 +530,24 @@ class OccupancyService:
         total_exits = int(total_row[1] or 0)
 
         c.execute(
-            """
+            f"""
             SELECT
-                COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
+                CASE
+                    WHEN COALESCE(re.decision, 'allowed') = 'unknown' THEN 'unrecognized'
+                    ELSE COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
+                END AS user_type,
                 SUM(CASE WHEN re.event_type = 'entry' THEN 1 ELSE 0 END) AS entries,
                 SUM(CASE WHEN re.event_type = 'exit' THEN 1 ELSE 0 END) AS exits
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s
-              AND LOWER(COALESCE(NULLIF(TRIM(re.decision), ''), 'allowed')) = 'allowed'
-            GROUP BY COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
+              AND {joined_decision_filter}
+              AND {joined_payload_filter}
+            GROUP BY
+                CASE
+                    WHEN COALESCE(re.decision, 'allowed') = 'unknown' THEN 'unrecognized'
+                    ELSE COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
+                END
             """,
             (date_str,),
         )
@@ -477,7 +563,7 @@ class OccupancyService:
             current["exits"] = int(exits or 0)
 
         c.execute(
-            """
+            f"""
             SELECT
                 COALESCE(NULLIF(TRIM(u.course), ''), 'Unknown') AS program,
                 SUM(CASE WHEN re.event_type = 'entry' THEN 1 ELSE 0 END) AS entries,
@@ -485,7 +571,8 @@ class OccupancyService:
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s
-              AND LOWER(COALESCE(NULLIF(TRIM(re.decision), ''), 'allowed')) = 'allowed'
+              AND {joined_decision_filter}
+              AND {joined_payload_filter}
             GROUP BY COALESCE(NULLIF(TRIM(u.course), ''), 'Unknown')
             HAVING
                 SUM(CASE WHEN re.event_type = 'entry' THEN 1 ELSE 0 END) > 0
@@ -502,13 +589,14 @@ class OccupancyService:
             }
 
         c.execute(
-            """
+            f"""
             SELECT hour_slot, COUNT(*) AS event_count
             FROM (
                 SELECT EXTRACT(HOUR FROM COALESCE(captured_at, ingested_at))::int AS hour_slot
                 FROM recognition_events
                 WHERE DATE(COALESCE(captured_at, ingested_at)) = %s
-                  AND LOWER(COALESCE(NULLIF(TRIM(decision), ''), 'allowed')) = 'allowed'
+                  AND {event_decision_filter}
+                  AND {event_payload_filter}
             ) hourly_events
             GROUP BY hour_slot
             ORDER BY event_count DESC, hour_slot ASC

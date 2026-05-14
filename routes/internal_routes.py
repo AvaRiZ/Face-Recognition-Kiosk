@@ -16,7 +16,7 @@ from core.config import QUALITY_CONTEXTS, QUALITY_PROFILE_BOUNDS, QUALITY_PROFIL
 from core.models import RegistrationSample, User
 from db import connect as db_connect
 from db import get_app_setting
-from services.occupancy_service import OccupancyService, resolve_capacity_limit
+from services.occupancy_service import OccupancyService, is_occupancy_counted_decision, resolve_capacity_limit
 from services.alert_service import AlertService
 from services.occupancy_alert_service import occupancy_alert_service
 from services.versioning_service import bump_profiles_version, get_profiles_version, get_settings_version
@@ -802,7 +802,8 @@ def create_internal_blueprint(deps):
             )
             inserted = (c.rowcount or 0) > 0
 
-            if inserted and decision == "allowed":
+            counted_for_occupancy = inserted and is_occupancy_counted_decision(decision)
+            if counted_for_occupancy:
                 occupancy_state = _upsert_daily_occupancy_state(c, captured_at, event_type)
 
             conn.commit()
@@ -815,7 +816,8 @@ def create_internal_blueprint(deps):
         finally:
             conn.close()
 
-        if inserted and decision == "allowed":
+        counted_for_occupancy = inserted and is_occupancy_counted_decision(decision)
+        if counted_for_occupancy:
             occupancy_state = occupancy_state or _build_daily_occupancy_state(
                 None,
                 fallback_state_date=captured_at.date().isoformat(),
@@ -829,6 +831,7 @@ def create_internal_blueprint(deps):
                 {
                     "event_id": event_id,
                     "user_id": user_id,
+                    "decision": decision,
                     "event_type": event_type,
                     "camera_id": camera_id,
                     "entered_at": entered_at.isoformat() if entered_at else None,
@@ -848,7 +851,7 @@ def create_internal_blueprint(deps):
                         **alert_payload,
                     }
                 )
-        elif inserted and decision in {"unknown", "denied"}:
+        if inserted and decision in {"unknown", "denied"}:
             metadata = payload.get("snapshot_metadata")
             if not isinstance(metadata, dict):
                 metadata = {}
@@ -900,10 +903,15 @@ def create_internal_blueprint(deps):
 
         conn = db_connect(deps["db_path"])
         c = conn.cursor()
+        event_type = "entry"
+        event_time = None
         try:
             c.execute(
                 """
-                SELECT payload_json
+                SELECT
+                    payload_json,
+                    COALESCE(NULLIF(TRIM(event_type), ''), 'entry') AS event_type,
+                    COALESCE(captured_at, ingested_at) AS event_time
                 FROM recognition_events
                 WHERE event_id = %s AND decision = 'unknown'
                 """,
@@ -920,6 +928,8 @@ def create_internal_blueprint(deps):
                 event_payload = {}
             if not isinstance(event_payload, dict):
                 event_payload = {}
+            event_type = str(row[1] or "entry").strip().lower() or "entry"
+            event_time = _as_aware_utc(row[2])
 
             recognized_user = payload.get("recognized_user")
             if not isinstance(recognized_user, dict):
@@ -969,15 +979,36 @@ def create_internal_blueprint(deps):
             except Exception:
                 pass
 
+        recalculated_state = None
         if updated:
+            recalculated_state = OccupancyService(deps["db_path"]).recalculate_daily_state(
+                event_time.date() if isinstance(event_time, datetime) else None
+            )
+            occupancy_view, warning_threshold = _get_occupancy_view()
+            alert_payload, alert_changed = _evaluate_occupancy_alert(occupancy_view, warning_threshold)
+            persisted_alert = _persist_capacity_alert_from_level(alert_payload.get("level"), occupancy_view)
             emit_analytics_update(
                 "unrecognized_detection_revoked",
                 {
                     "event_id": event_id,
                     "track_id": track_id,
+                    "event_type": event_type,
                     "reason": str(payload.get("reason") or "recognized_same_track"),
+                    "daily_entries": recalculated_state["daily_entries"],
+                    "daily_exits": recalculated_state["daily_exits"],
+                    "occupancy_count": recalculated_state["occupancy_count"],
+                    "capacity_warning": bool(occupancy_view["capacity_warning"]),
                 },
             )
+            if alert_changed:
+                emit_capacity_threshold_alert(
+                    {
+                        "reason": "unrecognized_detection_revoked",
+                        "capacity_warning": bool(occupancy_view["capacity_warning"]),
+                        "alert": persisted_alert,
+                        **alert_payload,
+                    }
+                )
 
         return jsonify({"success": bool(updated), "event_id": event_id, "revoked": bool(updated)})
 
