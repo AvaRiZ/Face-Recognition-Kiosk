@@ -271,6 +271,13 @@ class TrackingState:
     last_recognition_confidence: Optional[float] = None
     last_recognition_threshold: Optional[float] = None
     failed_good_quality_attempts: int = 0
+    unrecognized_event_id: Optional[str] = None
+    unrecognized_logged: bool = False
+    unrecognized_revoked: bool = False
+    unrecognized_first_seen: float = 0.0
+    unrecognized_face_quality: Optional[float] = None
+    unrecognized_confidence: Optional[float] = None
+    unrecognized_threshold: Optional[float] = None
     selected_for_registration: bool = False
     registration_recognized_streak: int = 0
     registration_recognized_name: str = ""

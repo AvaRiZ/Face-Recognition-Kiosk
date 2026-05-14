@@ -179,11 +179,21 @@ def _dashboard_year_level_sort_key(value: str | None) -> tuple[int, str]:
     return (98, normalized)
 
 
-def _display_profile_field(value, *, user_type: str, default: str = "-", visitor_default: str = "Visitor") -> str:
+def _display_profile_field(
+    value,
+    *,
+    user_type: str,
+    default: str = "-",
+    visitor_default: str = "Visitor",
+    unrecognized_default: str | None = None,
+) -> str:
     text = str(value or "").strip()
     if text:
         return text
-    return visitor_default if _normalize_user_type(user_type) == "visitor" else default
+    normalized_user_type = _normalize_user_type(user_type)
+    if normalized_user_type == "unrecognized" and unrecognized_default is not None:
+        return unrecognized_default
+    return visitor_default if normalized_user_type == "visitor" else default
 
 
 def _excel_column_label(column_number: int) -> str:
@@ -228,6 +238,10 @@ def _parse_payload_json_object(raw_value) -> dict:
     except Exception:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _recognition_payload_revoked(payload: dict | None) -> bool:
+    return bool((payload or {}).get("revoked"))
 
 
 def init_imported_logs_table(db_path):
@@ -2665,6 +2679,8 @@ def create_routes_blueprint(deps):
             SELECT COUNT(*)
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
                             AND DATE(captured_at) BETWEEN %s AND %s
                             AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
         """, range_params)
@@ -2673,6 +2689,8 @@ def create_routes_blueprint(deps):
         c.execute("""
                         SELECT COUNT(*) FROM recognition_events
                         WHERE captured_at IS NOT NULL
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
                             AND DATE(captured_at) = CURRENT_DATE
                             AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
         """)
@@ -2682,6 +2700,8 @@ def create_routes_blueprint(deps):
             SELECT COUNT(DISTINCT user_id)
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
                             AND DATE(captured_at) BETWEEN %s AND %s
                             AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
         """, range_params)
@@ -2691,6 +2711,8 @@ def create_routes_blueprint(deps):
             SELECT confidence
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
                             AND DATE(captured_at) BETWEEN %s AND %s
         """, range_params)
         conf_values = []
@@ -2732,6 +2754,8 @@ def create_routes_blueprint(deps):
                         SELECT DATE(captured_at) as day, COUNT(*) as count
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
                             AND DATE(captured_at) BETWEEN %s AND %s
                             AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
             GROUP BY day
@@ -2760,6 +2784,8 @@ def create_routes_blueprint(deps):
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
               AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
               AND u.course IS NOT NULL
               AND u.course != ''
@@ -2780,6 +2806,8 @@ def create_routes_blueprint(deps):
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
               AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
               AND re.user_id IS NOT NULL
               AND DATE(re.captured_at) BETWEEN %s AND %s
@@ -2803,6 +2831,8 @@ def create_routes_blueprint(deps):
             LEFT JOIN imported_logs i
               ON NULLIF(TRIM(i.sr_code), '') = NULLIF(TRIM(u.sr_code), '')
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
               AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
               AND re.user_id IS NOT NULL
               AND DATE(re.captured_at) BETWEEN %s AND %s
@@ -2837,6 +2867,8 @@ def create_routes_blueprint(deps):
                 COUNT(*) AS count
             FROM recognition_events re
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
               AND DATE(re.captured_at) BETWEEN %s AND %s
             GROUP BY event_type
         """, range_params)
@@ -2849,14 +2881,23 @@ def create_routes_blueprint(deps):
 
         c.execute("""
             SELECT
-                COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
+                CASE
+                    WHEN COALESCE(re.decision, 'allowed') = 'unknown' THEN 'unrecognized'
+                    ELSE COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
+                END AS user_type,
                 COUNT(*) AS count
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
               AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
               AND DATE(re.captured_at) BETWEEN %s AND %s
-            GROUP BY user_type
+            GROUP BY
+                CASE
+                    WHEN COALESCE(re.decision, 'allowed') = 'unknown' THEN 'unrecognized'
+                    ELSE COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
+                END
         """, range_params)
         user_type_totals = {
             "enrolled": 0,
@@ -2879,6 +2920,8 @@ def create_routes_blueprint(deps):
                    COUNT(*) as count
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
                             AND DATE(captured_at) BETWEEN %s AND %s
                             AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
             GROUP BY hour
@@ -2926,6 +2969,8 @@ def create_routes_blueprint(deps):
                         FROM recognition_events re
                         LEFT JOIN users u ON re.user_id = u.user_id
                         WHERE re.captured_at IS NOT NULL
+                            AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
                             AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
                             AND DATE(re.captured_at) BETWEEN %s AND %s
                         GROUP BY
@@ -2950,26 +2995,40 @@ def create_routes_blueprint(deps):
                 COALESCE(re.confidence, 0.0) AS confidence,
                 COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') AS event_type,
                 COALESCE(re.captured_at, re.ingested_at) AS event_time,
-                COALESCE(re.decision, 'allowed') AS decision
+                COALESCE(re.decision, 'allowed') AS decision,
+                COALESCE(re.payload_json, '') AS payload_json
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
             WHERE re.captured_at IS NOT NULL
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
               AND DATE(re.captured_at) BETWEEN %s AND %s
             ORDER BY event_time DESC, re.id DESC
             LIMIT 6
         """, range_params)
         recent_entries = []
-        for row_id, name, sr_code, user_type, confidence, event_type, event_time, decision in c.fetchall():
-            normalized_user_type = _normalize_user_type(user_type)
+        for row_id, name, sr_code, user_type, confidence, event_type, event_time, decision, payload_json in c.fetchall():
+            if _recognition_payload_revoked(_parse_payload_json_object(payload_json)):
+                continue
+            normalized_decision = str(decision or "allowed").strip().lower() or "allowed"
+            normalized_user_type = "unrecognized" if normalized_decision == "unknown" else _normalize_user_type(user_type)
             confidence_value = _coerce_confidence(confidence) or 0.0
             recent_entries.append(
                 {
                     "id": row_id,
-                    "name": _display_profile_field(name, user_type=normalized_user_type),
-                    "sr_code": _display_profile_field(sr_code, user_type=normalized_user_type),
+                    "name": _display_profile_field(
+                        name,
+                        user_type=normalized_user_type,
+                        unrecognized_default="Unrecognized User",
+                    ),
+                    "sr_code": _display_profile_field(
+                        sr_code,
+                        user_type=normalized_user_type,
+                        unrecognized_default="N/A",
+                    ),
                     "user_type": normalized_user_type,
                     "event_type": str(event_type or "").strip().lower() or "entry",
-                    "status": str(decision or "allowed").strip().lower() or "allowed",
+                    "status": normalized_decision,
                     "conf_pct": int(confidence_value * 100.0),
                     "timestamp": _normalize_timestamp_for_json(event_time),
                 }
@@ -2987,6 +3046,8 @@ def create_routes_blueprint(deps):
                 COUNT(*) as count
             FROM recognition_events
             WHERE captured_at IS NOT NULL
+              AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
               AND EXTRACT(HOUR FROM captured_at)::int BETWEEN 7 AND 19
               AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
               AND DATE(captured_at) BETWEEN %s AND %s
@@ -3015,6 +3076,8 @@ def create_routes_blueprint(deps):
                 COUNT(*) as count
             FROM recognition_events
             WHERE captured_at IS NOT NULL
+              AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
               AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
               AND DATE(captured_at) BETWEEN %s AND %s
             GROUP BY month
@@ -3913,10 +3976,12 @@ def create_routes_blueprint(deps):
                 COALESCE(re.payload_json, '') AS payload_json
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
+            WHERE COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+              AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
         """
         params = []
         if selected_date:
-            query += " WHERE DATE(COALESCE(re.captured_at, re.ingested_at)) = %s"
+            query += " AND DATE(COALESCE(re.captured_at, re.ingested_at)) = %s"
             params.append(selected_date)
         query += " ORDER BY COALESCE(re.captured_at, re.ingested_at) ASC, re.id ASC"
 
@@ -3951,6 +4016,8 @@ def create_routes_blueprint(deps):
             payload_json,
         ) in logs:
             payload = _parse_payload_json_object(payload_json)
+            if _recognition_payload_revoked(payload):
+                continue
             snapshot_user_type = str(payload.get("identity_user_type") or payload.get("user_type") or "").strip()
             normalized_user_type = _normalize_user_type(snapshot_user_type or user_type)
 
@@ -3959,8 +4026,16 @@ def create_routes_blueprint(deps):
             snapshot_gender = payload.get("identity_gender") or payload.get("gender")
             snapshot_program = payload.get("identity_program") or payload.get("program")
 
-            display_name = _display_profile_field(name or snapshot_name, user_type=normalized_user_type)
-            display_sr_code = _display_profile_field(sr_code or snapshot_sr_code, user_type=normalized_user_type)
+            display_name = _display_profile_field(
+                name or snapshot_name,
+                user_type=normalized_user_type,
+                unrecognized_default="Unrecognized User",
+            )
+            display_sr_code = _display_profile_field(
+                sr_code or snapshot_sr_code,
+                user_type=normalized_user_type,
+                unrecognized_default="N/A",
+            )
             display_gender = _display_profile_field(
                 gender or snapshot_gender,
                 user_type=normalized_user_type,
@@ -5272,7 +5347,10 @@ def create_routes_blueprint(deps):
                     e.user_id,
                     COALESCE(u.name, '') AS name,
                     COALESCE(e.sr_code, u.sr_code, '') AS sr_code,
-                    COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized') AS user_type,
+                    CASE
+                        WHEN COALESCE(e.decision, 'allowed') = 'unknown' THEN 'unrecognized'
+                        ELSE COALESCE(NULLIF(TRIM(u.user_type), ''), 'unrecognized')
+                    END AS user_type,
                     COALESCE(e.confidence, 0.0) AS confidence,
                     COALESCE(NULLIF(TRIM(e.event_type), ''), 'entry') AS event_type,
                     COALESCE(e.captured_at, e.ingested_at) AS event_time,
@@ -5327,6 +5405,8 @@ def create_routes_blueprint(deps):
                     payload_json,
                 ) = raw
                 payload = _parse_payload_json_object(payload_json)
+                if _recognition_payload_revoked(payload):
+                    continue
                 event_type = str(event_type or "").strip().lower() or "entry"
                 if event_type not in {"entry", "exit"}:
                     event_type = "unknown"
@@ -5342,9 +5422,19 @@ def create_routes_blueprint(deps):
                     or payload.get("user_sr_code")
                     or payload.get("sr_code")
                 )
-                name = _display_profile_field(name or snapshot_name, user_type=normalized_user_type)
-                sr_code = _display_profile_field(sr_code or snapshot_sr_code, user_type=normalized_user_type)
                 normalized_decision = str(decision or "allowed").strip().lower() or "allowed"
+                if normalized_decision == "unknown":
+                    normalized_user_type = "unrecognized"
+                name = _display_profile_field(
+                    name or snapshot_name,
+                    user_type=normalized_user_type,
+                    unrecognized_default="Unrecognized User",
+                )
+                sr_code = _display_profile_field(
+                    sr_code or snapshot_sr_code,
+                    user_type=normalized_user_type,
+                    unrecognized_default="N/A",
+                )
             else:
                 if len(raw) == 4:
                     name, sr_code, confidence, event_time = raw
@@ -5356,8 +5446,16 @@ def create_routes_blueprint(deps):
                 event_type = "entry"
                 normalized_user_type = "enrolled"
                 normalized_decision = "allowed"
-                name = _display_profile_field(name, user_type=normalized_user_type)
-                sr_code = _display_profile_field(sr_code, user_type=normalized_user_type)
+                name = _display_profile_field(
+                    name,
+                    user_type=normalized_user_type,
+                    unrecognized_default="Unrecognized User",
+                )
+                sr_code = _display_profile_field(
+                    sr_code,
+                    user_type=normalized_user_type,
+                    unrecognized_default="N/A",
+                )
 
             value = _coerce_confidence(confidence) or 0.0
             conf_pct = int(value * 100.0)

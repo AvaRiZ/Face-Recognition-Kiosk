@@ -27,7 +27,7 @@ from typing import Optional
 
 import numpy as np
 
-from app.realtime import emit_analytics_update
+from app.realtime import emit_analytics_update, emit_unrecognized_detection
 
 _analytics_emit_timer: threading.Timer | None = None
 _analytics_emit_lock = threading.Lock()
@@ -648,6 +648,154 @@ class UserRepository:
         conn.commit()
         conn.close()
         _debounced_emit_analytics("recognition_logged", {"user_id": int(result.user_id)}, delay=3.0)
+
+    def log_unrecognized_detection(
+        self,
+        *,
+        event_id: str,
+        track_id: int | None = None,
+        face_quality: float | None = None,
+        confidence: float | None = None,
+        match_threshold: float | None = None,
+        method: str = "immediate-unrecognized",
+    ) -> bool:
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+
+        quality_value = _coerce_float(face_quality)
+        confidence_value = _coerce_float(confidence)
+        threshold_value = _coerce_float(match_threshold)
+        captured_at = datetime.now(timezone.utc)
+        camera_id = int(getattr(self, "camera_id", 1) or 1)
+        event_type = "exit" if camera_id == 2 else "entry"
+        payload = {
+            "event_id": event_id,
+            "camera_id": camera_id,
+            "event_type": event_type,
+            "user_id": None,
+            "sr_code": None,
+            "decision": "unknown",
+            "identity_user_type": "unrecognized",
+            "identity_name": "Unrecognized User",
+            "identity_sr_code": "",
+            "track_id": int(track_id) if track_id is not None else None,
+            "snapshot_metadata": {"track_id": int(track_id) if track_id is not None else None},
+            "confidence": confidence_value,
+            "match_threshold": threshold_value,
+            "face_quality": quality_value,
+            "method": method,
+            "captured_at": captured_at.isoformat(),
+        }
+
+        inserted = False
+        if table_columns(conn, "recognition_events"):
+            inserted = self._insert_recognition_event(
+                c,
+                event_id=event_id,
+                user_id=None,
+                sr_code=None,
+                decision="unknown",
+                event_type=event_type,
+                confidence=confidence_value,
+                primary_confidence=None,
+                secondary_confidence=None,
+                primary_distance=None,
+                secondary_distance=None,
+                face_quality=quality_value,
+                method=method,
+                captured_at=captured_at,
+                payload_json=payload,
+            )
+
+        conn.commit()
+        conn.close()
+        if inserted:
+            emit_unrecognized_detection(
+                {
+                    "reason": "unrecognized_detection",
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "camera_id": camera_id,
+                    "captured_at": captured_at.isoformat(),
+                    "confidence": confidence_value,
+                    "requires_librarian_approval": True,
+                    "snapshot_metadata": {"track_id": int(track_id) if track_id is not None else None},
+                }
+            )
+            _debounced_emit_analytics("unrecognized_detection_logged", {"event_id": event_id}, delay=3.0)
+        return inserted
+
+    def revoke_unrecognized_detection(
+        self,
+        *,
+        event_id: str,
+        track_id: int | None = None,
+        recognized_user: dict | None = None,
+        reason: str = "recognized_same_track",
+        revoked_at: float | None = None,
+    ) -> bool:
+        event_id = str(event_id or "").strip()
+        if not event_id:
+            return False
+
+        conn = db_connect(self.db_path)
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT payload_json
+            FROM recognition_events
+            WHERE event_id = %s AND decision = 'unknown'
+            """,
+            (event_id,),
+        )
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return False
+
+        payload = {}
+        try:
+            payload = json.loads(row[0] or "{}")
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        revoked_datetime = datetime.fromtimestamp(
+            float(revoked_at if revoked_at is not None else datetime.now(timezone.utc).timestamp()),
+            timezone.utc,
+        )
+        recognized_payload = dict(recognized_user or {})
+        payload.update(
+            {
+                "revoked": True,
+                "revoked_at": revoked_datetime.isoformat(),
+                "revocation_reason": str(reason or "recognized_same_track"),
+                "superseded_by": {
+                    "name": str(recognized_payload.get("name") or "").strip(),
+                    "sr_code": str(recognized_payload.get("sr_code") or "").strip(),
+                    "confidence": recognized_payload.get("confidence"),
+                    "confidence_value": recognized_payload.get("confidence_value"),
+                },
+            }
+        )
+        if track_id is not None:
+            payload["track_id"] = int(track_id)
+
+        c.execute(
+            """
+            UPDATE recognition_events
+            SET payload_json = %s
+            WHERE event_id = %s AND decision = 'unknown'
+            """,
+            (json.dumps(payload, ensure_ascii=True), event_id),
+        )
+        updated = (c.rowcount or 0) > 0
+        conn.commit()
+        conn.close()
+        if updated:
+            _debounced_emit_analytics("unrecognized_detection_revoked", {"event_id": event_id}, delay=1.0)
+        return updated
         
     def get_recognition_statistics(self):
         conn = db_connect(self.db_path)

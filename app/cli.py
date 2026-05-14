@@ -339,7 +339,90 @@ class CLIApplication:
         track_state.recognized = True
         track_state.user = dict(payload)
         track_state.failed_good_quality_attempts = 0
+        self._revoke_unrecognized_detection(track_state, track_state.user, now=now)
+        self._clear_unrecognized_detection_state(track_state)
         self._maybe_trigger_recognition_alert(track_state.user, now=now)
+        return True
+
+    @staticmethod
+    def _clear_unrecognized_detection_state(track_state) -> None:
+        if track_state is None:
+            return
+        track_state.unrecognized_event_id = None
+        track_state.unrecognized_logged = False
+        track_state.unrecognized_revoked = False
+        track_state.unrecognized_first_seen = 0.0
+        track_state.unrecognized_face_quality = None
+        track_state.unrecognized_confidence = None
+        track_state.unrecognized_threshold = None
+
+    def _log_unrecognized_detection(self, track_id: int, track_state, result: dict, now: float) -> bool:
+        if track_state is None or track_state.recognized or track_state.unrecognized_logged:
+            return False
+
+        repository = getattr(self, "repository", None)
+        log_unrecognized = getattr(repository, "log_unrecognized_detection", None)
+        if not callable(log_unrecognized):
+            return False
+
+        event_id = f"unknown-{uuid.uuid4().hex}"
+        track_state.unrecognized_event_id = event_id
+        track_state.unrecognized_first_seen = float(now)
+        track_state.unrecognized_face_quality = _coerce_float(
+            (result or {}).get("quality_score")
+        ) or _coerce_float(track_state.last_quality_score)
+        track_state.unrecognized_confidence = _coerce_float((result or {}).get("match_confidence"))
+        track_state.unrecognized_threshold = _coerce_float((result or {}).get("match_threshold"))
+
+        try:
+            logged = log_unrecognized(
+                event_id=event_id,
+                track_id=int(track_id),
+                face_quality=track_state.unrecognized_face_quality,
+                confidence=track_state.unrecognized_confidence,
+                match_threshold=track_state.unrecognized_threshold,
+                method="immediate-unrecognized",
+            )
+        except Exception as exc:
+            print(f"[WARN] Failed to log unrecognized track {track_id}: {exc}")
+            self._clear_unrecognized_detection_state(track_state)
+            return False
+
+        if logged is False:
+            self._clear_unrecognized_detection_state(track_state)
+            return False
+
+        track_state.unrecognized_logged = True
+        return True
+
+    def _revoke_unrecognized_detection(self, track_state, recognized_user: dict | None, now: float | None = None) -> bool:
+        if track_state is None or not track_state.unrecognized_logged or track_state.unrecognized_revoked:
+            return False
+        event_id = track_state.unrecognized_event_id
+        if not event_id:
+            return False
+
+        repository = getattr(self, "repository", None)
+        revoke_unrecognized = getattr(repository, "revoke_unrecognized_detection", None)
+        if not callable(revoke_unrecognized):
+            return False
+
+        try:
+            revoked = revoke_unrecognized(
+                event_id=event_id,
+                track_id=None,
+                recognized_user=dict(recognized_user or {}),
+                reason="recognized_same_track",
+                revoked_at=time.time() if now is None else float(now),
+            )
+        except Exception as exc:
+            print(f"[WARN] Failed to revoke unrecognized event {event_id}: {exc}")
+            return False
+
+        if revoked is False:
+            return False
+
+        track_state.unrecognized_revoked = True
         return True
 
     def _draw_greeting_popup(self, frame, frame_width: int, frame_height: int, now: float | None = None) -> None:
@@ -907,6 +990,13 @@ class CLIApplication:
                         recognition_threshold = self.config.quality_profile_for_context(self.worker_role).face_quality_threshold
                         if status in {"uncertain", "no_match"} and track_state.last_quality_score >= recognition_threshold:
                             track_state.failed_good_quality_attempts += 1
+                            if not registration_capture_allowed:
+                                self._log_unrecognized_detection(
+                                    track_id,
+                                    track_state,
+                                    result,
+                                    current_time,
+                                )
 
                     if registration_capture_allowed:
                         if status in {"recognized", "blocked"}:

@@ -78,6 +78,66 @@ class WorkerApiRepository:
             method=method,
         )
 
+    def log_unrecognized_detection(
+        self,
+        *,
+        event_id: str,
+        track_id: int | None = None,
+        face_quality: float | None = None,
+        confidence: float | None = None,
+        match_threshold: float | None = None,
+        method: str = "immediate-unrecognized",
+    ) -> None:
+        event_type = "exit" if int(self.camera_id) == 2 else "entry"
+        payload = {
+            "event_id": str(event_id),
+            "event_type": event_type,
+            "station_id": self.station_id,
+            "camera_id": self.camera_id,
+            "user_id": None,
+            "sr_code": None,
+            "decision": "unknown",
+            "confidence": float(confidence) if confidence is not None else None,
+            "primary_confidence": None,
+            "secondary_confidence": None,
+            "primary_distance": None,
+            "secondary_distance": None,
+            "face_quality": float(face_quality) if face_quality is not None else None,
+            "method": method,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "worker_timestamp_ms": int(time.time() * 1000),
+            "identity_user_type": "unrecognized",
+            "identity_name": "Unrecognized User",
+            "identity_sr_code": "",
+            "track_id": int(track_id) if track_id is not None else None,
+            "snapshot_metadata": {"track_id": int(track_id) if track_id is not None else None},
+            "match_threshold": float(match_threshold) if match_threshold is not None else None,
+        }
+        self.outbound_queue.enqueue("recognition_event", payload)
+
+    def revoke_unrecognized_detection(
+        self,
+        *,
+        event_id: str,
+        track_id: int | None = None,
+        recognized_user: dict | None = None,
+        reason: str = "recognized_same_track",
+        revoked_at: float | None = None,
+    ) -> None:
+        payload = {
+            "event_id": str(event_id),
+            "track_id": int(track_id) if track_id is not None else None,
+            "recognized_user": dict(recognized_user or {}),
+            "reason": str(reason or "recognized_same_track"),
+            "revoked_at": datetime.fromtimestamp(
+                float(revoked_at if revoked_at is not None else time.time()),
+                timezone.utc,
+            ).isoformat(),
+            "station_id": self.station_id,
+            "camera_id": int(self.camera_id),
+        }
+        self.outbound_queue.enqueue("recognition_event_revocation", payload)
+
     def log_decision(
         self,
         *,
@@ -217,6 +277,9 @@ class WorkerApiRepository:
 
         if kind == "recognition_event":
             response = self.api_client.post_json("/api/internal/recognition-events", payload)
+            return bool(response.get("success"))
+        if kind == "recognition_event_revocation":
+            response = self.api_client.post_json("/api/internal/recognition-events/revoke", payload)
             return bool(response.get("success"))
         if kind == "embedding_update":
             try:

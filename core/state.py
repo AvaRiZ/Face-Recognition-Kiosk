@@ -561,6 +561,13 @@ class AppStateManager:
         track_state.last_recognition_confidence = None
         track_state.last_recognition_threshold = None
         track_state.failed_good_quality_attempts = 0
+        track_state.unrecognized_event_id = None
+        track_state.unrecognized_logged = False
+        track_state.unrecognized_revoked = False
+        track_state.unrecognized_first_seen = 0.0
+        track_state.unrecognized_face_quality = None
+        track_state.unrecognized_confidence = None
+        track_state.unrecognized_threshold = None
         track_state.last_label = "Tracking"
         track_state.last_label_color = (180, 180, 180)
         track_state.selected_for_registration = False

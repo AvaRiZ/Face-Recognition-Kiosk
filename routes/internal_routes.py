@@ -891,6 +891,96 @@ def create_internal_blueprint(deps):
             }
         )
 
+    @bp.route("/recognition-events/revoke", methods=["POST"], endpoint="recognition_events_revoke")
+    def recognition_events_revoke():
+        payload = request.get_json(silent=True) or {}
+        event_id = str(payload.get("event_id") or "").strip()
+        if not event_id:
+            return _json_error("`event_id` is required.", 400)
+
+        conn = db_connect(deps["db_path"])
+        c = conn.cursor()
+        try:
+            c.execute(
+                """
+                SELECT payload_json
+                FROM recognition_events
+                WHERE event_id = %s AND decision = 'unknown'
+                """,
+                (event_id,),
+            )
+            row = c.fetchone()
+            if not row:
+                conn.close()
+                return _json_error("Unrecognized event not found.", 404)
+
+            try:
+                event_payload = json.loads(row[0] or "{}")
+            except Exception:
+                event_payload = {}
+            if not isinstance(event_payload, dict):
+                event_payload = {}
+
+            recognized_user = payload.get("recognized_user")
+            if not isinstance(recognized_user, dict):
+                recognized_user = {}
+            revoked_at = _parse_utc_datetime(payload.get("revoked_at"))
+            track_id = payload.get("track_id")
+            try:
+                track_id = int(track_id) if track_id is not None and track_id != "" else None
+            except (TypeError, ValueError):
+                track_id = None
+
+            event_payload.update(
+                {
+                    "revoked": True,
+                    "revoked_at": revoked_at.isoformat(),
+                    "revocation_reason": str(payload.get("reason") or "recognized_same_track"),
+                    "superseded_by": {
+                        "name": str(recognized_user.get("name") or "").strip(),
+                        "sr_code": str(recognized_user.get("sr_code") or "").strip(),
+                        "confidence": recognized_user.get("confidence"),
+                        "confidence_value": recognized_user.get("confidence_value"),
+                    },
+                }
+            )
+            if track_id is not None:
+                event_payload["track_id"] = int(track_id)
+
+            c.execute(
+                """
+                UPDATE recognition_events
+                SET payload_json = %s
+                WHERE event_id = %s AND decision = 'unknown'
+                """,
+                (json.dumps(event_payload, ensure_ascii=True), event_id),
+            )
+            updated = (c.rowcount or 0) > 0
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if updated:
+            emit_analytics_update(
+                "unrecognized_detection_revoked",
+                {
+                    "event_id": event_id,
+                    "track_id": track_id,
+                    "reason": str(payload.get("reason") or "recognized_same_track"),
+                },
+            )
+
+        return jsonify({"success": bool(updated), "event_id": event_id, "revoked": bool(updated)})
+
     @bp.route("/capacity-gate", methods=["GET"], endpoint="capacity_gate")
     def capacity_gate():
         occ, warning_threshold = _get_occupancy_view()

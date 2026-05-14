@@ -969,7 +969,7 @@ function RecentEntriesList({ entries }) {
       {entries.map((entry, index) => {
         const name =
           entry?.user_type === "unrecognized" || !String(entry?.name || "").trim()
-            ? "Unknown"
+            ? "Unrecognized User"
             : entry.name;
         const confidenceTone = getConfidenceTone(entry?.conf_pct);
         const directionLabel = formatDirectionLabel(entry?.event_type);
@@ -990,7 +990,7 @@ function RecentEntriesList({ entries }) {
                 <span className="dashboard-recent-name">{name}</span>
               </div>
               <div className="dashboard-recent-meta">
-                <span>{entry?.sr_code || "Visitor"}</span>
+                <span>{entry?.user_type === "unrecognized" ? "N/A" : entry?.sr_code || "Visitor"}</span>
                 <span>{formatRelativeTime(entry?.timestamp)}</span>
               </div>
               <div className="dashboard-recent-tags">

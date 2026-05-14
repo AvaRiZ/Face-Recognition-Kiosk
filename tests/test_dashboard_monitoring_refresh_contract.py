@@ -69,19 +69,22 @@ class _FakeCursor:
             self._row = None
             return
 
-        if "group by user_type" in normalized:
+        if " as user_type, count(*) as count" in normalized:
+            counts_unknown_decisions = "coalesce(re.decision, 'allowed') = 'unknown'" in normalized
+            unrecognized_entry_count = 2 if counts_unknown_decisions else 0
+            unrecognized_all_count = 3 if counts_unknown_decisions else 0
             self._rows = (
                 [
                     ("enrolled", 4),
                     ("visitor", 3),
-                    ("unrecognized", 2),
+                    ("unrecognized", unrecognized_entry_count),
                     ("staff", 99),
                 ]
                 if entry_only
                 else [
                     ("enrolled", 6),
                     ("visitor", 5),
-                    ("unrecognized", 3),
+                    ("unrecognized", unrecognized_all_count),
                     ("staff", 99),
                 ]
             )
@@ -109,8 +112,55 @@ class _FakeCursor:
         if "select re.id," in normalized:
             event_time = datetime.now(timezone.utc)
             self._rows = [
-                (12, "Ada Lovelace", "23-12345", "enrolled", 0.92, "entry", event_time, "allowed"),
-                (13, "Grace Hopper", "24-54321", "visitor", 0.81, "exit", event_time, "allowed"),
+                (12, "Ada Lovelace", "23-12345", "enrolled", 0.92, "entry", event_time, "allowed", "{}"),
+                (13, "Grace Hopper", "24-54321", "visitor", 0.81, "exit", event_time, "allowed", "{}"),
+                (14, "", "", "unrecognized", 0.0, "entry", event_time, "unknown", "{}"),
+            ]
+            self._row = None
+            return
+
+        if "select e.id," in normalized:
+            event_time = datetime.now(timezone.utc)
+            self._rows = [
+                (
+                    15,
+                    "revoked-unknown-test",
+                    None,
+                    "",
+                    "",
+                    "unrecognized",
+                    0.0,
+                    "entry",
+                    event_time,
+                    "unknown",
+                    '{"identity_user_type":"unrecognized","revoked": true}',
+                ),
+                (
+                    14,
+                    "unknown-test",
+                    None,
+                    "",
+                    "",
+                    "unrecognized",
+                    0.0,
+                    "entry",
+                    event_time,
+                    "unknown",
+                    '{"identity_user_type":"unrecognized"}',
+                ),
+                (
+                    12,
+                    "allowed-test",
+                    1,
+                    "Ada Lovelace",
+                    "23-12345",
+                    "enrolled",
+                    0.92,
+                    "entry",
+                    event_time,
+                    "allowed",
+                    "{}",
+                ),
             ]
             self._row = None
             return
@@ -221,6 +271,12 @@ class DashboardMonitoringRefreshContractTests(unittest.TestCase):
         self.assertEqual(payload["recent_entries"][0]["event_type"], "entry")
         self.assertEqual(payload["recent_entries"][1]["event_type"], "exit")
         self.assertEqual(payload["recent_entries"][0]["conf_pct"], 92)
+        unrecognized_recent = next(
+            item for item in payload["recent_entries"] if item["status"] == "unknown"
+        )
+        self.assertEqual(unrecognized_recent["name"], "Unrecognized User")
+        self.assertEqual(unrecognized_recent["sr_code"], "N/A")
+        self.assertEqual(unrecognized_recent["user_type"], "unrecognized")
 
         today_row = payload["weekly_heatmap"][today.weekday()]
         self.assertEqual(sum(today_row["values"]), 6)
@@ -237,6 +293,21 @@ class DashboardMonitoringRefreshContractTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["filter_key"], "last_14_days")
         self.assertEqual(payload["filter_label"], "Last 14 Days")
+
+    def test_unrecognized_events_api_returns_display_identity(self):
+        client = self._build_client()
+
+        response = client.get("/api/events?type=unrecognized")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["total"], 1)
+        row = payload["rows"][0]
+        self.assertEqual(row["name"], "Unrecognized User")
+        self.assertEqual(row["sr_code"], "N/A")
+        self.assertEqual(row["status"], "unknown")
+        self.assertEqual(row["user_type"], "unrecognized")
+        self.assertEqual(row["event_type"], "entry")
 
     def test_heatmap_week_rejects_invalid_date_format(self):
         client = self._build_client()
