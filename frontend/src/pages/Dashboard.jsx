@@ -550,7 +550,7 @@ function buildDashboardWorkbook(XLSX, data, filterKey = data?.filter_key) {
     ["Summary"],
     ["Metric", "Value"],
     ["Registered Students", data?.total_students ?? 0],
-    ["Recognition Logs", data?.total_logs ?? 0],
+    ["Entry Recognition Logs", data?.total_logs ?? 0],
     ["Unique Visitors", data?.unique_visitors ?? 0],
     ["Entries", data?.total_entries ?? 0],
     ["Exits", data?.total_exits ?? 0],
@@ -1736,6 +1736,22 @@ export default function Dashboard() {
     hasLoadedDataRef.current = Boolean(data);
   }, [data]);
 
+  React.useEffect(() => {
+    const handleLayoutResize = () => {
+      window.dispatchEvent(new Event("resize"));
+      window.setTimeout(() => window.dispatchEvent(new Event("resize")), 340);
+    };
+
+    const observer = new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => mutation.attributeName === "class")) {
+        handleLayoutResize();
+      }
+    });
+
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
   function buildDashboardQuery(filterKey, weekStart = heatmapWeekStart) {
     const query = new URLSearchParams({ filter: filterKey });
     query.set("heatmap_week_start", weekStart);
@@ -2286,7 +2302,7 @@ export default function Dashboard() {
               <DashboardLineChart
                 labels={heroTrafficLabels}
                 values={heroTrafficValues}
-                height={260}
+                height={220}
                 valueLabel={isTodayView ? "entries" : "visits"}
                 lineColor="#0072BB"
                 fillColor="rgba(0, 114, 187, 0.22)"
@@ -2397,7 +2413,7 @@ export default function Dashboard() {
               ))}
             </div>
             <p className="dashboard-small-note">
-              Average confidence for {rangeLabelLower}: <strong>{avgConfidence}%</strong>. {totalLogs} recognition log{totalLogs === 1 ? "" : "s"} and {totalStudents} registered profile{totalStudents === 1 ? "" : "s"} are included in this dashboard context.
+              Average confidence for {rangeLabelLower}: <strong>{avgConfidence}%</strong>. {totalLogs} entry recognition log{totalLogs === 1 ? "" : "s"} and {totalStudents} registered profile{totalStudents === 1 ? "" : "s"} are included in this dashboard context.
             </p>
           </article>
         </div>
@@ -2470,7 +2486,7 @@ export default function Dashboard() {
                 items={activeDistributionPanel.items}
                 type={activeDistributionPanel.type}
                 indexAxis={activeDistributionPanel.indexAxis || "x"}
-                height={260}
+                height={220}
                 valueLabel="visitors"
                 emptyText={activeDistributionPanel.emptyText}
               />

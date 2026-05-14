@@ -2666,6 +2666,7 @@ def create_routes_blueprint(deps):
                         FROM recognition_events
                         WHERE captured_at IS NOT NULL
                             AND DATE(captured_at) BETWEEN %s AND %s
+                            AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
         """, range_params)
         total_logs = c.fetchone()[0]
 
@@ -2673,6 +2674,7 @@ def create_routes_blueprint(deps):
                         SELECT COUNT(*) FROM recognition_events
                         WHERE captured_at IS NOT NULL
                             AND DATE(captured_at) = CURRENT_DATE
+                            AND COALESCE(NULLIF(TRIM(event_type), ''), 'entry') = 'entry'
         """)
         today_logs = c.fetchone()[0]
 

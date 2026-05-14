@@ -24,9 +24,17 @@ class _FakeCursor:
         self._row = (0,)
         self._rows = []
 
+    @staticmethod
+    def _is_entry_only_query(normalized: str) -> bool:
+        return (
+            "coalesce(nullif(trim(event_type), ''), 'entry') = 'entry'" in normalized
+            or "coalesce(nullif(trim(re.event_type), ''), 'entry') = 'entry'" in normalized
+        )
+
     def execute(self, sql, params=None):
         normalized = " ".join(str(sql).lower().split())
         today = date.today()
+        entry_only = self._is_entry_only_query(normalized)
         self._row = (0,)
         self._rows = []
 
@@ -47,7 +55,12 @@ class _FakeCursor:
             return
 
         if "select date(captured_at) as day" in normalized:
-            self._rows = [(today, 6)]
+            self._rows = [(today, 6 if entry_only else 8)]
+            self._row = None
+            return
+
+        if "select confidence" in normalized:
+            self._rows = [(0.9,), (0.5,), (0.8,), (0.4,)]
             self._row = None
             return
 
@@ -57,12 +70,21 @@ class _FakeCursor:
             return
 
         if "group by user_type" in normalized:
-            self._rows = [
-                ("enrolled", 4),
-                ("visitor", 3),
-                ("unrecognized", 2),
-                ("staff", 99),
-            ]
+            self._rows = (
+                [
+                    ("enrolled", 4),
+                    ("visitor", 3),
+                    ("unrecognized", 2),
+                    ("staff", 99),
+                ]
+                if entry_only
+                else [
+                    ("enrolled", 6),
+                    ("visitor", 5),
+                    ("unrecognized", 3),
+                    ("staff", 99),
+                ]
+            )
             self._row = None
             return
 
@@ -71,12 +93,16 @@ class _FakeCursor:
             and "group by hour" in normalized
             and "case extract(dow" not in normalized
         ):
-            self._rows = [(9, 4), (14, 2)]
+            self._rows = [(9, 4), (14, 2)] if entry_only else [(9, 4), (14, 2), (16, 3)]
             self._row = None
             return
 
         if "case extract(dow" in normalized:
-            self._rows = [(today.weekday(), 9, 4), (today.weekday(), 14, 2)]
+            self._rows = (
+                [(today.weekday(), 9, 4), (today.weekday(), 14, 2)]
+                if entry_only
+                else [(today.weekday(), 9, 4), (today.weekday(), 14, 2), (today.weekday(), 16, 3)]
+            )
             self._row = None
             return
 
@@ -90,16 +116,16 @@ class _FakeCursor:
             return
 
         if "to_char(captured_at, 'yyyy-mm')" in normalized:
-            self._rows = [(today.strftime("%Y-%m"), 6)]
+            self._rows = [(today.strftime("%Y-%m"), 6 if entry_only else 8)]
             self._row = None
             return
 
         if "count(distinct user_id)" in normalized:
-            self._row = (5,)
+            self._row = (5 if entry_only else 7,)
             return
 
         if "select count(*)" in normalized:
-            self._row = (6,)
+            self._row = (6 if entry_only else 8,)
             return
 
     def fetchone(self):
@@ -174,10 +200,23 @@ class DashboardMonitoringRefreshContractTests(unittest.TestCase):
         self.assertIn(" - ", payload["heatmap_week_label"])
         self.assertIn("peak_pattern_summary", payload)
         self.assertEqual(payload["peak_pattern_summary"]["busiest_hour"]["label"], "9 AM")
+        self.assertEqual(payload["total_logs"], 6)
+        self.assertEqual(payload["total_entries"], 6)
+        self.assertEqual(payload["total_exits"], 2)
+        self.assertEqual(payload["avg_confidence"], 65)
+        self.assertEqual(payload["low_confidence_count"], 2)
+        self.assertEqual(payload["unique_visitors"], 5)
+        self.assertEqual(payload["daily_visitors"][-1]["count"], 6)
+        self.assertEqual(payload["peak_hours"][9], 4)
+        self.assertEqual(payload["peak_hours"][16], 0)
 
         labels = [item["label"] for item in payload["user_type_distribution"]]
         self.assertEqual(labels, ["Students", "Visitors", "Unrecognized"])
         self.assertNotIn("Staff", labels)
+        user_type_counts = {item["label"]: item["count"] for item in payload["user_type_distribution"]}
+        self.assertEqual(user_type_counts["Students"], 4)
+        self.assertEqual(user_type_counts["Visitors"], 3)
+        self.assertEqual(user_type_counts["Unrecognized"], 2)
 
         self.assertEqual(payload["recent_entries"][0]["event_type"], "entry")
         self.assertEqual(payload["recent_entries"][1]["event_type"], "exit")
@@ -185,6 +224,9 @@ class DashboardMonitoringRefreshContractTests(unittest.TestCase):
 
         today_row = payload["weekly_heatmap"][today.weekday()]
         self.assertEqual(sum(today_row["values"]), 6)
+        self.assertEqual(today_row["values"][9 - 7], 4)
+        self.assertEqual(today_row["values"][16 - 7], 0)
+        self.assertEqual(payload["monthly_visitors"][-1]["count"], 6)
 
     def test_custom_dashboard_filter_is_removed(self):
         client = self._build_client()
