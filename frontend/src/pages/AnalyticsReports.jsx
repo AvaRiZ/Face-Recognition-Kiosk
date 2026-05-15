@@ -1,5 +1,7 @@
 import React from "react";
 import { createPortal } from "react-dom";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 import { fetchJson } from "../api.js";
 import { confirmAction, getErrorMessage, showError, showSuccess } from "../alerts.js";
 import { socket } from "../socket.js";
@@ -88,7 +90,1088 @@ function writeAnalyticsCache(data, timestamp = Date.now()) {
   }
 }
 
-// ── Interpretation Box ────────────────────────────────────────
+// ── Export Helpers ─────────────────────────────────────────────
+function formatExportDate(value = new Date()) {
+  const source = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(source.getTime())) return "";
+  return source.toISOString().slice(0, 10);
+}
+
+function sanitizeExportText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
+function csvCell(value) {
+  const text = sanitizeExportText(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function addCsvSection(rows, title, headers, items, mapper) {
+  rows.push([title]);
+  if (headers?.length) rows.push(headers);
+  const sourceItems = Array.isArray(items) ? items : [];
+  if (sourceItems.length) {
+    sourceItems.forEach((item, index) => rows.push(mapper(item, index)));
+  } else {
+    rows.push(["No data"]);
+  }
+  rows.push([]);
+}
+
+function downloadTextFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function getExportGenderData(data) {
+  return (data?.gender_data || [])
+    .map((item) => ({
+      gender: item?.gender || item?.label || "Unknown",
+      count: Number(item?.count || 0),
+    }))
+    .filter((item) => {
+      const normalized = String(item.gender || "").trim().toLowerCase();
+      return item.count > 0 && !["", "unknown", "n/a", "na", "-"].includes(normalized);
+    });
+}
+
+function getExportYearData(data) {
+  return (data?.year_level_data || [])
+    .map((item) => ({
+      year_level: item?.year_level || item?.label || "Unknown",
+      count: Number(item?.count || 0),
+    }))
+    .filter((item) => item.count > 0);
+}
+
+const EXPORT_BRANDING_DEFAULTS = {
+  systemName: "Automated Facial Recognition Library Logging System",
+  institutionName: "Batangas State University",
+  libraryName: "University Library",
+  reportType: "Executive Institutional Analytics Report",
+  generatedBy: "Analytics Reporting Engine",
+  confidentiality: "Confidential - Internal Use Only",
+};
+
+function toNumber(value) {
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? normalized : 0;
+}
+
+function formatPercent(value, decimals = 1) {
+  return `${toNumber(value).toFixed(decimals)}%`;
+}
+
+function formatSignedPercent(value, decimals = 1) {
+  const normalized = toNumber(value);
+  const prefix = normalized > 0 ? "+" : "";
+  return `${prefix}${normalized.toFixed(decimals)}%`;
+}
+
+function getTrendDeltaPercent(counts = []) {
+  if (!Array.isArray(counts) || counts.length < 2) return 0;
+  const windowSize = Math.min(7, counts.length);
+  const firstWindow = counts.slice(0, windowSize).map((value) => toNumber(value));
+  const lastWindow = counts.slice(-windowSize).map((value) => toNumber(value));
+  const firstAvg = firstWindow.reduce((sum, value) => sum + value, 0) / Math.max(firstWindow.length, 1);
+  const lastAvg = lastWindow.reduce((sum, value) => sum + value, 0) / Math.max(lastWindow.length, 1);
+  if (firstAvg <= 0) return 0;
+  return ((lastAvg - firstAvg) / firstAvg) * 100;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildReportingPeriodLabel(referenceDate = new Date()) {
+  const end = referenceDate instanceof Date ? referenceDate : new Date(referenceDate);
+  const start = new Date(end);
+  start.setDate(end.getDate() - 29);
+  return `${start.toLocaleDateString()} - ${end.toLocaleDateString()}`;
+}
+
+function buildExecutiveInsights({
+  trendDirection,
+  trendDeltaPct,
+  peakHour,
+  peakDow,
+  topProgram,
+  topYearLevel,
+  recognitionAccuracy,
+  reliabilityScore,
+  forecastPeakDay,
+}) {
+  const trendStatement =
+    trendDirection === "upward"
+      ? `Library traffic increased by ${Math.abs(trendDeltaPct).toFixed(1)}% compared with the opening week of the current 30-day period.`
+      : trendDirection === "downward"
+        ? `Library traffic declined by ${Math.abs(trendDeltaPct).toFixed(1)}% relative to the opening week of the current 30-day period.`
+        : "Library traffic is stable with no material increase or decrease in the current 30-day period.";
+
+  const reliabilityStatement =
+    recognitionAccuracy >= 90 && reliabilityScore >= 90
+      ? "Recognition reliability remains within strong operational thresholds for institutional reporting."
+      : recognitionAccuracy >= 80 && reliabilityScore >= 80
+        ? "Recognition reliability remains within acceptable operational thresholds, with minor optimization opportunities."
+        : "Recognition reliability is below preferred thresholds and should be reviewed for camera positioning and capture quality.";
+
+  return [
+    trendStatement,
+    `Peak utilization occurs around ${peakHour.label}, with ${peakDow.label} showing the highest average day-level demand.`,
+    `${topProgram.label} is the most active program cohort in the reporting window.`,
+    topYearLevel
+      ? `${topYearLevel.year_level} students currently represent the highest recorded year-level participation.`
+      : "Year-level participation data is currently limited and should be monitored as additional records are collected.",
+    reliabilityStatement,
+    forecastPeakDay
+      ? `Forecasted demand peaks on ${forecastPeakDay}, supporting proactive staffing and circulation planning.`
+      : "Forecasting remains limited; continue collecting records to improve predictive confidence.",
+  ];
+}
+
+function buildAnalyticsReportPayload(data, reportContext = {}, exportedAt = new Date()) {
+  const dq = data?.data_quality || {};
+  const stats = data?.descriptive_stats || {};
+  const realtime = data?.realtime_status || {};
+  const forecast = data?.forecast || {};
+  const forecastValues = reportContext?.forecastValues || forecast?.values || [];
+  const forecastLabels = reportContext?.forecastLabels || forecast?.labels || [];
+  const last30Counts = reportContext?.last30Counts || data?.last_30_counts || [];
+  const last30Labels = reportContext?.last30Labels || data?.last_30_labels || [];
+  const peakHours = reportContext?.peakHours || normalizePeakHours(data?.peak_hours || []);
+  const peakDow = reportContext?.peakDow || getPeakDow(data?.dow_labels || [], data?.dow_averages || []);
+  const peakHour = reportContext?.peakHour || getPeakHour(peakHours);
+  const programDistribution = reportContext?.programDistribution || data?.program_distribution || [];
+  const topProgram = reportContext?.topProgram || getTopProgram(programDistribution);
+  const genderData = reportContext?.genderData || getExportGenderData(data);
+  const yearLevelData = reportContext?.yearLevelData || normalizeYearLevelData(data?.year_level_data || []);
+  const topYearLevel = yearLevelData?.length
+    ? [...yearLevelData].sort((a, b) => toNumber(b.count) - toNumber(a.count))[0]
+    : null;
+  const trendDirection = reportContext?.trendDirection || getTrendDirection(last30Counts);
+  const trendDeltaPct = reportContext?.trendDeltaPct ?? getTrendDeltaPercent(last30Counts);
+  const trendLabel =
+    reportContext?.trendLabel
+    || (trendDirection === "upward" ? "Increasing" : trendDirection === "downward" ? "Declining" : "Stable");
+
+  const confidenceEligibleLive = toNumber(dq?.total_live_confidence_eligible);
+  const recognitionAccuracy = reportContext?.recognitionAccuracy ?? (
+    confidenceEligibleLive > 0
+      ? Math.max(0, Math.min(100, toNumber(dq?.avg_live_confidence)))
+      : toNumber(realtime?.avg_confidence)
+  );
+  const reliabilityScore = reportContext?.reliabilityScore ?? toNumber(dq?.quality_score);
+
+  const currentOccupancy = reportContext?.currentOccupancy ?? toNumber(realtime?.current_occupancy);
+  const maxOccupancy = reportContext?.maxOccupancy ?? toNumber(realtime?.max_occupancy);
+  const occupancyPct = reportContext?.occupancyPct ?? (maxOccupancy > 0 ? (currentOccupancy / maxOccupancy) * 100 : 0);
+  const occupancyStatus = reportContext?.occupancyStatus
+    || realtime?.occupancy_status
+    || (occupancyPct >= 90 ? "Approaching capacity" : occupancyPct >= 70 ? "Moderately busy" : "Available");
+
+  const entriesToday = reportContext?.entriesToday ?? toNumber(realtime?.total_entries ?? realtime?.today_logs);
+  const exitsToday = reportContext?.exitsToday ?? toNumber(realtime?.total_exits);
+  const totalVisits = reportContext?.totalVisits ?? toNumber(data?.total_cleaned_logs ?? dq?.total_cleaned);
+  const avgDailyVisitors = reportContext?.avgDailyVisitors ?? (
+    toNumber(stats?.mean_daily_visits) > 0
+      ? toNumber(stats?.mean_daily_visits)
+      : (last30Counts.length
+        ? (last30Counts.reduce((sum, value) => sum + toNumber(value), 0) / last30Counts.length)
+        : 0)
+  );
+
+  const forecastTotalWeek = reportContext?.forecastTotalWeek ?? forecastValues.reduce((sum, value) => sum + toNumber(value), 0);
+  const forecastPeakIndex = forecastValues.length ? forecastValues.indexOf(Math.max(...forecastValues)) : -1;
+  const forecastPeakDay = reportContext?.forecastPeakDay
+    || (forecastPeakIndex >= 0 ? forecastLabels[forecastPeakIndex] : "");
+  const forecastModel = reportContext?.forecastModel || data?.best_forecast_model || forecast?.model || "Not available";
+
+  const topPrograms = programDistribution.slice(0, 3).map((entry) => ({
+    label: normalizeProgramLabel(entry?.program || entry?.label || "Unknown"),
+    count: toNumber(entry?.count),
+  }));
+  const mostActiveProgramsLabel = topPrograms.length
+    ? topPrograms.map((item) => `${item.label} (${fmt(item.count)})`).join(", ")
+    : "No dominant program recorded";
+
+  const trendSummary =
+    trendDirection === "upward"
+      ? `Growth trend (${formatSignedPercent(trendDeltaPct)})`
+      : trendDirection === "downward"
+        ? `Decline trend (${formatSignedPercent(trendDeltaPct)})`
+        : "Stable trend";
+
+  const branding = {
+    ...EXPORT_BRANDING_DEFAULTS,
+    ...(reportContext?.branding || {}),
+  };
+
+  const insights = (reportContext?.keyInsights?.length
+    ? reportContext.keyInsights
+    : buildExecutiveInsights({
+        trendDirection,
+        trendDeltaPct,
+        peakHour,
+        peakDow,
+        topProgram,
+        topYearLevel,
+        recognitionAccuracy,
+        reliabilityScore,
+        forecastPeakDay,
+      })
+  ).map((line) => sanitizeExportText(line)).filter(Boolean);
+
+  const recommendations = (reportContext?.recommendations || [])
+    .map((line) => sanitizeExportText(line))
+    .filter(Boolean);
+
+  return {
+    exportedAt,
+    branding: {
+      ...branding,
+      reportingPeriod: reportContext?.branding?.reportingPeriod || buildReportingPeriodLabel(exportedAt),
+    },
+    metrics: {
+      totalVisits,
+      avgDailyVisitors,
+      currentOccupancy,
+      maxOccupancy,
+      occupancyPct,
+      occupancyStatus,
+      peakOperatingHours: peakHour.label,
+      peakDow: peakDow.label,
+      mostActiveProgramsLabel,
+      recognitionAccuracy,
+      reliabilityScore,
+      forecastTotalWeek,
+      forecastPeakDay,
+      forecastModel,
+      trendLabel,
+      trendDirection,
+      trendDeltaPct,
+      trendSummary,
+      entriesToday,
+      exitsToday,
+    },
+    raw: {
+      dq,
+      stats,
+      realtime,
+      forecast,
+      last30Labels,
+      last30Counts,
+      peakHours,
+      programDistribution,
+      genderData,
+      yearLevelData,
+      topPrograms,
+      topProgram,
+      topYearLevel,
+      forecastLabels,
+      forecastValues,
+      confidenceEligibleLive,
+      forecastComparison: data?.forecast_comparison || [],
+      anomalies: data?.anomalies || [],
+      segmentation: data?.segmentation || null,
+    },
+    insights,
+    recommendations,
+    chartSections: (reportContext?.charts || []).filter(
+      (item) => Array.isArray(item?.series) && item.series.length > 0,
+    ),
+    analyticsMode: data?.analytics_mode || "",
+    generatedAtLabel: exportedAt.toLocaleString(),
+  };
+}
+
+function buildAnalyticsExportRows(report) {
+  const rows = [];
+  const { branding, metrics, raw } = report;
+  const forecastRows = raw.forecastLabels.map((label, index) => ({
+    label,
+    value: raw.forecastValues[index] ?? 0,
+    lower: raw.forecast?.lower?.[index] ?? "",
+    upper: raw.forecast?.upper?.[index] ?? "",
+  }));
+
+  addCsvSection(rows, "Report Metadata", ["Field", "Value"], [
+    ["System Name", branding.systemName],
+    ["Institution", branding.institutionName],
+    ["Library", branding.libraryName],
+    ["Report Type", branding.reportType],
+    ["Reporting Period", branding.reportingPeriod],
+    ["Generated At", report.generatedAtLabel],
+    ["Generated By", branding.generatedBy],
+    ["Confidentiality", branding.confidentiality],
+    ["Analytics Mode", report.analyticsMode || "full"],
+  ], (item) => item);
+
+  addCsvSection(rows, "1. Executive Summary", ["KPI", "Value", "Institutional Context"], [
+    ["Total Library Visits", fmt(metrics.totalVisits), "Validated cleaned visit records"],
+    ["Average Daily Visitors", metrics.avgDailyVisitors.toFixed(1), "Mean attendance per day"],
+    ["Current Occupancy", `${fmt(metrics.currentOccupancy)} of ${fmt(metrics.maxOccupancy)}`, `${metrics.occupancyPct.toFixed(1)}% utilized`],
+    ["Peak Operating Hours", metrics.peakOperatingHours, `Highest activity day: ${metrics.peakDow}`],
+    ["Most Active Programs", metrics.mostActiveProgramsLabel, "Top represented cohorts"],
+    ["Recognition Accuracy Rate", formatPercent(metrics.recognitionAccuracy), "Live confidence-derived accuracy"],
+    ["Data Quality Score", formatPercent(metrics.reliabilityScore), "Data reliability and cleaning yield"],
+    ["Forecasted Weekly Traffic", fmt(metrics.forecastTotalWeek), `Projected peak day: ${metrics.forecastPeakDay || "N/A"}`],
+    ["Attendance Trend", metrics.trendSummary, "Comparative first-week vs last-week average"],
+  ], (item) => item);
+
+  addCsvSection(rows, "Executive Insights", ["#", "Interpretation"], report.insights.map((line, index) => ({
+    index: index + 1,
+    line,
+  })), (item) => [item.index, item.line]);
+
+  addCsvSection(rows, "2. Real-Time Library Status", ["Metric", "Value"], [
+    ["Current Occupancy", metrics.currentOccupancy],
+    ["Occupancy Capacity", metrics.maxOccupancy],
+    ["Occupancy Utilization", formatPercent(metrics.occupancyPct)],
+    ["Occupancy Status", metrics.occupancyStatus],
+    ["Entries Today", metrics.entriesToday],
+    ["Exits Today", metrics.exitsToday],
+    ["Recognition Accuracy", formatPercent(metrics.recognitionAccuracy)],
+  ], (item) => item);
+
+  const last30Rows = raw.last30Labels.map((label, index) => ({
+    label,
+    count: raw.last30Counts[index] ?? 0,
+  }));
+  addCsvSection(rows, "3. Attendance & Usage Trends", ["Date", "Visits"], last30Rows, (item) => [item.label, item.count]);
+  rows.push(["Total 30-Day Visits", last30Rows.reduce((sum, item) => sum + toNumber(item.count), 0)]);
+  rows.push([]);
+
+  const peakHourRows = raw.peakHours.map((entry) => ({
+    hour: formatHourLabel(entry.hour),
+    count: toNumber(entry.count),
+  }));
+  addCsvSection(rows, "Peak Hour Distribution", ["Hour", "Visits"], peakHourRows, (item) => [item.hour, item.count]);
+
+  const programRows = raw.programDistribution.map((entry) => ({
+    label: normalizeProgramLabel(entry?.program || entry?.label || "Unknown"),
+    count: toNumber(entry?.count),
+  }));
+  addCsvSection(rows, "4. Student Engagement Analytics - Program Distribution", ["Program", "Visits"], programRows, (item) => [item.label, item.count]);
+  rows.push(["Total Program-Mapped Visits", programRows.reduce((sum, item) => sum + toNumber(item.count), 0)]);
+  rows.push([]);
+
+  addCsvSection(rows, "Student Engagement - Gender Composition", ["Gender", "Count"], raw.genderData, (item) => [item.gender, item.count]);
+  rows.push(["Total Gender-Profiled Records", raw.genderData.reduce((sum, item) => sum + toNumber(item.count), 0)]);
+  rows.push([]);
+  addCsvSection(rows, "Student Engagement - Year Level Participation", ["Year Level", "Count"], raw.yearLevelData, (item) => [item.year_level, item.count]);
+  rows.push(["Total Year-Level-Profiled Records", raw.yearLevelData.reduce((sum, item) => sum + toNumber(item.count), 0)]);
+  rows.push([]);
+
+  addCsvSection(rows, "5. Forecast & Predictive Insights", ["Date", "Predicted Visits", "Lower Bound", "Upper Bound"], forecastRows, (item) => [item.label, item.value, item.lower, item.upper]);
+  rows.push(["Projected 7-Day Total", metrics.forecastTotalWeek, "", ""]);
+  rows.push(["Forecast Model", metrics.forecastModel, "", ""]);
+  rows.push([]);
+
+  addCsvSection(rows, "Forecast Model Benchmark", ["Model", "MAE", "RMSE", "MAPE", "7-Day Total"], raw.forecastComparison || [], (item) => [
+    item?.model || "",
+    item?.mae ?? "",
+    item?.rmse ?? "",
+    item?.mape ?? "",
+    item?.total_7d ?? "",
+  ]);
+
+  addCsvSection(rows, "6. Operational Performance Metrics", ["Measure", "Value"], [
+    ["Occupancy Utilization", formatPercent(metrics.occupancyPct)],
+    ["Peak Operating Day", metrics.peakDow],
+    ["Peak Operating Hour", metrics.peakOperatingHours],
+    ["Entries vs Exits (Today)", `${fmt(metrics.entriesToday)} / ${fmt(metrics.exitsToday)}`],
+    ["Attendance Trend Direction", metrics.trendLabel],
+    ["Attendance Trend Delta", formatSignedPercent(metrics.trendDeltaPct)],
+  ], (item) => item);
+
+  addCsvSection(rows, "7. Data Quality & Recognition Reliability", ["Metric", "Value"], [
+    ["Raw Records", raw.dq?.total_raw ?? 0],
+    ["Live Raw Records", raw.dq?.total_live ?? 0],
+    ["Imported Raw Records", raw.dq?.total_imported ?? 0],
+    ["Cleaned Records", raw.dq?.total_cleaned ?? 0],
+    ["Low Confidence Removed", raw.dq?.removed_low_conf ?? 0],
+    ["Outside-Hours Removed", raw.dq?.removed_outside_hrs ?? 0],
+    ["Duplicate Removed", raw.dq?.removed_duplicates ?? 0],
+    ["Zero Confidence Ignored", raw.dq?.excluded_zero_conf ?? 0],
+    ["Recognition Accuracy", formatPercent(metrics.recognitionAccuracy)],
+    ["Data Reliability Score", formatPercent(metrics.reliabilityScore)],
+  ], (item) => item);
+
+  addCsvSection(rows, "8. Detailed Statistical Appendix", ["Statistic", "Value"], [
+    ["Mean Daily Visits", raw.stats?.mean_daily_visits ?? 0],
+    ["Median Daily Visits", raw.stats?.median_daily_visits ?? 0],
+    ["Max Daily Visits", raw.stats?.max_daily_visits ?? 0],
+    ["Min Daily Visits", raw.stats?.min_daily_visits ?? 0],
+    ["Standard Deviation", raw.stats?.std_dev ?? 0],
+    ["Active Visit Days", raw.stats?.total_visit_days ?? 0],
+    ["Anomaly Flags", raw.anomalies?.length ?? 0],
+    ["Regular Users", raw.segmentation?.regular_count ?? ""],
+    ["Occasional Users", raw.segmentation?.occasional_count ?? ""],
+    ["Rare Users", raw.segmentation?.rare_count ?? ""],
+  ], (item) => item);
+
+  return rows;
+}
+
+function downloadAnalyticsCsv(data, reportContext = {}) {
+  const exportedAt = new Date();
+  const report = buildAnalyticsReportPayload(data, reportContext, exportedAt);
+  const rows = buildAnalyticsExportRows(report);
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  downloadTextFile(`analytics-reports-${formatExportDate(exportedAt)}.csv`, csv, "text/csv;charset=utf-8");
+}
+
+async function buildSupplementalChartSections() {
+  const endDate = new Date();
+  const startDate = new Date(endDate);
+  startDate.setDate(endDate.getDate() - 13);
+  const startIso = startDate.toISOString().slice(0, 10);
+  const endIso = endDate.toISOString().slice(0, 10);
+
+  const [occupancyResult, eventsResult] = await Promise.allSettled([
+    fetchJson("/api/analytics/occupancy-trends?days=14"),
+    fetchJson(`/api/events?start_date=${startIso}&end_date=${endIso}`),
+  ]);
+
+  const charts = [];
+
+  if (occupancyResult.status === "fulfilled") {
+    const points = occupancyResult.value?.data || [];
+    if (points.length) {
+      const labels = points.map((item) => item?.date?.slice(5) || "");
+      const avgSeries = points.map((item) => toNumber(item?.avg_occupancy));
+      const peakSeries = points.map((item) => toNumber(item?.peak_occupancy));
+      const peakValue = Math.max(...peakSeries, 0);
+      charts.push({
+        id: "occupancy-trend",
+        title: "Occupancy Trends",
+        subtitle: "Daily average and peak occupancy (last 14 days)",
+        options: {
+          chart: { type: "line" },
+          colors: ["#1d4ed8", "#0f766e"],
+          xaxis: { categories: labels },
+          yaxis: { title: { text: "Occupancy" } },
+        },
+        series: [
+          { name: "Average Occupancy", data: avgSeries },
+          { name: "Peak Occupancy", data: peakSeries },
+        ],
+        interpretation: `Peak observed occupancy reached ${fmt(peakValue)} during the 14-day monitoring window.`,
+      });
+    }
+  }
+
+  if (eventsResult.status === "fulfilled") {
+    const rows = eventsResult.value?.rows || [];
+    const confidenceByDay = new Map();
+    rows.forEach((row) => {
+      const day = row?.date || row?.timestamp?.slice(0, 10);
+      const conf = toNumber(row?.conf_pct);
+      if (!day || conf <= 0) return;
+      const aggregate = confidenceByDay.get(day) || { sum: 0, count: 0 };
+      aggregate.sum += conf;
+      aggregate.count += 1;
+      confidenceByDay.set(day, aggregate);
+    });
+
+    if (confidenceByDay.size > 0) {
+      const labels = [];
+      const values = [];
+      for (let offset = 0; offset < 14; offset += 1) {
+        const day = new Date(startDate);
+        day.setDate(startDate.getDate() + offset);
+        const dayKey = day.toISOString().slice(0, 10);
+        labels.push(dayKey.slice(5));
+        const aggregate = confidenceByDay.get(dayKey);
+        values.push(
+          aggregate && aggregate.count > 0
+            ? Number((aggregate.sum / aggregate.count).toFixed(1))
+            : null,
+        );
+      }
+
+      const filtered = values.filter((value) => value !== null);
+      const average = filtered.length
+        ? filtered.reduce((sum, value) => sum + toNumber(value), 0) / filtered.length
+        : 0;
+
+      charts.push({
+        id: "recognition-accuracy-trend",
+        title: "Recognition Accuracy Trends",
+        subtitle: "Daily average recognition confidence (last 14 days)",
+        options: {
+          chart: { type: "line" },
+          colors: ["#d97706"],
+          markers: { size: 3 },
+          xaxis: { categories: labels },
+          yaxis: { title: { text: "Accuracy %" } },
+        },
+        series: [
+          { name: "Average Confidence", data: values },
+        ],
+        interpretation: `Recognition confidence averaged ${average.toFixed(1)}% in the monitored two-week period.`,
+      });
+    }
+  }
+
+  return charts;
+}
+
+async function renderChartImageForPdf(section, width = 1100, height = 420) {
+  if (!section || !window.Chart || !Array.isArray(section.series) || section.series.length === 0) {
+    return null;
+  }
+
+  const host = document.createElement("div");
+  host.style.position = "fixed";
+  host.style.left = "-20000px";
+  host.style.top = "0";
+  host.style.width = `${width}px`;
+  host.style.height = `${height}px`;
+  host.style.padding = "16px";
+  host.style.background = "#ffffff";
+  host.style.boxSizing = "border-box";
+  host.style.zIndex = "-1";
+
+  const canvas = document.createElement("canvas");
+  canvas.style.width = `${width - 32}px`;
+  canvas.style.height = `${height - 32}px`;
+  canvas.width = (width - 32) * 2;
+  canvas.height = (height - 32) * 2;
+  host.appendChild(canvas);
+  document.body.appendChild(host);
+
+  let chart = null;
+  try {
+    const config = buildChartJsConfig({
+      options: section.options || {},
+      series: section.series || [],
+    });
+
+    config.options = {
+      ...config.options,
+      responsive: false,
+      maintainAspectRatio: false,
+      animation: false,
+      devicePixelRatio: 2,
+    };
+
+    chart = new window.Chart(canvas, config);
+    chart.update("none");
+    await new Promise((resolve) => window.setTimeout(resolve, 40));
+    const imageDataUrl = canvas.toDataURL("image/png", 1);
+    return {
+      ...section,
+      imageDataUrl,
+    };
+  } catch (error) {
+    console.error("Failed to prepare chart image for export:", section?.title, error);
+    return null;
+  } finally {
+    chart?.destroy();
+    host.remove();
+  }
+}
+
+function renderChartCard(chart) {
+  if (!chart) return "";
+  return `
+    <div class="chart-card">
+      <div class="chart-card-title">${escapeHtml(chart.title || "Chart")}</div>
+      ${chart.subtitle ? `<div class="chart-card-subtitle">${escapeHtml(chart.subtitle)}</div>` : ""}
+      ${
+        chart.imageDataUrl
+          ? `<img class="chart-image" src="${chart.imageDataUrl}" alt="${escapeHtml(chart.title || "chart")}" />`
+          : `<div class="chart-empty">Chart data unavailable for this reporting window.</div>`
+      }
+      ${chart.interpretation ? `<div class="chart-note">${escapeHtml(chart.interpretation)}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderSimpleTable(headers, rows) {
+  const headHtml = `<tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`;
+  const rowHtml = rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("");
+  return `
+    <table class="report-table">
+      <thead>${headHtml}</thead>
+      <tbody>${rowHtml}</tbody>
+    </table>
+  `;
+}
+
+function buildPdfMarkup(report, chartCards = []) {
+  const { branding, metrics, raw, insights, recommendations, generatedAtLabel } = report;
+  const chartById = new Map(chartCards.map((item) => [item.id, item]));
+  const attendanceCharts = ["daily-attendance", "weekday-usage", "peak-hours"]
+    .map((id) => chartById.get(id))
+    .filter(Boolean);
+  const engagementCharts = ["program-distribution", "year-level-participation", "gender-composition"]
+    .map((id) => chartById.get(id))
+    .filter(Boolean);
+  const forecastCharts = ["forecast-traffic"]
+    .map((id) => chartById.get(id))
+    .filter(Boolean);
+  const realtimeCharts = ["occupancy-trend", "recognition-accuracy-trend"]
+    .map((id) => chartById.get(id))
+    .filter(Boolean);
+
+  const topProgramsRows = raw.topPrograms.length
+    ? raw.topPrograms.map((item) => [item.label, fmt(item.count)])
+    : [["No dominant program detected", "0"]];
+  const dataQualityRows = [
+    ["Raw records", fmt(raw.dq?.total_raw || 0)],
+    ["Cleaned records", fmt(raw.dq?.total_cleaned || 0)],
+    ["Low confidence removed", fmt(raw.dq?.removed_low_conf || 0)],
+    ["Outside-hours removed", fmt(raw.dq?.removed_outside_hrs || 0)],
+    ["Duplicates removed", fmt(raw.dq?.removed_duplicates || 0)],
+    ["Recognition accuracy", formatPercent(metrics.recognitionAccuracy)],
+    ["Data quality score", formatPercent(metrics.reliabilityScore)],
+  ];
+  const appendixRows = [
+    ["Mean daily visits", raw.stats?.mean_daily_visits ?? 0],
+    ["Median daily visits", raw.stats?.median_daily_visits ?? 0],
+    ["Maximum daily visits", raw.stats?.max_daily_visits ?? 0],
+    ["Minimum daily visits", raw.stats?.min_daily_visits ?? 0],
+    ["Standard deviation", raw.stats?.std_dev ?? 0],
+    ["Total active days", raw.stats?.total_visit_days ?? 0],
+    ["Anomaly flags", raw.anomalies?.length ?? 0],
+    ["Forecast model", metrics.forecastModel],
+    ["Forecast peak day", metrics.forecastPeakDay || "N/A"],
+  ];
+
+  const pageFooter = `
+    <div class="page-footer">
+      <span>${escapeHtml(branding.systemName)}</span>
+      <span>${escapeHtml(branding.confidentiality)}</span>
+    </div>
+  `;
+
+  return `
+    <style>
+      .analytics-export-root {
+        width: 794px;
+        background: #dfe7f2;
+        font-family: "Segoe UI", Arial, sans-serif;
+        color: #0f172a;
+      }
+      .analytics-export-page {
+        width: 794px;
+        min-height: 1123px;
+        background: #ffffff;
+        box-sizing: border-box;
+        padding: 40px 36px 34px;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .cover-panel {
+        background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 54%, #0f766e 100%);
+        border-radius: 16px;
+        padding: 22px;
+        color: #ffffff;
+      }
+      .cover-title {
+        font-size: 28px;
+        font-weight: 800;
+        line-height: 1.08;
+        margin-bottom: 8px;
+      }
+      .cover-subtitle {
+        font-size: 13px;
+        opacity: 0.9;
+        line-height: 1.5;
+      }
+      .meta-grid {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .meta-item {
+        background: #f8fafc;
+        border: 1px solid #dbe2ef;
+        border-radius: 10px;
+        padding: 10px 12px;
+      }
+      .meta-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #64748b;
+        font-weight: 700;
+      }
+      .meta-value {
+        margin-top: 5px;
+        font-size: 12.5px;
+        font-weight: 700;
+        color: #0f172a;
+      }
+      .section-title {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #475569;
+        font-weight: 800;
+        margin-top: 2px;
+      }
+      .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .kpi-card {
+        border: 1px solid #dbe2ef;
+        border-radius: 10px;
+        background: #f8fafc;
+        padding: 10px 11px;
+      }
+      .kpi-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #64748b;
+        font-weight: 700;
+      }
+      .kpi-value {
+        margin-top: 4px;
+        font-size: 17px;
+        font-weight: 800;
+        color: #0f172a;
+        line-height: 1.15;
+      }
+      .kpi-note {
+        margin-top: 4px;
+        font-size: 11px;
+        color: #475569;
+        line-height: 1.4;
+      }
+      .callout-list {
+        display: grid;
+        gap: 7px;
+      }
+      .callout-item {
+        border: 1px solid #dbe2ef;
+        border-left: 4px solid #1d4ed8;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 8px 10px;
+        font-size: 11.5px;
+        line-height: 1.55;
+        color: #1e293b;
+      }
+      .mini-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .mini-card {
+        border: 1px solid #dbe2ef;
+        border-radius: 10px;
+        padding: 10px;
+        background: #ffffff;
+      }
+      .mini-label {
+        font-size: 9.8px;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 700;
+      }
+      .mini-value {
+        margin-top: 4px;
+        font-size: 16px;
+        font-weight: 800;
+        color: #0f172a;
+      }
+      .chart-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+      .chart-card {
+        border: 1px solid #dbe2ef;
+        border-radius: 12px;
+        background: #ffffff;
+        padding: 10px 12px;
+      }
+      .chart-card-title {
+        font-size: 13px;
+        color: #0f172a;
+        font-weight: 800;
+      }
+      .chart-card-subtitle {
+        margin-top: 3px;
+        font-size: 10.8px;
+        color: #64748b;
+      }
+      .chart-image {
+        width: 100%;
+        margin-top: 8px;
+        border-radius: 8px;
+        border: 1px solid #e2e8f0;
+        background: #ffffff;
+      }
+      .chart-empty {
+        margin-top: 8px;
+        border: 1px dashed #cbd5e1;
+        border-radius: 8px;
+        background: #f8fafc;
+        color: #64748b;
+        font-size: 11px;
+        padding: 16px;
+        text-align: center;
+      }
+      .chart-note {
+        margin-top: 8px;
+        border-top: 1px solid #e2e8f0;
+        padding-top: 7px;
+        font-size: 11.2px;
+        line-height: 1.5;
+        color: #334155;
+      }
+      .report-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+      }
+      .report-table th,
+      .report-table td {
+        border: 1px solid #dbe2ef;
+        padding: 6px 7px;
+        text-align: left;
+      }
+      .report-table th {
+        background: #f1f5f9;
+        color: #334155;
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .page-footer {
+        position: absolute;
+        left: 36px;
+        right: 36px;
+        bottom: 18px;
+        border-top: 1px solid #dbe2ef;
+        padding-top: 6px;
+        display: flex;
+        justify-content: space-between;
+        color: #64748b;
+        font-size: 9.8px;
+      }
+    </style>
+    <div class="analytics-export-root">
+      <div class="analytics-export-page">
+        <div class="cover-panel">
+          <div class="cover-title">${escapeHtml(branding.reportType)}</div>
+          <div class="cover-subtitle">
+            Institutional analytics report for administrators, executive leadership, and accreditation stakeholders.
+          </div>
+        </div>
+        <div class="meta-grid">
+          <div class="meta-item"><div class="meta-label">System</div><div class="meta-value">${escapeHtml(branding.systemName)}</div></div>
+          <div class="meta-item"><div class="meta-label">Institution</div><div class="meta-value">${escapeHtml(branding.institutionName)}</div></div>
+          <div class="meta-item"><div class="meta-label">Library</div><div class="meta-value">${escapeHtml(branding.libraryName)}</div></div>
+          <div class="meta-item"><div class="meta-label">Reporting Period</div><div class="meta-value">${escapeHtml(branding.reportingPeriod)}</div></div>
+          <div class="meta-item"><div class="meta-label">Generated At</div><div class="meta-value">${escapeHtml(generatedAtLabel)}</div></div>
+          <div class="meta-item"><div class="meta-label">Generated By</div><div class="meta-value">${escapeHtml(branding.generatedBy)}</div></div>
+        </div>
+        <div class="section-title">1. Executive Summary</div>
+        <div class="kpi-grid">
+          <div class="kpi-card"><div class="kpi-label">Total Library Visits</div><div class="kpi-value">${fmt(metrics.totalVisits)}</div><div class="kpi-note">Validated cleaned attendance records</div></div>
+          <div class="kpi-card"><div class="kpi-label">Average Daily Visitors</div><div class="kpi-value">${metrics.avgDailyVisitors.toFixed(1)}</div><div class="kpi-note">Mean daily attendance volume</div></div>
+          <div class="kpi-card"><div class="kpi-label">Current Occupancy</div><div class="kpi-value">${fmt(metrics.currentOccupancy)}</div><div class="kpi-note">of ${fmt(metrics.maxOccupancy)} capacity (${metrics.occupancyPct.toFixed(1)}%)</div></div>
+          <div class="kpi-card"><div class="kpi-label">Peak Operating Hours</div><div class="kpi-value">${escapeHtml(metrics.peakOperatingHours)}</div><div class="kpi-note">Highest demand day: ${escapeHtml(metrics.peakDow)}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Most Active Programs</div><div class="kpi-value">${escapeHtml(raw.topPrograms[0]?.label || "N/A")}</div><div class="kpi-note">${escapeHtml(metrics.mostActiveProgramsLabel)}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Recognition Accuracy</div><div class="kpi-value">${formatPercent(metrics.recognitionAccuracy)}</div><div class="kpi-note">Operational confidence indicator</div></div>
+          <div class="kpi-card"><div class="kpi-label">Data Quality Score</div><div class="kpi-value">${formatPercent(metrics.reliabilityScore)}</div><div class="kpi-note">Post-cleaning data reliability</div></div>
+          <div class="kpi-card"><div class="kpi-label">Forecasted Weekly Traffic</div><div class="kpi-value">${fmt(metrics.forecastTotalWeek)}</div><div class="kpi-note">Projected peak day: ${escapeHtml(metrics.forecastPeakDay || "N/A")}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Attendance Trend</div><div class="kpi-value">${escapeHtml(metrics.trendLabel)}</div><div class="kpi-note">${escapeHtml(metrics.trendSummary)}</div></div>
+        </div>
+        <div class="section-title">Executive Insights</div>
+        <div class="callout-list">
+          ${insights.map((line) => `<div class="callout-item">${escapeHtml(line)}</div>`).join("")}
+        </div>
+        ${pageFooter}
+      </div>
+
+      <div class="analytics-export-page">
+        <div class="section-title">2. Real-Time Library Status</div>
+        <div class="mini-grid">
+          <div class="mini-card"><div class="mini-label">Current Occupancy</div><div class="mini-value">${fmt(metrics.currentOccupancy)}</div></div>
+          <div class="mini-card"><div class="mini-label">Occupancy Status</div><div class="mini-value">${escapeHtml(metrics.occupancyStatus)}</div></div>
+          <div class="mini-card"><div class="mini-label">Entries Today</div><div class="mini-value">${fmt(metrics.entriesToday)}</div></div>
+          <div class="mini-card"><div class="mini-label">Exits Today</div><div class="mini-value">${fmt(metrics.exitsToday)}</div></div>
+        </div>
+        <div class="section-title">Real-Time Performance Visuals</div>
+        <div class="chart-grid">
+          ${realtimeCharts.map((chart) => renderChartCard(chart)).join("")}
+        </div>
+        <div class="section-title">Administrative Interpretation</div>
+        <div class="callout-list">
+          <div class="callout-item">Current occupancy is ${metrics.occupancyPct.toFixed(1)}% of configured capacity, currently categorized as ${escapeHtml(metrics.occupancyStatus.toLowerCase())}.</div>
+          <div class="callout-item">Recognition accuracy is ${formatPercent(metrics.recognitionAccuracy)}, supporting ${metrics.recognitionAccuracy >= 85 ? "stable operational monitoring." : "targeted calibration and quality-control improvements."}</div>
+        </div>
+        ${pageFooter}
+      </div>
+
+      <div class="analytics-export-page">
+        <div class="section-title">3. Attendance & Usage Trends</div>
+        <div class="chart-grid">
+          ${attendanceCharts.map((chart) => renderChartCard(chart)).join("")}
+        </div>
+        <div class="section-title">Attendance Notes</div>
+        <div class="callout-list">
+          <div class="callout-item">Attendance trend is currently ${escapeHtml(metrics.trendLabel.toLowerCase())}, with a ${formatSignedPercent(metrics.trendDeltaPct)} change between the first and most recent weeks.</div>
+          <div class="callout-item">Peak utilization remains anchored around ${escapeHtml(metrics.peakOperatingHours)} and ${escapeHtml(metrics.peakDow)}.</div>
+        </div>
+        ${pageFooter}
+      </div>
+
+      <div class="analytics-export-page">
+        <div class="section-title">4. Student Engagement Analytics</div>
+        <div class="chart-grid">
+          ${engagementCharts.map((chart) => renderChartCard(chart)).join("")}
+        </div>
+        <div class="section-title">Top Engagement Cohorts</div>
+        ${renderSimpleTable(["Program", "Visits"], topProgramsRows)}
+        ${pageFooter}
+      </div>
+
+      <div class="analytics-export-page">
+        <div class="section-title">5. Forecast & Predictive Insights</div>
+        <div class="chart-grid">
+          ${forecastCharts.map((chart) => renderChartCard(chart)).join("")}
+        </div>
+        <div class="section-title">Forecast Summary</div>
+        <div class="mini-grid">
+          <div class="mini-card"><div class="mini-label">Forecasted 7-Day Traffic</div><div class="mini-value">${fmt(metrics.forecastTotalWeek)}</div></div>
+          <div class="mini-card"><div class="mini-label">Forecast Peak Day</div><div class="mini-value">${escapeHtml(metrics.forecastPeakDay || "N/A")}</div></div>
+          <div class="mini-card"><div class="mini-label">Forecast Model</div><div class="mini-value">${escapeHtml(metrics.forecastModel)}</div></div>
+          <div class="mini-card"><div class="mini-label">Trend Baseline</div><div class="mini-value">${escapeHtml(metrics.trendLabel)}</div></div>
+        </div>
+        <div class="section-title">6. Operational Performance Metrics</div>
+        <div class="callout-list">
+          ${recommendations.map((line) => `<div class="callout-item">${escapeHtml(line)}</div>`).join("")}
+        </div>
+        <div class="section-title">7. Data Quality & Recognition Reliability</div>
+        ${renderSimpleTable(["Metric", "Value"], dataQualityRows)}
+        ${pageFooter}
+      </div>
+
+      <div class="analytics-export-page">
+        <div class="section-title">8. Detailed Statistical Appendix</div>
+        ${renderSimpleTable(["Statistic", "Value"], appendixRows)}
+        <div class="section-title">Forecast Model Comparison</div>
+        ${
+          raw.forecastComparison.length
+            ? renderSimpleTable(
+                ["Model", "MAE", "RMSE", "MAPE", "7-Day Total"],
+                raw.forecastComparison.map((row) => [
+                  row?.model || "",
+                  row?.mae ?? "",
+                  row?.rmse ?? "",
+                  row?.mape ?? "",
+                  row?.total_7d ?? "",
+                ]),
+              )
+            : `<div class="chart-empty">Forecast model benchmark data is unavailable in the current payload.</div>`
+        }
+        ${pageFooter}
+      </div>
+    </div>
+  `;
+}
+
+async function waitForImages(root) {
+  const images = Array.from(root.querySelectorAll("img"));
+  if (!images.length) return;
+  await Promise.all(images.map((image) => {
+    if (image.complete) return Promise.resolve();
+    return new Promise((resolve) => {
+      image.onload = resolve;
+      image.onerror = resolve;
+    });
+  }));
+}
+
+async function openAnalyticsPdf(data, reportContext = {}) {
+  const exportedAt = new Date();
+  const report = buildAnalyticsReportPayload(data, reportContext, exportedAt);
+  const supplementalCharts = await buildSupplementalChartSections();
+  const sourceCharts = [...report.chartSections, ...supplementalCharts];
+  const chartCards = [];
+  for (const section of sourceCharts) {
+    const card = await renderChartImageForPdf(section);
+    if (card) chartCards.push(card);
+  }
+
+  const exportRoot = document.createElement("div");
+  exportRoot.style.position = "fixed";
+  exportRoot.style.left = "-20000px";
+  exportRoot.style.top = "0";
+  exportRoot.style.zIndex = "-1";
+  exportRoot.innerHTML = buildPdfMarkup(report, chartCards);
+  document.body.appendChild(exportRoot);
+
+  try {
+    await waitForImages(exportRoot);
+    const pages = Array.from(exportRoot.querySelectorAll(".analytics-export-page"));
+    if (!pages.length) {
+      throw new Error("The PDF report layout did not render correctly.");
+    }
+
+    const pdf = new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: "a4",
+      compress: true,
+    });
+
+    const pageWidth = 210;
+    const pageHeight = 297;
+
+    for (let index = 0; index < pages.length; index += 1) {
+      const page = pages[index];
+      const canvas = await html2canvas(page, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+      });
+      const image = canvas.toDataURL("image/jpeg", 0.92);
+
+      if (index > 0) pdf.addPage("a4", "portrait");
+      pdf.addImage(image, "JPEG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+      pdf.setFontSize(8.5);
+      pdf.setTextColor(100, 116, 139);
+      pdf.text(
+        `Page ${index + 1} of ${pages.length}`,
+        pageWidth - 10,
+        pageHeight - 5,
+        { align: "right" },
+      );
+    }
+
+    pdf.save(`analytics-reports-${formatExportDate(exportedAt)}.pdf`);
+  } finally {
+    exportRoot.remove();
+  }
+}
+
 function Interpretation({
   icon = "bi-lightbulb",
   color = "#ffc107",
@@ -120,6 +1203,156 @@ function Interpretation({
 }
 
 // ── Import Modal ──────────────────────────────────────────────
+function ExportModal({ data, reportContext = {}, disabled = false }) {
+  const [showModal, setShowModal] = React.useState(false);
+  const [exporting, setExporting] = React.useState(false);
+
+  React.useEffect(() => {
+    const h = (e) => {
+      if (e.key === "Escape") setShowModal(false);
+    };
+    if (showModal) document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
+  }, [showModal]);
+
+  async function handleExport(type) {
+    if (!data) return;
+    setExporting(true);
+    try {
+      if (type === "csv") {
+        downloadAnalyticsCsv(data, reportContext);
+        await showSuccess("Export Complete", "Executive analytics CSV report generated successfully.");
+      } else {
+        await openAnalyticsPdf(data, reportContext);
+        await showSuccess("Export Complete", "Executive analytics PDF report generated successfully.");
+      }
+      setShowModal(false);
+    } catch (error) {
+      await showError(
+        "Export Failed",
+        getErrorMessage(error, "The analytics report export could not be generated."),
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn btn-sm btn-outline-success d-flex align-items-center gap-1 px-2 py-1"
+        onClick={() => setShowModal(true)}
+        disabled={disabled || !data || exporting}
+      >
+        <i className="bi bi-upload" style={{ fontSize: 12 }}></i>
+        {exporting ? "Exporting..." : "Export"}
+      </button>
+      {showModal && typeof document !== "undefined" && createPortal((
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 2000,
+            background: "rgba(0,0,0,0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "84px 16px 24px",
+            backdropFilter: "blur(3px)",
+          }}
+          onClick={(e) => e.target === e.currentTarget && setShowModal(false)}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 16,
+              width: "100%",
+              maxWidth: 420,
+              boxShadow: "0 20px 60px rgba(0,0,0,0.15)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "18px 22px 14px",
+                borderBottom: "1px solid #f0f0f0",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+              }}
+            >
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 10,
+                    background: "rgba(25,135,84,0.08)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <i className="bi bi-upload text-success" style={{ fontSize: 17 }}></i>
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "#1a1a2e" }}>
+                    Export Analytics Report
+                  </div>
+                  <div style={{ fontSize: 11, color: "#aaa" }}>
+                    Choose CSV or PDF
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowModal(false)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "#aaa",
+                  fontSize: 17,
+                  padding: "2px 6px",
+                }}
+              >
+                <i className="bi bi-x-lg"></i>
+              </button>
+            </div>
+            <div style={{ padding: 22, display: "grid", gap: 12 }}>
+              <button
+                type="button"
+                className="btn btn-outline-primary d-flex align-items-center justify-content-between"
+                onClick={() => handleExport("csv")}
+                disabled={exporting}
+              >
+                <span className="d-flex align-items-center gap-2">
+                  <i className="bi bi-filetype-csv"></i>
+                  CSV Export
+                </span>
+                <i className="bi bi-chevron-right"></i>
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-danger d-flex align-items-center justify-content-between"
+                onClick={() => handleExport("pdf")}
+                disabled={exporting}
+              >
+                <span className="d-flex align-items-center gap-2">
+                  <i className="bi bi-filetype-pdf"></i>
+                  PDF Export
+                </span>
+                <i className="bi bi-chevron-right"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      ), document.body)}
+    </>
+  );
+}
+
 function ImportModal({ onImportSuccess }) {
   const [summary, setSummary] = React.useState(null);
   const [uploading, setUploading] = React.useState(false);
@@ -252,7 +1485,7 @@ function ImportModal({ onImportSuccess }) {
           setShowModal(true);
         }}
       >
-        <i className="bi bi-upload" style={{ fontSize: 12 }}></i> Import Data
+        <i className="bi bi-download" style={{ fontSize: 12 }}></i> Import Data
       </button>
       {showModal && typeof document !== "undefined" && createPortal((
         <div
@@ -301,8 +1534,8 @@ function ImportModal({ onImportSuccess }) {
                     justifyContent: "center",
                   }}
                 >
-                  <i
-                    className="bi bi-cloud-upload text-primary"
+                    <i
+                    className="bi bi-cloud-download text-primary"
                     style={{ fontSize: 17 }}
                   ></i>
                 </div>
@@ -4077,6 +5310,7 @@ function AnalyticsReportsInner() {
       : trendDirection === "downward"
         ? "Declining"
         : "Stable";
+  const trendDeltaPct = getTrendDeltaPercent(last30Counts);
 
   const heroGradient =
     trendDirection === "upward"
@@ -4110,6 +5344,174 @@ function AnalyticsReportsInner() {
       "Target low-frequency users with program-level outreach and faculty coordination to improve engagement.",
     );
   }
+
+  const exportCharts = React.useMemo(() => {
+    const charts = [];
+    if (visitsTrendSeries?.length) {
+      charts.push({
+        id: "daily-attendance",
+        title: "Daily Attendance Trends",
+        subtitle: "Last 30 days of validated attendance records",
+        options: visitsTrendOptions,
+        series: visitsTrendSeries,
+        interpretation: `Attendance is ${trendLabel.toLowerCase()} with ${fmt(last30Total)} visits recorded across the 30-day window.`,
+      });
+    }
+    if (dowSeries?.length) {
+      charts.push({
+        id: "weekday-usage",
+        title: "Weekday Usage Patterns",
+        subtitle: "Average attendance by day of week",
+        options: dowOptions,
+        series: dowSeries,
+        interpretation: `${peakDow.label} shows the highest average attendance profile in the observed period.`,
+      });
+    }
+    if (peakHourSeries?.length) {
+      charts.push({
+        id: "peak-hours",
+        title: "Peak Hour Distribution",
+        subtitle: "Hourly arrivals across the operating window",
+        options: peakHourOptions,
+        series: peakHourSeries,
+        interpretation: `The strongest arrival concentration occurs near ${peakHour.label}.`,
+      });
+    }
+    if (programSeries?.length) {
+      charts.push({
+        id: "program-distribution",
+        title: "Program Distribution",
+        subtitle: "Top programs by recorded library visits",
+        options: programOptions,
+        series: programSeries,
+        interpretation: `${topProgram.label} currently leads program-level library activity.`,
+      });
+    }
+    if (yearSeries?.length) {
+      charts.push({
+        id: "year-level-participation",
+        title: "Year-Level Participation",
+        subtitle: "Engagement profile by academic year level",
+        options: yearOptions,
+        series: yearSeries,
+        interpretation: `Year-level activity indicates stronger participation among upper-volume cohorts for targeted scheduling.`,
+      });
+    }
+    if (genderSeries?.length) {
+      charts.push({
+        id: "gender-composition",
+        title: "Gender Composition",
+        subtitle: "Profiled user composition in attendance records",
+        options: genderOptions,
+        series: genderSeries,
+        interpretation: "Gender composition remains useful for demographic-level service planning and inclusivity monitoring.",
+      });
+    }
+    if (forecastSeries?.length) {
+      charts.push({
+        id: "forecast-traffic",
+        title: "Forecasted Library Traffic",
+        subtitle: "Predicted demand for the next 7 days",
+        options: forecastOptions,
+        series: forecastSeries,
+        interpretation: `Projected weekly traffic totals ${fmt(forecastTotalWeek)} visits, with ${forecastPeakDay} as the expected peak day.`,
+      });
+    }
+    return charts;
+  }, [
+    visitsTrendSeries,
+    visitsTrendOptions,
+    trendLabel,
+    last30Total,
+    dowSeries,
+    dowOptions,
+    peakDow.label,
+    peakHourSeries,
+    peakHourOptions,
+    peakHour.label,
+    programSeries,
+    programOptions,
+    topProgram.label,
+    yearSeries,
+    yearOptions,
+    genderSeries,
+    genderOptions,
+    forecastSeries,
+    forecastOptions,
+    forecastTotalWeek,
+    forecastPeakDay,
+  ]);
+
+  const exportReportContext = React.useMemo(() => ({
+    branding: {
+      generatedBy: session?.username
+        ? `Analytics Console (${session.username})`
+        : EXPORT_BRANDING_DEFAULTS.generatedBy,
+    },
+    trendDirection,
+    trendDeltaPct,
+    trendLabel,
+    totalVisits: Number(currentData?.total_cleaned_logs || 0),
+    avgDailyVisitors: Number(stats?.mean_daily_visits || 0),
+    currentOccupancy,
+    maxOccupancy,
+    occupancyPct,
+    occupancyStatus,
+    entriesToday,
+    exitsToday,
+    recognitionAccuracy,
+    reliabilityScore,
+    peakDow,
+    peakHour,
+    topProgram,
+    peakHours,
+    programDistribution,
+    genderData,
+    yearLevelData,
+    last30Labels,
+    last30Counts,
+    forecastValues,
+    forecastLabels,
+    forecastTotalWeek,
+    forecastPeakDay,
+    forecastModel: bestForecastModel || forecast?.model || "Not available",
+    charts: exportCharts,
+    keyInsights,
+    recommendations,
+  }), [
+    session?.username,
+    trendDirection,
+    trendDeltaPct,
+    trendLabel,
+    currentData?.total_cleaned_logs,
+    stats?.mean_daily_visits,
+    currentOccupancy,
+    maxOccupancy,
+    occupancyPct,
+    occupancyStatus,
+    entriesToday,
+    exitsToday,
+    recognitionAccuracy,
+    reliabilityScore,
+    peakDow,
+    peakHour,
+    topProgram,
+    peakHours,
+    programDistribution,
+    genderData,
+    yearLevelData,
+    last30Labels,
+    last30Counts,
+    forecastValues,
+    forecastLabels,
+    forecastTotalWeek,
+    forecastPeakDay,
+    bestForecastModel,
+    forecast?.model,
+    exportCharts,
+    keyInsights,
+    recommendations,
+  ]);
 
   const hasAdvancedAnalytics = Boolean(
     forecastValues.length
@@ -4244,6 +5646,11 @@ function AnalyticsReportsInner() {
                     }}
                   />
                 ) : null}
+                <ExportModal
+                  data={currentData}
+                  reportContext={exportReportContext}
+                  disabled={loading || refreshing || !hasRenderableData}
+                />
               </div>
             </div>
           </div>
@@ -5172,6 +6579,11 @@ function AnalyticsReportsInner() {
             }}
           />
         ) : null}
+        <ExportModal
+          data={currentData}
+          reportContext={exportReportContext}
+          disabled={loading || refreshing || !hasRenderableData}
+        />
       </div>
 
       {loading && !basicData && (

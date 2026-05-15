@@ -1,11 +1,13 @@
 import warnings
 import math
+import logging
 from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
 
 warnings.filterwarnings("ignore")
+logging.getLogger("prophet.plot").setLevel(logging.ERROR)
 
 
 def _suppress_statsmodels_convergence_warning():
