@@ -2223,9 +2223,9 @@ export default function Dashboard() {
             title="Unrecognized faces"
             value={unrecognizedCount}
             meta={
-              lowConfidenceCount > 0
-                ? `${lowConfidenceCount} low-confidence event${lowConfidenceCount === 1 ? "" : "s"}`
-                : `No low-confidence events in ${rangeLabelLower}`
+              unrecognizedCount > 0
+                ? `${unrecognizedCount} unrecognized face detection${unrecognizedCount === 1 ? "" : "s"} in ${rangeLabelLower}`
+                : `No unrecognized face detections in ${rangeLabelLower}`
             }
             accent="rose"
           />
@@ -2413,7 +2413,7 @@ export default function Dashboard() {
               ))}
             </div>
             <p className="dashboard-small-note">
-              Average confidence for {rangeLabelLower}: <strong>{avgConfidence}%</strong>. {totalLogs} entry recognition log{totalLogs === 1 ? "" : "s"} and {totalStudents} registered profile{totalStudents === 1 ? "" : "s"} are included in this dashboard context.
+              Average confidence for {rangeLabelLower}: <strong>{avgConfidence}%</strong>. {totalLogs} entry/exit recognition log{totalLogs === 1 ? "" : "s"} and {totalStudents} registered profile{totalStudents === 1 ? "" : "s"} are included in this dashboard context.
             </p>
           </article>
         </div>

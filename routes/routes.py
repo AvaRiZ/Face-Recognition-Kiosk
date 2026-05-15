@@ -2918,12 +2918,15 @@ def create_routes_blueprint(deps):
         unique_visitors = c.fetchone()[0]
 
         c.execute("""
-            SELECT confidence
-                        FROM recognition_events
-                        WHERE captured_at IS NOT NULL
-                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked": true%%'
-                            AND COALESCE(payload_json, '') NOT LIKE '%%"revoked":true%%'
-                            AND DATE(captured_at) BETWEEN %s AND %s
+            SELECT re.confidence
+                        FROM recognition_events re
+                        INNER JOIN users u ON re.user_id = u.user_id
+                        WHERE re.captured_at IS NOT NULL
+                            AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
+                            AND COALESCE(re.decision, 'allowed') <> 'unknown'
+                            AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') IN ('entry', 'exit')
+                            AND DATE(re.captured_at) BETWEEN %s AND %s
         """, range_params)
         conf_values = []
         low_confidence_count = 0

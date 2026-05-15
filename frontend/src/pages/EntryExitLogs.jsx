@@ -31,6 +31,7 @@ export default function EntryExitLogsPage() {
 
   const [search, setSearch] = React.useState('');
   const [pageSize, setPageSize] = React.useState('10');
+  const [currentPage, setCurrentPage] = React.useState(1);
   const [confFilter, setConfFilter] = React.useState('');
   const [directionFilter, setDirectionFilter] = React.useState('');
   const [dateFilter, setDateFilter] = React.useState('');
@@ -133,8 +134,22 @@ export default function EntryExitLogsPage() {
   }, [rows, search, confFilter, directionFilter, dateFilter, activeTab, today, weekAgo]);
 
   const pageLimit = parseInt(pageSize, 10) || 10;
-  const pageRows = filtered.slice(0, pageLimit);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageLimit));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const startIndex = (safeCurrentPage - 1) * pageLimit;
+  const endIndex = startIndex + pageLimit;
+  const pageRows = filtered.slice(startIndex, endIndex);
   const exportHref = dateFilter ? `/entry-logs/export?date=${dateFilter}` : '/entry-logs/export';
+
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [search, pageSize, confFilter, directionFilter, dateFilter, activeTab]);
+
+  React.useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   async function handleExportClick(event) {
     event.preventDefault();
@@ -245,7 +260,10 @@ export default function EntryExitLogsPage() {
                 className="form-select"
                 style={{ width: 'auto' }}
                 value={pageSize}
-                onChange={(ev) => setPageSize(ev.target.value)}
+                onChange={(ev) => {
+                  setPageSize(ev.target.value);
+                  setCurrentPage(1);
+                }}
               >
                 <option value="10">10</option>
                 <option value="25">25</option>
@@ -332,7 +350,7 @@ export default function EntryExitLogsPage() {
 
                     return (
                       <tr key={`${row.name}-${idx}`}>
-                        <td>{String(idx + 1)}</td>
+                        <td>{String(startIndex + idx + 1)}</td>
                         <td>{row.name}</td>
                         <td>
                           <code>{row.sr_code}</code>
@@ -365,7 +383,29 @@ export default function EntryExitLogsPage() {
           </div>
 
           <div className="small text-muted mt-2">
-            {Math.min(filtered.length, pageLimit)} of {filtered.length} logs shown
+            {filtered.length ? `${startIndex + 1}-${Math.min(endIndex, filtered.length)}` : '0'} of{' '}
+            {filtered.length} logs shown
+          </div>
+          <div className="d-flex justify-content-end align-items-center gap-2 mt-2">
+            <button
+              type="button"
+              className="btn btn-outline-secondary btn-sm"
+              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+              disabled={safeCurrentPage <= 1}
+            >
+              Back
+            </button>
+            <span className="small text-muted">
+              Page {safeCurrentPage} of {totalPages}
+            </span>
+            <button
+              type="button"
+              className="btn btn-outline-secondary btn-sm"
+              onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+              disabled={safeCurrentPage >= totalPages}
+            >
+              Next
+            </button>
           </div>
         </div>
       </div>
