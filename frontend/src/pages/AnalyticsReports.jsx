@@ -629,7 +629,7 @@ async function buildSupplementalChartSections() {
   return charts;
 }
 
-async function renderChartImageForPdf(section, width = 1100, height = 420) {
+async function renderChartImageForPdf(section, width = 1200, height = 520) {
   if (!section || !window.Chart || !Array.isArray(section.series) || section.series.length === 0) {
     return null;
   }
@@ -640,22 +640,22 @@ async function renderChartImageForPdf(section, width = 1100, height = 420) {
   host.style.top = "0";
   host.style.width = `${width}px`;
   host.style.height = `${height}px`;
-  host.style.padding = "16px";
+  host.style.padding = "20px";
   host.style.background = "#ffffff";
   host.style.boxSizing = "border-box";
   host.style.zIndex = "-1";
 
   const canvas = document.createElement("canvas");
-  canvas.style.width = `${width - 32}px`;
-  canvas.style.height = `${height - 32}px`;
-  canvas.width = (width - 32) * 2;
-  canvas.height = (height - 32) * 2;
+  canvas.style.width = `${width - 40}px`;
+  canvas.style.height = `${height - 40}px`;
+  canvas.width = (width - 40) * 2;
+  canvas.height = (height - 40) * 2;
   host.appendChild(canvas);
   document.body.appendChild(host);
 
   let chart = null;
   try {
-    const config = buildChartJsConfig({
+    const config = buildChartJsConfigForPdf({
       options: section.options || {},
       series: section.series || [],
     });
@@ -670,7 +670,7 @@ async function renderChartImageForPdf(section, width = 1100, height = 420) {
 
     chart = new window.Chart(canvas, config);
     chart.update("none");
-    await new Promise((resolve) => window.setTimeout(resolve, 40));
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
     const imageDataUrl = canvas.toDataURL("image/png", 1);
     return {
       ...section,
@@ -772,7 +772,7 @@ function buildPdfMarkup(report, chartCards = []) {
         min-height: 1123px;
         background: #ffffff;
         box-sizing: border-box;
-        padding: 40px 36px 34px;
+        padding: 40px 36px 36px;
         position: relative;
         display: flex;
         flex-direction: column;
@@ -781,197 +781,201 @@ function buildPdfMarkup(report, chartCards = []) {
       .cover-panel {
         background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 54%, #0f766e 100%);
         border-radius: 16px;
-        padding: 22px;
+        padding: 26px;
         color: #ffffff;
       }
       .cover-title {
-        font-size: 28px;
+        font-size: 32px;
         font-weight: 800;
         line-height: 1.08;
-        margin-bottom: 8px;
+        margin-bottom: 10px;
       }
       .cover-subtitle {
-        font-size: 13px;
+        font-size: 15px;
         opacity: 0.9;
-        line-height: 1.5;
+        line-height: 1.6;
       }
       .meta-grid {
-        margin-top: 10px;
+        margin-top: 12px;
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 8px;
+        gap: 10px;
       }
       .meta-item {
         background: #f8fafc;
         border: 1px solid #dbe2ef;
         border-radius: 10px;
-        padding: 10px 12px;
+        padding: 12px 14px;
       }
       .meta-label {
-        font-size: 10px;
+        font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: #64748b;
         font-weight: 700;
       }
       .meta-value {
-        margin-top: 5px;
-        font-size: 12.5px;
+        margin-top: 6px;
+        font-size: 14px;
         font-weight: 700;
         color: #0f172a;
       }
       .section-title {
-        font-size: 12px;
+        font-size: 15px;
         text-transform: uppercase;
         letter-spacing: 0.08em;
         color: #475569;
         font-weight: 800;
-        margin-top: 2px;
+        margin-top: 4px;
       }
       .kpi-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
       }
       .kpi-card {
         border: 1px solid #dbe2ef;
         border-radius: 10px;
         background: #f8fafc;
-        padding: 10px 11px;
+        padding: 12px 13px;
       }
       .kpi-label {
-        font-size: 10px;
+        font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: #64748b;
         font-weight: 700;
       }
       .kpi-value {
-        margin-top: 4px;
-        font-size: 17px;
+        margin-top: 5px;
+        font-size: 20px;
         font-weight: 800;
         color: #0f172a;
         line-height: 1.15;
       }
       .kpi-note {
-        margin-top: 4px;
-        font-size: 11px;
+        margin-top: 5px;
+        font-size: 12.5px;
         color: #475569;
         line-height: 1.4;
       }
       .callout-list {
         display: grid;
-        gap: 7px;
+        gap: 9px;
       }
       .callout-item {
         border: 1px solid #dbe2ef;
         border-left: 4px solid #1d4ed8;
         border-radius: 8px;
         background: #ffffff;
-        padding: 8px 10px;
-        font-size: 11.5px;
-        line-height: 1.55;
+        padding: 10px 12px;
+        font-size: 13.5px;
+        line-height: 1.6;
         color: #1e293b;
       }
       .mini-grid {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
       }
       .mini-card {
         border: 1px solid #dbe2ef;
         border-radius: 10px;
-        padding: 10px;
+        padding: 12px;
         background: #ffffff;
       }
       .mini-label {
-        font-size: 9.8px;
+        font-size: 11px;
         color: #64748b;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         font-weight: 700;
       }
       .mini-value {
-        margin-top: 4px;
-        font-size: 16px;
+        margin-top: 5px;
+        font-size: 19px;
         font-weight: 800;
         color: #0f172a;
       }
       .chart-grid {
         display: grid;
         grid-template-columns: 1fr;
-        gap: 10px;
+        gap: 12px;
       }
       .chart-card {
         border: 1px solid #dbe2ef;
         border-radius: 12px;
         background: #ffffff;
-        padding: 10px 12px;
+        padding: 14px 16px;
       }
       .chart-card-title {
-        font-size: 13px;
+        font-size: 15.5px;
         color: #0f172a;
         font-weight: 800;
       }
       .chart-card-subtitle {
-        margin-top: 3px;
-        font-size: 10.8px;
+        margin-top: 4px;
+        font-size: 12.5px;
         color: #64748b;
       }
       .chart-image {
         width: 100%;
-        margin-top: 8px;
+        margin-top: 10px;
         border-radius: 8px;
         border: 1px solid #e2e8f0;
         background: #ffffff;
       }
       .chart-empty {
-        margin-top: 8px;
+        margin-top: 10px;
         border: 1px dashed #cbd5e1;
         border-radius: 8px;
         background: #f8fafc;
         color: #64748b;
-        font-size: 11px;
-        padding: 16px;
+        font-size: 12px;
+        padding: 18px;
         text-align: center;
       }
       .chart-note {
-        margin-top: 8px;
+        margin-top: 10px;
         border-top: 1px solid #e2e8f0;
-        padding-top: 7px;
-        font-size: 11.2px;
-        line-height: 1.5;
+        padding-top: 8px;
+        font-size: 13px;
+        line-height: 1.6;
         color: #334155;
       }
       .report-table {
         width: 100%;
         border-collapse: collapse;
-        font-size: 11px;
+        font-size: 13px;
       }
       .report-table th,
       .report-table td {
         border: 1px solid #dbe2ef;
-        padding: 6px 7px;
+        padding: 8px 9px;
         text-align: left;
       }
       .report-table th {
         background: #f1f5f9;
         color: #334155;
-        font-size: 10.5px;
+        font-size: 12px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
+        font-weight: 700;
+      }
+      .report-table td {
+        color: #0f172a;
       }
       .page-footer {
         position: absolute;
         left: 36px;
         right: 36px;
-        bottom: 18px;
+        bottom: 20px;
         border-top: 1px solid #dbe2ef;
-        padding-top: 6px;
+        padding-top: 8px;
         display: flex;
         justify-content: space-between;
         color: #64748b;
-        font-size: 9.8px;
+        font-size: 10.5px;
       }
     </style>
     <div class="analytics-export-root">
@@ -1148,14 +1152,14 @@ async function openAnalyticsPdf(data, reportContext = {}) {
     for (let index = 0; index < pages.length; index += 1) {
       const page = pages[index];
       const canvas = await html2canvas(page, {
-        scale: 2,
+        scale: 3,
         useCORS: true,
         backgroundColor: "#ffffff",
       });
-      const image = canvas.toDataURL("image/jpeg", 0.92);
+      const image = canvas.toDataURL("image/png");
 
       if (index > 0) pdf.addPage("a4", "portrait");
-      pdf.addImage(image, "JPEG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+      pdf.addImage(image, "PNG", 0, 0, pageWidth, pageHeight, undefined, "NONE");
       pdf.setFontSize(8.5);
       pdf.setTextColor(100, 116, 139);
       pdf.text(
@@ -4499,6 +4503,210 @@ function hexToRgba(hex, alpha) {
   }
 
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function buildChartJsConfigForPdf({ options, series }) {
+  const type = options?.chart?.type || "line";
+  const normalizedType = type === "area" ? "line" : type;
+  const colors = options?.colors?.length
+    ? options.colors
+    : [ANALYTICS_COLORS.primary, ANALYTICS_COLORS.secondary, ANALYTICS_COLORS.accent];
+  const labels = options?.labels || options?.xaxis?.categories || [];
+  const normalizedSeries = Array.isArray(series) ? series : [];
+  const isPieLike = normalizedType === "donut" || normalizedType === "pie";
+  const isRadar = normalizedType === "radar";
+  const isHorizontalBar =
+    normalizedType === "bar" && Boolean(options?.plotOptions?.bar?.horizontal);
+  const chartType = isPieLike ? "doughnut" : normalizedType;
+  const isLineLike = chartType === "line" || isRadar;
+  const tooltipYFormatter =
+    typeof options?.tooltip?.y?.formatter === "function"
+      ? options.tooltip.y.formatter
+      : null;
+
+  function getTooltipValue(ctx) {
+    if (isPieLike) return ctx?.parsed;
+    if (isRadar) return ctx?.parsed?.r;
+    if (isHorizontalBar) return ctx?.parsed?.x;
+    return ctx?.parsed?.y;
+  }
+
+  const datasets = isPieLike
+    ? [
+        {
+          label: "Values",
+          data: normalizedSeries.map((value) => Number(value) || 0),
+          backgroundColor: labels.map((_, index) => colors[index % colors.length]),
+          borderColor: "#ffffff",
+          borderWidth: 2.5,
+          hoverOffset: 8,
+        },
+      ]
+    : normalizedSeries.map((entry, index) => {
+        const color = colors[index % colors.length];
+        const rawData = Array.isArray(entry?.data) ? entry.data : [];
+        const pointRadius = typeof options?.markers?.size === "number" ? options.markers.size + 1 : 1;
+        const isFilled = type === "area" || Boolean(options?.fill) || isRadar;
+        const strokeWidth = typeof options?.stroke?.width === "number" ? options.stroke.width + 1 : 4;
+
+        return {
+          label: entry?.name || `Series ${index + 1}`,
+          data: rawData,
+          borderColor: color,
+          backgroundColor:
+            chartType === "bar"
+              ? rawData.map((_, itemIndex) => colors[itemIndex % colors.length] || color)
+              : hexToRgba(color, isRadar ? 0.24 : 0.18),
+          borderWidth: strokeWidth,
+          fill: chartType === "line" && isFilled,
+          tension: chartType === "line" ? 0.38 : 0,
+          pointRadius: isRadar ? Math.max(pointRadius, 7) : pointRadius,
+          pointHoverRadius: isRadar
+            ? Math.max(pointRadius + 6, 12)
+            : pointRadius > 0
+              ? pointRadius + 3
+              : 6,
+          pointHitRadius: isRadar ? 32 : isLineLike ? 20 : pointRadius + 6,
+          borderRadius: typeof options?.plotOptions?.bar?.borderRadius === "number"
+            ? options.plotOptions.bar.borderRadius
+            : undefined,
+        };
+      });
+
+  const config = {
+    type: chartType,
+    data: {
+      labels,
+      datasets,
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: isHorizontalBar ? "y" : "x",
+      interaction: isRadar
+        ? {
+            mode: "nearest",
+            intersect: false,
+          }
+        : isLineLike
+          ? {
+              mode: "index",
+              intersect: false,
+            }
+          : undefined,
+      plugins: {
+        legend: {
+          display: options?.legend?.show !== false,
+          position: options?.legend?.position || "top",
+          labels: {
+            color: ANALYTICS_COLORS.muted,
+            font: { size: 16, weight: "600" },
+            padding: 18,
+            boxWidth: 16,
+            usePointStyle: true,
+            pointStyle: "circle",
+          },
+        },
+        tooltip: {
+          backgroundColor: "rgba(15, 23, 42, 0.94)",
+          titleColor: "#f8fafc",
+          bodyColor: "#e2e8f0",
+          borderColor: "rgba(148, 163, 184, 0.18)",
+          borderWidth: 1,
+          titleFont: { size: 14, weight: "600" },
+          bodyFont: { size: 13 },
+          padding: 12,
+          displayColors: true,
+          callbacks: isPieLike
+            ? {
+                label: (ctx) => {
+                  const value = ctx?.parsed ?? 0;
+                  return ` ${value} visits`;
+                },
+              }
+            : {
+                title: (items) => {
+                  const item = items?.[0];
+                  return item?.label || "";
+                },
+                label: (ctx) => {
+                  if (tooltipYFormatter) {
+                    return ` ${tooltipYFormatter(getTooltipValue(ctx) ?? 0, {
+                      dataPointIndex: ctx.dataIndex,
+                      seriesIndex: ctx.datasetIndex,
+                    })}`;
+                  }
+                  return ` ${getTooltipValue(ctx) ?? 0} visits`;
+                },
+              },
+        },
+      },
+    },
+  };
+
+  if (isPieLike) {
+    config.options.cutout = options?.plotOptions?.pie?.donut?.size || "68%";
+  } else if (isRadar) {
+    config.options.layout = {
+      padding: {
+        top: 18,
+        right: 22,
+        bottom: 18,
+        left: 22,
+      },
+    };
+    config.options.scales = {
+      r: {
+        angleLines: { color: ANALYTICS_COLORS.grid, lineWidth: 1.5 },
+        grid: { color: ANALYTICS_COLORS.grid, lineWidth: 1.5 },
+        pointLabels: {
+          color: ANALYTICS_COLORS.muted,
+          font: { size: 14, weight: "600" },
+          padding: 8,
+        },
+        ticks: {
+          display: true,
+          color: ANALYTICS_COLORS.muted,
+          font: { size: 12, weight: "500" },
+          backdropColor: "transparent",
+          padding: 8,
+        },
+      },
+    };
+  } else {
+    config.options.scales = {
+      x: {
+        grid: { display: false },
+        ticks: {
+          color: ANALYTICS_COLORS.muted,
+          font: { size: 14, weight: "500" },
+          maxRotation: isHorizontalBar ? 0 : 45,
+          autoSkip: true,
+          maxTicksLimit: 12,
+        },
+      },
+      y: {
+        beginAtZero: true,
+        grid: { color: ANALYTICS_COLORS.grid, lineWidth: 1 },
+        ticks: {
+          color: ANALYTICS_COLORS.muted,
+          font: { size: 14, weight: "500" },
+          padding: 10,
+        },
+        title: options?.yaxis?.title?.text
+          ? {
+              display: true,
+              text: options.yaxis.title.text,
+              color: ANALYTICS_COLORS.muted,
+              font: { size: 14, weight: "600" },
+              padding: 12,
+            }
+          : undefined,
+      },
+    };
+  }
+
+  return config;
 }
 
 function buildChartJsConfig({ options, series }) {

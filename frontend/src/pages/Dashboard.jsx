@@ -2219,7 +2219,7 @@ export default function Dashboard() {
               onClick={handleExportClick}
               disabled={!data || exporting}
             >
-              <i className="bi bi-download me-1"></i>
+              <i className="bi bi-upload me-1"></i>
               {exporting ? "Exporting..." : "Export"}
             </button>
           </div>
