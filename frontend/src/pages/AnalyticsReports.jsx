@@ -47,7 +47,7 @@ function fmt(n) {
 }
 
 const APP_HEADER_HEIGHT = 56;
-const ANALYTICS_CACHE_KEY = "analytics-basic-cache-v1";
+const ANALYTICS_CACHE_KEY = "analytics-executive-cache-v2";
 const ANALYTICS_CACHE_TTL_MS = 30 * 1000;
 const ANALYTICS_FALLBACK_POLL_MS = 30 * 1000;
 const ANALYTICS_CONNECTED_POLL_MS = 30 * 1000;
@@ -3085,12 +3085,29 @@ function getPeakDow(dowLabels = [], dowAverages = []) {
 }
 
 function getPeakHour(peakHours = []) {
-  if (!peakHours.length) return { label: "—", value: 0 };
-  const peak = [...peakHours].sort((a, b) => (b.count || 0) - (a.count || 0))[0];
+  const normalized = normalizePeakHours(peakHours);
+  if (!normalized.length) return { label: "—", value: 0 };
+  const peak = [...normalized].sort((a, b) => (b.count || 0) - (a.count || 0))[0];
   return {
     label: formatHourLabel(peak?.hour),
     value: peak?.count || 0,
   };
+}
+
+function normalizePeakHours(peakHours = []) {
+  if (!Array.isArray(peakHours) || peakHours.length === 0) return [];
+  if (typeof peakHours[0] === "number") {
+    return peakHours.map((count, hour) => ({
+      hour: Number(hour) || 0,
+      count: Number(count) || 0,
+    }));
+  }
+  return peakHours
+    .map((item) => ({
+      hour: Number(item?.hour) || 0,
+      count: Number(item?.count) || 0,
+    }))
+    .sort((a, b) => a.hour - b.hour);
 }
 
 function getTopProgram(programDistribution = []) {
@@ -3604,6 +3621,7 @@ function AnalyticsReportsInner() {
   if (initialCacheRef.current === undefined) {
     initialCacheRef.current = readAnalyticsCache();
   }
+
   const initialCache = initialCacheRef.current;
   const [basicData, setBasicData] = React.useState(initialCache?.data ?? null);
   const [error, setError] = React.useState(false);
@@ -3614,6 +3632,7 @@ function AnalyticsReportsInner() {
   const [lastUpdatedAt, setLastUpdatedAt] = React.useState(
     initialCache?.timestamp ? new Date(initialCache.timestamp) : null,
   );
+
   const headerRef = React.useRef(null);
   const refreshInFlightRef = React.useRef(false);
   const hasLoadedDataRef = React.useRef(false);
@@ -3639,20 +3658,42 @@ function AnalyticsReportsInner() {
     } else if (!silent) {
       setRefreshing(true);
     }
+
     setError(false);
     setErrorMessage("");
 
     try {
-      const basic = await fetchJson("/api/analytics-basic");
+      const [analyticsResult, realtimeResult] = await Promise.allSettled([
+        fetchJson("/api/analytics-reports"),
+        fetchJson("/api/dashboard?filter=today"),
+      ]);
+
+      let analyticsPayload;
+      let analyticsMode = "full";
+
+      if (analyticsResult.status === "fulfilled") {
+        analyticsPayload = analyticsResult.value;
+      } else {
+        analyticsMode = "basic";
+        analyticsPayload = await fetchJson("/api/analytics-basic");
+      }
+
+      const mergedPayload = {
+        ...(analyticsPayload || {}),
+        analytics_mode: analyticsMode,
+        realtime_status:
+          realtimeResult.status === "fulfilled" ? realtimeResult.value : null,
+      };
+
       const refreshedAt = Date.now();
-      const serialized = JSON.stringify(basic);
+      const serialized = JSON.stringify(mergedPayload);
 
       if (serialized !== lastPayloadRef.current) {
         lastPayloadRef.current = serialized;
-        setBasicData(basic);
+        setBasicData(mergedPayload);
       }
 
-      writeAnalyticsCache(basic, refreshedAt);
+      writeAnalyticsCache(mergedPayload, refreshedAt);
       setLastUpdatedAt(new Date(refreshedAt));
       setLoading(false);
     } catch (err) {
@@ -3660,8 +3701,8 @@ function AnalyticsReportsInner() {
       setErrorMessage(
         getErrorMessage(
           err,
-          "Failed to load analytics data. Check the analytics API or try syncing again."
-        )
+          "Failed to load analytics data. Check the analytics API or try syncing again.",
+        ),
       );
       if (!hasLoadedDataRef.current) {
         setError(true);
@@ -3681,13 +3722,11 @@ function AnalyticsReportsInner() {
       });
     }
 
-    // Handle tab visibility changes for real-time updates
-    const handleVisibilityChange = () => {
+    function handleVisibilityChange() {
       if (!document.hidden) {
-        // Tab became visible again - refresh silently (no spinner)
         runAnalyticsPipeline({ silent: true });
       }
-    };
+    }
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
@@ -3697,12 +3736,11 @@ function AnalyticsReportsInner() {
   }, []);
 
   React.useEffect(() => {
-
     const intervalMs = socketConnected
       ? ANALYTICS_CONNECTED_POLL_MS
       : ANALYTICS_FALLBACK_POLL_MS;
-    const timer = window.setInterval(() => {
 
+    const timer = window.setInterval(() => {
       runAnalyticsPipeline({ silent: true });
     }, intervalMs);
 
@@ -3728,6 +3766,7 @@ function AnalyticsReportsInner() {
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("analytics_updated", handleAnalyticsUpdated);
+
     return () => {
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
@@ -3739,38 +3778,43 @@ function AnalyticsReportsInner() {
   React.useEffect(() => {
     const el = headerRef.current;
     if (!el) return;
+
     const obs = new IntersectionObserver(
-      ([e]) => el.classList.toggle("shadow-sm", !e.isIntersecting),
+      ([entry]) => el.classList.toggle("shadow-sm", !entry.isIntersecting),
       { threshold: 1 },
     );
+
     const sentinel = document.createElement("div");
     el.parentNode.insertBefore(sentinel, el);
     obs.observe(sentinel);
-    return () => obs.disconnect();
+
+    return () => {
+      obs.disconnect();
+    };
   }, []);
 
   const currentData = basicData;
   const dq = currentData?.data_quality;
+  const stats = currentData?.descriptive_stats;
+  const dowLabels = currentData?.dow_labels || [];
+  const dowAverages = currentData?.dow_averages || [];
+  const last30Labels = currentData?.last_30_labels || [];
+  const last30Counts = currentData?.last_30_counts || [];
+
   const totalRemoved =
     typeof dq?.total_removed === "number"
       ? dq.total_removed
-      : (
-          Number(dq?.removed_low_conf || 0)
+      : Number(dq?.removed_low_conf || 0)
           + Number(dq?.removed_outside_hrs || 0)
-          + Number(dq?.removed_duplicates || 0)
-        );
-  const stats = currentData?.descriptive_stats;
-  const dowLabels = currentData?.dow_labels;
-  const dowAverages = currentData?.dow_averages;
-  const last30Labels = currentData?.last_30_labels;
-  const last30Counts = currentData?.last_30_counts;
-  // Check if API returned an error response (has message but no data_quality)
+          + Number(dq?.removed_duplicates || 0);
+
   const noAnalyticsData = Boolean(currentData?.message && !currentData?.data_quality);
   const initialLoadFailed = !loading && !basicData && error;
-  // hasRenderableData means we have valid analytics data (not just error object)
   const hasRenderableData = Boolean(currentData?.data_quality);
+
   const canManageImports =
     session?.role === "super_admin" || session?.role === "library_admin";
+
   const lastUpdatedLabel = lastUpdatedAt
     ? lastUpdatedAt.toLocaleTimeString([], {
         hour: "numeric",
@@ -3778,200 +3822,318 @@ function AnalyticsReportsInner() {
         second: "2-digit",
       })
     : "Waiting for first sync";
-  const peakHours = currentData?.peak_hours || [];
+
+  const peakHours = normalizePeakHours(currentData?.peak_hours || []);
   const programDistribution = currentData?.program_distribution || [];
-  const genderData = currentData?.gender_data || [];
+
+  const genderData = (currentData?.gender_data || [])
+    .map((item) => ({
+      gender: item?.gender || item?.label || "Unknown",
+      count: Number(item?.count || 0),
+    }))
+    .filter((item) => item.count > 0);
+
   const yearLevelData = normalizeYearLevelData(currentData?.year_level_data || []);
   const trendDirection = getTrendDirection(last30Counts);
   const peakDow = getPeakDow(dowLabels, dowAverages);
   const peakHour = getPeakHour(peakHours);
   const topProgram = getTopProgram(programDistribution);
-  const insightCards = buildInsightCards(currentData);
-  const last30Total = (last30Counts || []).reduce((sum, value) => sum + value, 0);
+  const insightCards = buildInsightCards({
+    ...currentData,
+    peak_hours: peakHours,
+    gender_data: genderData,
+    year_level_data: yearLevelData,
+  });
+
+  const last30Total = (last30Counts || []).reduce((sum, value) => sum + Number(value || 0), 0);
   const weekdayAverage =
-    dowAverages?.length
-      ? (dowAverages.reduce((sum, value) => sum + value, 0) / dowAverages.length).toFixed(1)
+    dowAverages.length > 0
+      ? (dowAverages.reduce((sum, value) => sum + Number(value || 0), 0) / dowAverages.length).toFixed(1)
       : "0.0";
 
-  if (hasRenderableData && !noAnalyticsData) {
-    const heroGradient =
-      trendDirection === "upward"
-        ? "linear-gradient(135deg, #0f172a 0%, #1d4ed8 45%, #0f766e 100%)"
-        : trendDirection === "downward"
-          ? "linear-gradient(135deg, #0f172a 0%, #7c2d12 45%, #be123c 100%)"
-          : "linear-gradient(135deg, #0f172a 0%, #1e293b 45%, #2563eb 100%)";
+  const realtime = currentData?.realtime_status || null;
+  const currentOccupancy = Number(realtime?.current_occupancy || 0);
+  const maxOccupancy = Number(realtime?.max_occupancy || 0);
+  const occupancyRatio = maxOccupancy > 0 ? currentOccupancy / maxOccupancy : 0;
+  const occupancyPct = Math.max(0, Math.min(100, Math.round(occupancyRatio * 100)));
+  const occupancyStatus =
+    realtime?.occupancy_status
+      || (occupancyRatio >= 0.9
+        ? "Approaching capacity"
+        : occupancyRatio >= 0.7
+          ? "Moderately busy"
+          : "Available");
 
-    const visitsTrendSeries = [
-      {
-        name: "Daily visits",
-        data: last30Counts || [],
-      },
-    ];
+  const entriesToday = Number(realtime?.total_entries ?? realtime?.today_logs ?? 0);
+  const exitsToday = Number(realtime?.total_exits || 0);
+  const avgConfidencePct = Number(realtime?.avg_confidence || 0);
 
-    const visitsTrendOptions = {
-      chart: { type: "area" },
-      colors: [ANALYTICS_COLORS.primary],
-      fill: {
-        type: "gradient",
-        gradient: {
-          shadeIntensity: 1,
-          opacityFrom: 0.36,
-          opacityTo: 0.04,
-          stops: [0, 95, 100],
-        },
-      },
-      markers: { size: 0 },
-      xaxis: {
-        categories: last30Labels || [],
-      },
-      yaxis: {
-        title: { text: "Visits" },
-      },
-    };
+  const recognitionPassRate = dq?.total_live
+    ? Math.max(
+        0,
+        Math.min(
+          100,
+          ((Number(dq?.total_live || 0) - Number(dq?.removed_low_conf || 0))
+            / Math.max(Number(dq?.total_live || 0), 1))
+          * 100,
+        ),
+      )
+    : avgConfidencePct;
 
-    const dowSeries = [
-      {
-        name: "Average visits",
-        data: dowAverages || [],
-      },
-    ];
+  const reliabilityScore = Number(dq?.quality_score || 0);
 
-    const dowOptions = {
-      chart: { type: "bar" },
-      colors: [ANALYTICS_COLORS.secondary],
-      plotOptions: {
-        bar: {
-          borderRadius: 10,
-          columnWidth: "52%",
-        },
-      },
-      xaxis: {
-        categories: dowLabels || [],
-      },
-      yaxis: {
-        title: { text: "Average" },
-      },
-    };
+  const forecast = currentData?.forecast || {};
+  const allForecasts = currentData?.all_forecasts || [];
+  const forecastComparison = currentData?.forecast_comparison || [];
+  const bestForecastModel = currentData?.best_forecast_model || "";
+  const forecastComparisonInterpretation = currentData?.forecast_comparison_interpretation || "";
 
-    const peakHourSeries = [
-      {
-        name: "Visits",
-        data: peakHours.map((item) => item.count || 0),
-      },
-    ];
+  const regression = currentData?.regression || {};
+  const regressionInterpretation = currentData?.regression_interpretation || "";
+  const clustering = currentData?.clustering || {};
+  const clusteringInterpretation = currentData?.clustering_interpretation || "";
+  const chiSquare = currentData?.chi_square || {};
+  const chiSquareInterpretation = currentData?.chi_square_interpretation || "";
+  const correlation = currentData?.correlation || {};
+  const correlationInterpretation = currentData?.correlation_interpretation || "";
+  const anova = currentData?.anova || {};
+  const anovaInterpretation = currentData?.anova_interpretation || "";
+  const segmentation = currentData?.segmentation || null;
+  const anomalies = currentData?.anomalies || [];
 
-    const peakHourOptions = {
-      chart: { type: "line" },
-      colors: [ANALYTICS_COLORS.accent],
-      fill: {
-        type: "gradient",
-        gradient: {
-          shadeIntensity: 1,
-          opacityFrom: 0.26,
-          opacityTo: 0.03,
-          stops: [0, 100],
-        },
-      },
-      markers: {
-        size: 4,
-        strokeWidth: 0,
-        hover: { sizeOffset: 2 },
-      },
-      xaxis: {
-        categories: peakHours.map((item) => formatHourLabel(item.hour)),
-        tickAmount: Math.min(peakHours.length, 8),
-      },
-      yaxis: {
-        title: { text: "Visits" },
-      },
-    };
+  const forecastValues = forecast?.values || [];
+  const forecastLabels = forecast?.labels || [];
+  const forecastTotalWeek = forecastValues.reduce((sum, value) => sum + Number(value || 0), 0);
+  const forecastPeakIndex = forecastValues.length
+    ? forecastValues.indexOf(Math.max(...forecastValues))
+    : -1;
+  const forecastPeakDay = forecastPeakIndex >= 0
+    ? forecastLabels[forecastPeakIndex]
+    : "No projection yet";
 
-    const programSeries = [
-      {
-        name: "Visits",
-        data: programDistribution.slice(0, 6).map((item) => item.count || 0),
-      },
-    ];
+  const forecastSeries = forecastValues.length
+    ? [{ name: "Predicted visits", data: forecastValues }]
+    : [];
 
-    const programOptions = {
-      chart: { type: "bar" },
-      colors: [ANALYTICS_COLORS.rose],
-      plotOptions: {
-        bar: {
-          horizontal: true,
-          borderRadius: 8,
-          barHeight: "60%",
-        },
+  const forecastOptions = {
+    chart: { type: "bar" },
+    colors: [ANALYTICS_COLORS.primary],
+    plotOptions: {
+      bar: {
+        borderRadius: 8,
+        columnWidth: "58%",
       },
-      xaxis: {
-        categories: programDistribution.slice(0, 6).map((item) => normalizeProgramLabel(item.program)),
-      },
-      legend: { show: false },
-    };
+    },
+    xaxis: {
+      categories: forecastLabels,
+    },
+    yaxis: {
+      title: { text: "Visits" },
+    },
+    legend: { show: false },
+  };
 
-    const genderSeries = genderData.filter((item) => item.count > 0).map((item) => item.count || 0);
-    const genderOptions = {
-      chart: { type: "donut" },
-      colors: ["#2563eb", "#0f766e", "#f97316", "#a855f7", "#e11d48"],
-      labels: genderData.filter((item) => item.count > 0).map((item) => item.gender || "Unknown"),
-      legend: { position: "bottom" },
-      plotOptions: {
-        pie: {
-          donut: {
-            size: "68%",
-            labels: {
+  const visitsTrendSeries = [{ name: "Daily visits", data: last30Counts || [] }];
+  const visitsTrendOptions = {
+    chart: { type: "area" },
+    colors: [ANALYTICS_COLORS.primary],
+    fill: {
+      type: "gradient",
+      gradient: {
+        shadeIntensity: 1,
+        opacityFrom: 0.36,
+        opacityTo: 0.04,
+        stops: [0, 95, 100],
+      },
+    },
+    markers: { size: 0 },
+    xaxis: {
+      categories: last30Labels || [],
+    },
+    yaxis: {
+      title: { text: "Visits" },
+    },
+  };
+
+  const dowSeries = [{ name: "Average visits", data: dowAverages || [] }];
+  const dowOptions = {
+    chart: { type: "bar" },
+    colors: [ANALYTICS_COLORS.secondary],
+    plotOptions: {
+      bar: {
+        borderRadius: 10,
+        columnWidth: "52%",
+      },
+    },
+    xaxis: {
+      categories: dowLabels || [],
+    },
+    yaxis: {
+      title: { text: "Average" },
+    },
+  };
+
+  const peakHourSeries = [{
+    name: "Visits",
+    data: peakHours.map((item) => Number(item?.count || 0)),
+  }];
+  const peakHourOptions = {
+    chart: { type: "line" },
+    colors: [ANALYTICS_COLORS.accent],
+    fill: {
+      type: "gradient",
+      gradient: {
+        shadeIntensity: 1,
+        opacityFrom: 0.26,
+        opacityTo: 0.03,
+        stops: [0, 100],
+      },
+    },
+    markers: {
+      size: 4,
+      strokeWidth: 0,
+      hover: { sizeOffset: 2 },
+    },
+    xaxis: {
+      categories: peakHours.map((item) => formatHourLabel(item.hour)),
+      tickAmount: Math.min(peakHours.length, 8),
+    },
+    yaxis: {
+      title: { text: "Visits" },
+    },
+  };
+
+  const programSeries = [{
+    name: "Visits",
+    data: programDistribution.slice(0, 6).map((item) => Number(item?.count || 0)),
+  }];
+  const programOptions = {
+    chart: { type: "bar" },
+    colors: [ANALYTICS_COLORS.rose],
+    plotOptions: {
+      bar: {
+        horizontal: true,
+        borderRadius: 8,
+        barHeight: "60%",
+      },
+    },
+    xaxis: {
+      categories: programDistribution.slice(0, 6).map((item) => normalizeProgramLabel(item?.program)),
+    },
+    legend: { show: false },
+  };
+
+  const genderSeries = genderData.map((item) => Number(item?.count || 0));
+  const genderOptions = {
+    chart: { type: "donut" },
+    colors: ["#1d4ed8", "#0f766e", "#f59e0b", "#be123c", "#6d28d9"],
+    labels: genderData.map((item) => item?.gender || "Unknown"),
+    legend: { position: "bottom" },
+    plotOptions: {
+      pie: {
+        donut: {
+          size: "68%",
+          labels: {
+            show: true,
+            total: {
               show: true,
-              total: {
-                show: true,
-                label: "Profiles",
-                formatter: () => `${genderSeries.reduce((sum, value) => sum + value, 0)}`,
-              },
+              label: "Profiles",
+              formatter: () => `${genderSeries.reduce((sum, value) => sum + Number(value || 0), 0)}`,
             },
           },
         },
       },
-    };
+    },
+  };
 
-    const yearSeries = [
-      {
-        name: "Students",
-        data: yearLevelData.slice(0, 6).map((item) => item.count || 0),
-      },
-    ];
-
-    const yearOptions = {
-      chart: { type: "radar" },
-      colors: [ANALYTICS_COLORS.gold],
-      xaxis: {
-        categories: yearLevelData.slice(0, 6).map((item) => getYearLevelLabel(item)),
-      },
-      markers: { size: 4 },
-      fill: {
-        type: "solid",
-        opacity: 0.24,
-      },
-      tooltip: {
-        y: {
-          formatter: (value, { dataPointIndex }) => {
-            const yearData = yearLevelData.slice(0, 6);
-            const item = yearData[dataPointIndex];
-            const label = item?.year_level || "Unknown";
-            return `${label}: ${value} students`;
-          },
+  const yearSeries = [{
+    name: "Students",
+    data: yearLevelData.slice(0, 6).map((item) => Number(item?.count || 0)),
+  }];
+  const yearOptions = {
+    chart: { type: "radar" },
+    colors: [ANALYTICS_COLORS.gold],
+    xaxis: {
+      categories: yearLevelData.slice(0, 6).map((item) => getYearLevelLabel(item)),
+    },
+    markers: { size: 4 },
+    fill: {
+      type: "solid",
+      opacity: 0.24,
+    },
+    tooltip: {
+      y: {
+        formatter: (value, { dataPointIndex }) => {
+          const subset = yearLevelData.slice(0, 6);
+          const item = subset[dataPointIndex];
+          const label = item?.year_level || "Unknown";
+          return `${label}: ${value} students`;
         },
       },
-    };
+    },
+  };
 
+  const trendLabel =
+    trendDirection === "upward"
+      ? "Increasing"
+      : trendDirection === "downward"
+        ? "Declining"
+        : "Stable";
+
+  const heroGradient =
+    trendDirection === "upward"
+      ? "linear-gradient(135deg, #0f172a 0%, #1e3a8a 46%, #0f766e 100%)"
+      : trendDirection === "downward"
+        ? "linear-gradient(135deg, #0f172a 0%, #7f1d1d 46%, #9f1239 100%)"
+        : "linear-gradient(135deg, #0f172a 0%, #1f2937 46%, #1d4ed8 100%)";
+
+  const keyInsights = [
+    `Attendance is currently ${trendLabel.toLowerCase()} over the most recent 30-day window.`,
+    `${peakDow.label} is the busiest day, and ${peakHour.label} is the main arrival period.`,
+    `${topProgram.label} has the strongest representation in library activity records.`,
+  ];
+
+  if (maxOccupancy > 0) {
+    keyInsights.push(
+      `Real-time occupancy is ${currentOccupancy} of ${maxOccupancy} (${occupancyPct}%), currently marked as ${occupancyStatus.toLowerCase()}.`,
+    );
+  }
+
+  const recommendations = [
+    `Align staffing and circulation support close to ${peakHour.label} on ${peakDow.label}.`,
+    `Prepare service capacity for a projected ${fmt(forecastTotalWeek)} visits in the next 7 days.`,
+    reliabilityScore < 88
+      ? "Prioritize camera positioning and capture-quality checks to raise reporting reliability."
+      : "Maintain current data collection and cleaning controls to preserve high reporting reliability.",
+  ];
+
+  if (segmentation?.rare_count >= segmentation?.regular_count) {
+    recommendations.push(
+      "Target low-frequency users with program-level outreach and faculty coordination to improve engagement.",
+    );
+  }
+
+  const hasAdvancedAnalytics = Boolean(
+    forecastValues.length
+      || regression?.r2 != null
+      || clustering?.cluster_summary?.length
+      || segmentation?.segment_counts?.length
+      || anomalies.length
+      || chiSquare?.chi2 != null
+      || anova?.f_stat != null,
+  );
+
+  if (hasRenderableData && !noAnalyticsData) {
     return (
       <section className="section">
         <div className="pagetitle">
-          <h1>Live Analytics</h1>
+          <h1>Library Analytics & Reports</h1>
           <nav>
             <ol className="breadcrumb mb-0">
               <li className="breadcrumb-item">
                 <a href="/dashboard">Home</a>
               </li>
-              <li className="breadcrumb-item active">Live Analytics</li>
+              <li className="breadcrumb-item active">Analytics Reports</li>
             </ol>
           </nav>
         </div>
@@ -3982,7 +4144,7 @@ function AnalyticsReportsInner() {
             position: "sticky",
             top: APP_HEADER_HEIGHT,
             zIndex: 100,
-            background: "#f6f7fb",
+            background: "#f3f6fb",
             padding: "12px 0 14px",
             transition: "box-shadow 0.2s",
             marginBottom: 18,
@@ -3990,12 +4152,12 @@ function AnalyticsReportsInner() {
         >
           <div
             style={{
-              background: "rgba(255,255,255,0.82)",
-              borderRadius: 22,
-              padding: "16px 20px",
+              background: "rgba(255,255,255,0.92)",
+              borderRadius: 20,
+              padding: "14px 18px",
               border: `1px solid ${ANALYTICS_COLORS.border}`,
-              boxShadow: "0 14px 35px rgba(15, 23, 42, 0.08)",
-              backdropFilter: "blur(12px)",
+              boxShadow: "0 10px 28px rgba(15, 23, 42, 0.08)",
+              backdropFilter: "blur(8px)",
             }}
           >
             <div
@@ -4013,20 +4175,20 @@ function AnalyticsReportsInner() {
                     style={{
                       width: 34,
                       height: 34,
-                      borderRadius: 12,
-                      background: "linear-gradient(135deg, rgba(37,99,235,0.16), rgba(15,118,110,0.16))",
+                      borderRadius: 11,
+                      background: "linear-gradient(135deg, rgba(29,78,216,0.16), rgba(15,118,110,0.16))",
                       color: ANALYTICS_COLORS.primary,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      fontSize: 16,
+                      fontSize: 15,
                     }}
                   >
-                    <i className="bi bi-bar-chart-line"></i>
+                    <i className="bi bi-building"></i>
                   </div>
                   <div>
                     <h5 className="card-title" style={{ padding: 0, margin: 0, color: ANALYTICS_COLORS.ink }}>
-                      Live Analytics Studio
+                      Executive Library Intelligence Dashboard
                     </h5>
                   </div>
                 </div>
@@ -4064,9 +4226,10 @@ function AnalyticsReportsInner() {
                     {socketConnected ? "Live connection active" : "Fallback polling mode"}
                   </span>
                   <span>Last sync: {lastUpdatedLabel}</span>
-                  <span>Descriptive analytics with interpretation-first visuals</span>
+                  <span>{currentData?.analytics_mode === "full" ? "Advanced analytics enabled" : "Basic analytics mode"}</span>
                 </div>
               </div>
+
               <div className="d-flex align-items-center gap-2 flex-wrap">
                 <button
                   className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
@@ -4091,26 +4254,26 @@ function AnalyticsReportsInner() {
         {error ? (
           <div className="alert alert-danger">
             <i className="bi bi-exclamation-triangle me-2"></i>
-            Failed to refresh analytics. Showing the latest available descriptive data.
+            {errorMessage || "Failed to refresh analytics. Showing the latest available data."}
           </div>
         ) : null}
 
         <div
           style={{
             background: heroGradient,
-            borderRadius: 30,
-            padding: "26px 24px",
-            boxShadow: "0 30px 70px rgba(15, 23, 42, 0.18)",
+            borderRadius: 28,
+            padding: "24px 22px",
+            boxShadow: "0 24px 56px rgba(15, 23, 42, 0.2)",
             overflow: "hidden",
             position: "relative",
-            marginBottom: 20,
+            marginBottom: 18,
           }}
         >
           <div
             style={{
               display: "flex",
               justifyContent: "space-between",
-              gap: 18,
+              gap: 16,
               flexWrap: "wrap",
               position: "relative",
               zIndex: 2,
@@ -4120,38 +4283,36 @@ function AnalyticsReportsInner() {
               <div
                 style={{
                   fontSize: 12,
-                  letterSpacing: "0.12em",
+                  letterSpacing: "0.11em",
                   textTransform: "uppercase",
                   color: "rgba(255,255,255,0.72)",
                   fontWeight: 700,
                   marginBottom: 10,
                 }}
               >
-                Descriptive intelligence
+                1. Executive Summary
               </div>
               <div
                 style={{
                   color: "#fff",
-                  fontSize: 34,
+                  fontSize: 33,
                   fontWeight: 900,
-                  lineHeight: 1.04,
-                  maxWidth: 540,
-                }}
-              >
-                Read visitor behavior at a glance with richer visuals and direct interpretation.
-              </div>
-              <div
-                style={{
-                  color: "rgba(255,255,255,0.8)",
-                  marginTop: 14,
-                  lineHeight: 1.7,
-                  fontSize: 14,
+                  lineHeight: 1.06,
                   maxWidth: 560,
                 }}
               >
-                This view is focused on descriptive analytics only: observed usage patterns,
-                attendance rhythm, visitor composition, and plain-language findings from live and
-                imported library records.
+                Institutional analytics focused on usage, engagement, and operational decisions.
+              </div>
+              <div
+                style={{
+                  color: "rgba(255,255,255,0.82)",
+                  marginTop: 12,
+                  lineHeight: 1.68,
+                  fontSize: 13.5,
+                  maxWidth: 580,
+                }}
+              >
+                This report combines live recognition events and historical records into a presentation-ready view for library administration, academic leadership, and stakeholder meetings.
               </div>
             </div>
 
@@ -4159,41 +4320,42 @@ function AnalyticsReportsInner() {
               style={{
                 flex: "1 1 340px",
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-                gap: 14,
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: 12,
                 alignSelf: "stretch",
               }}
             >
               <SummaryStat
-                label="Clean Visits"
+                label="Total Student Visits"
                 value={fmt(currentData?.total_cleaned_logs || 0)}
                 tone={ANALYTICS_COLORS.primary}
-                icon="bi bi-activity"
-                helper="Unique daily visits retained after cleaning"
+                icon="bi bi-people"
+                helper="Unique cleaned daily visit records"
               />
               <SummaryStat
-                label="Visit Mean"
-                value={fmt(stats?.mean_daily_visits || 0)}
+                label="Peak Usage"
+                value={`${peakDow.label}`}
                 tone={ANALYTICS_COLORS.secondary}
-                icon="bi bi-graph-up"
-                helper="Average visits per recorded day"
+                icon="bi bi-clock"
+                helper={`${peakHour.label} arrival peak`}
               />
               <SummaryStat
-                label="Peak Weekday"
-                value={peakDow.label}
+                label="Trend Direction"
+                value={trendLabel}
                 tone={ANALYTICS_COLORS.accent}
-                icon="bi bi-calendar2-week"
-                helper={`${peakDow.value} average visits`}
+                icon="bi bi-graph-up"
+                helper={`30-day observed pattern`}
               />
               <SummaryStat
-                label="Quality Score"
-                value={`${dq?.quality_score || 0}%`}
+                label="Reliability Score"
+                value={`${reliabilityScore}%`}
                 tone={ANALYTICS_COLORS.rose}
                 icon="bi bi-shield-check"
-                helper={`${fmt(totalRemoved)} records removed`}
+                helper={`${fmt(totalRemoved)} records filtered`}
               />
             </div>
           </div>
+
           <div
             style={{
               position: "absolute",
@@ -4207,76 +4369,283 @@ function AnalyticsReportsInner() {
 
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
-            gap: 14,
-            marginBottom: 20,
-          }}
-        >
-          {insightCards.map((item) => (
-            <InsightChip key={item.title} {...item} />
-          ))}
-        </div>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(0, 1.8fr) minmax(300px, 1fr)",
-            gap: 18,
+            background: "#fff",
+            borderRadius: 22,
+            border: `1px solid ${ANALYTICS_COLORS.border}`,
+            padding: 20,
+            boxShadow: "0 14px 36px rgba(15, 23, 42, 0.08)",
             marginBottom: 18,
           }}
         >
+          <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink }}>
+            Library Performance Overview
+          </div>
+          <div
+            style={{
+              marginTop: 6,
+              color: ANALYTICS_COLORS.muted,
+              fontSize: 12.5,
+              lineHeight: 1.6,
+            }}
+          >
+            High-level institutional performance indicators for planning, resource allocation, and service improvements.
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+              gap: 14,
+              marginTop: 14,
+            }}
+          >
+            <div
+              style={{
+                background: "#f8fafc",
+                borderRadius: 16,
+                border: `1px solid ${ANALYTICS_COLORS.border}`,
+                padding: 14,
+              }}
+            >
+              <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em", color: ANALYTICS_COLORS.muted, fontWeight: 700 }}>
+                Key Insights
+              </div>
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                {keyInsights.map((line, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: "9px 10px",
+                      background: "#fff",
+                      borderRadius: 10,
+                      border: `1px solid ${ANALYTICS_COLORS.border}`,
+                      color: ANALYTICS_COLORS.ink,
+                      fontSize: 12.8,
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    <i className="bi bi-lightbulb me-2" style={{ color: ANALYTICS_COLORS.primary }}></i>
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div
+              style={{
+                background: "#f8fafc",
+                borderRadius: 16,
+                border: `1px solid ${ANALYTICS_COLORS.border}`,
+                padding: 14,
+              }}
+            >
+              <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em", color: ANALYTICS_COLORS.muted, fontWeight: 700 }}>
+                Recommendations
+              </div>
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                {recommendations.map((line, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: "9px 10px",
+                      background: "#fff",
+                      borderRadius: 10,
+                      border: `1px solid ${ANALYTICS_COLORS.border}`,
+                      color: ANALYTICS_COLORS.ink,
+                      fontSize: 12.8,
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    <i className="bi bi-check2-circle me-2" style={{ color: ANALYTICS_COLORS.secondary }}></i>
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 10, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 800, color: ANALYTICS_COLORS.muted }}>
+          2. Real-Time Library Status
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+            gap: 12,
+            marginBottom: 18,
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 18,
+              border: `1px solid ${ANALYTICS_COLORS.border}`,
+              padding: "16px 16px 14px",
+              boxShadow: "0 12px 28px rgba(15, 23, 42, 0.07)",
+            }}
+          >
+            <div style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
+              Occupancy Monitoring
+            </div>
+            <div style={{ marginTop: 8, display: "flex", alignItems: "baseline", gap: 8 }}>
+              <span style={{ fontSize: 31, fontWeight: 900, color: ANALYTICS_COLORS.ink }}>
+                {fmt(currentOccupancy)}
+              </span>
+              <span style={{ color: ANALYTICS_COLORS.muted, fontSize: 13 }}>
+                of {fmt(maxOccupancy || 0)} seats
+              </span>
+            </div>
+            <div
+              style={{
+                marginTop: 10,
+                height: 8,
+                background: "#e2e8f0",
+                borderRadius: 999,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${occupancyPct}%`,
+                  height: "100%",
+                  background:
+                    occupancyRatio >= 0.9
+                      ? "linear-gradient(90deg, #dc2626, #be123c)"
+                      : occupancyRatio >= 0.7
+                        ? "linear-gradient(90deg, #d97706, #f59e0b)"
+                        : "linear-gradient(90deg, #1d4ed8, #0f766e)",
+                }}
+              ></div>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12.5, color: ANALYTICS_COLORS.muted }}>
+              <strong style={{ color: ANALYTICS_COLORS.ink }}>{occupancyPct}% utilized</strong> · {occupancyStatus}
+            </div>
+          </div>
+
+          {[
+            {
+              label: "Entries Today",
+              value: fmt(entriesToday),
+              helper: "Current day recognized entries",
+              color: ANALYTICS_COLORS.primary,
+              icon: "bi-box-arrow-in-right",
+            },
+            {
+              label: "Exits Today",
+              value: fmt(exitsToday),
+              helper: "Current day recognized exits",
+              color: ANALYTICS_COLORS.secondary,
+              icon: "bi-box-arrow-left",
+            },
+            {
+              label: "Recognition Accuracy",
+              value: `${recognitionPassRate.toFixed(1)}%`,
+              helper: "Confidence pass rate",
+              color: ANALYTICS_COLORS.gold,
+              icon: "bi-bullseye",
+            },
+          ].map((card) => (
+            <div
+              key={card.label}
+              style={{
+                background: "#fff",
+                borderRadius: 18,
+                border: `1px solid ${ANALYTICS_COLORS.border}`,
+                padding: "16px 16px 14px",
+                boxShadow: "0 12px 28px rgba(15, 23, 42, 0.07)",
+              }}
+            >
+              <div
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 11,
+                  background: `${card.color}1a`,
+                  color: card.color,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 15,
+                  marginBottom: 11,
+                }}
+              >
+                <i className={`bi ${card.icon}`}></i>
+              </div>
+              <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
+                {card.label}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 25, fontWeight: 900, color: ANALYTICS_COLORS.ink }}>
+                {card.value}
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12, color: ANALYTICS_COLORS.muted }}>
+                {card.helper}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ marginBottom: 10, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 800, color: ANALYTICS_COLORS.muted }}>
+          3. Attendance & Usage Trends
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))",
+            gap: 16,
+            marginBottom: 16,
+          }}
+        >
           <ApexChartPanel
-            title="30-Day Visitor Flow"
-            subtitle={`Observed visitor counts across the last 30 days · ${last30Total} total visits recorded in this window`}
+            title="Daily Attendance Trend (Last 30 Days)"
+            subtitle={`${fmt(last30Total)} visits recorded in this window`}
             height={340}
             options={visitsTrendOptions}
             series={visitsTrendSeries}
           />
+
           <div
             style={{
               background: "#fff",
               borderRadius: 24,
               border: `1px solid ${ANALYTICS_COLORS.border}`,
-              padding: 22,
+              padding: 20,
               boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
             }}
           >
             <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink }}>
-              Visual Readout
+              Attendance Interpretation
             </div>
-            <div style={{ marginTop: 12, color: ANALYTICS_COLORS.muted, lineHeight: 1.75, fontSize: 13 }}>
+            <div style={{ marginTop: 10, color: ANALYTICS_COLORS.muted, lineHeight: 1.75, fontSize: 13 }}>
               <p style={{ margin: 0 }}>
-                The month is currently showing a <strong style={{ color: ANALYTICS_COLORS.ink }}>{trendDirection}</strong>{" "}
-                pattern, with an average of <strong style={{ color: ANALYTICS_COLORS.ink }}>{stats?.mean_daily_visits || 0}</strong> visits per recorded day.
+                The current attendance direction is <strong style={{ color: ANALYTICS_COLORS.ink }}>{trendLabel.toLowerCase()}</strong>, with an average of <strong style={{ color: ANALYTICS_COLORS.ink }}>{stats?.mean_daily_visits || 0}</strong> visits per day.
               </p>
-              <p style={{ margin: "12px 0 0" }}>
-                The most active weekday is <strong style={{ color: ANALYTICS_COLORS.ink }}>{peakDow.label}</strong>,
-                while <strong style={{ color: ANALYTICS_COLORS.ink }}>{peakHour.label}</strong> is the strongest arrival hour in the cleaned dataset.
+              <p style={{ margin: "10px 0 0" }}>
+                The most active day remains <strong style={{ color: ANALYTICS_COLORS.ink }}>{peakDow.label}</strong>, and the main arrival window is <strong style={{ color: ANALYTICS_COLORS.ink }}>{peakHour.label}</strong>.
               </p>
-              <p style={{ margin: "12px 0 0" }}>
-                <strong style={{ color: ANALYTICS_COLORS.ink }}>{topProgram.label}</strong> currently appears most often in the recorded visits, making it the clearest program-level contributor.
+              <p style={{ margin: "10px 0 0" }}>
+                Weekday average attendance is <strong style={{ color: ANALYTICS_COLORS.ink }}>{weekdayAverage}</strong> visits, supporting schedule-based planning for staffing and support services.
               </p>
             </div>
             <div
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
-                gap: 12,
-                marginTop: 16,
+                gap: 10,
+                marginTop: 14,
               }}
             >
-              <div style={{ fontSize: 18, fontWeight: 800, color: ANALYTICS_COLORS.primary }}>
+              <div style={{ fontSize: 20, fontWeight: 800, color: ANALYTICS_COLORS.primary }}>
                 {fmt(stats?.max_daily_visits || 0)}
               </div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: ANALYTICS_COLORS.secondary }}>
+              <div style={{ fontSize: 20, fontWeight: 800, color: ANALYTICS_COLORS.secondary }}>
                 {fmt(stats?.std_dev || 0)}
               </div>
-              <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, marginTop: -8 }}>
-                Highest observed daily total
+              <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, marginTop: -6 }}>
+                Highest single-day volume
               </div>
-              <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, marginTop: -8 }}>
-                Daily variability
+              <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, marginTop: -6 }}>
+                Daily variability indicator
               </div>
             </div>
           </div>
@@ -4286,45 +4655,49 @@ function AnalyticsReportsInner() {
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-            gap: 18,
+            gap: 16,
             marginBottom: 18,
           }}
         >
           <ApexChartPanel
             title="Attendance by Weekday"
-            subtitle={`Weekday average is ${weekdayAverage} visits · ${peakDow.label} leads the pattern`}
+            subtitle={`${peakDow.label} leads the weekly usage profile`}
             height={300}
             options={dowOptions}
             series={dowSeries}
           />
           <ApexChartPanel
-            title="Visitor Rhythm by Hour"
-            subtitle={`Peak hour is ${peakHour.label} · ideal for staffing and assistance planning`}
+            title="Usage by Hour"
+            subtitle={`${peakHour.label} is the primary arrival period`}
             height={300}
             options={peakHourOptions}
             series={peakHourSeries}
           />
         </div>
 
+        <div style={{ marginBottom: 10, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 800, color: ANALYTICS_COLORS.muted }}>
+          4. Student Engagement Analytics
+        </div>
         <div
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-            gap: 18,
-            marginBottom: 18,
+            gap: 16,
+            marginBottom: 16,
           }}
         >
           <ApexChartPanel
-            title="Top Programs by Visits"
-            subtitle={`${topProgram.label} currently leads the descriptive program distribution`}
+            title="Most Active Programs"
+            subtitle={`${topProgram.label} currently shows the highest participation`}
             height={320}
             options={programOptions}
             series={programSeries}
           />
+
           {genderSeries.length > 0 ? (
             <ApexChartPanel
               title="Gender Composition"
-              subtitle="Distribution of recorded visitors where gender data is available"
+              subtitle="Profile composition from available visitor records"
               height={320}
               options={genderOptions}
               series={genderSeries}
@@ -4342,18 +4715,18 @@ function AnalyticsReportsInner() {
               <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink }}>
                 Gender Composition
               </div>
-              <div style={{ marginTop: 12, color: ANALYTICS_COLORS.muted, lineHeight: 1.75, fontSize: 13 }}>
-                Gender breakdown is still sparse in the current dataset. As more imported historical records include gender values, this panel will become more representative.
+              <div style={{ marginTop: 12, color: ANALYTICS_COLORS.muted, lineHeight: 1.7, fontSize: 13 }}>
+                Gender fields are still limited in the current dataset. As additional profiles are captured and imported, this view will become more representative.
               </div>
             </div>
           )}
         </div>
 
         {yearSeries[0]?.data?.length > 0 ? (
-          <div style={{ marginBottom: 18 }}>
+          <div style={{ marginBottom: 16 }}>
             <ApexChartPanel
-              title="Year Level Spread"
-              subtitle="A radar view of where descriptive attendance is concentrated across year levels"
+              title="Year Level Participation"
+              subtitle="Engagement distribution by academic year"
               height={330}
               options={yearOptions}
               series={yearSeries}
@@ -4361,60 +4734,412 @@ function AnalyticsReportsInner() {
           </div>
         ) : null}
 
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: 24,
-            border: `1px solid ${ANALYTICS_COLORS.border}`,
-            padding: 22,
-            boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
-          }}
-        >
-          <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink, marginBottom: 12 }}>
-            Data Quality and Interpretation Notes
-          </div>
+        {segmentation ? (
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
               gap: 12,
+              marginBottom: 18,
             }}
           >
-            <div style={{ background: "#f8fafc", borderRadius: 18, padding: 16, border: `1px solid ${ANALYTICS_COLORS.border}` }}>
-              <div style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
-                Collection
+            {[
+              {
+                label: "Regular Users",
+                value: segmentation.regular_count,
+                note: "3+ visits per week",
+                color: "#198754",
+                icon: "bi-person-check",
+              },
+              {
+                label: "Occasional Users",
+                value: segmentation.occasional_count,
+                note: "1-2 visits per week",
+                color: "#d97706",
+                icon: "bi-person",
+              },
+              {
+                label: "Rare Users",
+                value: segmentation.rare_count,
+                note: "Below 1 visit per week",
+                color: "#dc2626",
+                icon: "bi-person-dash",
+              },
+            ].map((card) => (
+              <div
+                key={card.label}
+                style={{
+                  background: "#fff",
+                  borderRadius: 14,
+                  border: `1px solid ${ANALYTICS_COLORS.border}`,
+                  padding: "12px 14px",
+                  boxShadow: "0 8px 24px rgba(15, 23, 42, 0.05)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <i className={`bi ${card.icon}`} style={{ color: card.color }}></i>
+                  <span style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 }}>
+                    {card.label}
+                  </span>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 24, fontWeight: 900, color: ANALYTICS_COLORS.ink }}>
+                  {fmt(card.value)}
+                </div>
+                <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted }}>
+                  {card.note}
+                </div>
               </div>
-              <div style={{ marginTop: 8, fontSize: 14, color: ANALYTICS_COLORS.ink, fontWeight: 800 }}>
-                {fmt(dq?.total_live || 0)} live + {fmt(dq?.total_imported || 0)} imported
+            ))}
+          </div>
+        ) : null}
+
+        <div style={{ marginBottom: 10, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 800, color: ANALYTICS_COLORS.muted }}>
+          5. Forecasting & Predictions
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))",
+            gap: 16,
+            marginBottom: 18,
+          }}
+        >
+          {forecastSeries.length > 0 ? (
+            <ApexChartPanel
+              title="Predicted Library Traffic (Next 7 Days)"
+              subtitle={`${bestForecastModel || forecast?.model || "Forecast"} model projection`}
+              height={320}
+              options={forecastOptions}
+              series={forecastSeries}
+            />
+          ) : (
+            <div
+              style={{
+                background: "#fff",
+                borderRadius: 24,
+                border: `1px solid ${ANALYTICS_COLORS.border}`,
+                padding: 22,
+                boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
+              }}
+            >
+              <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink }}>
+                Predicted Library Traffic
               </div>
-              <div style={{ marginTop: 6, fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.65 }}>
-                The analytics stream merges kiosk recognition logs and imported history into one descriptive reporting dataset.
+              <div style={{ marginTop: 12, color: ANALYTICS_COLORS.muted, lineHeight: 1.7, fontSize: 13 }}>
+                Forecasting requires additional history before producing reliable projections. Continue collecting live data or import historical records to unlock this section.
               </div>
             </div>
-            <div style={{ background: "#f8fafc", borderRadius: 18, padding: 16, border: `1px solid ${ANALYTICS_COLORS.border}` }}>
-              <div style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
-                Cleaning
+          )}
+
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 24,
+              border: `1px solid ${ANALYTICS_COLORS.border}`,
+              padding: 20,
+              boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
+            }}
+          >
+            <div style={{ fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink }}>
+              Forecast Summary
+            </div>
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              <div style={{ padding: "10px 12px", borderRadius: 12, border: `1px solid ${ANALYTICS_COLORS.border}`, background: "#f8fafc" }}>
+                <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 }}>
+                  Forecasted 7-Day Traffic
+                </div>
+                <div style={{ marginTop: 5, fontSize: 23, fontWeight: 900, color: ANALYTICS_COLORS.ink }}>
+                  {fmt(forecastTotalWeek)} visits
+                </div>
               </div>
-              <div style={{ marginTop: 8, fontSize: 14, color: ANALYTICS_COLORS.ink, fontWeight: 800 }}>
-                {fmt(totalRemoved)} records removed
+              <div style={{ padding: "10px 12px", borderRadius: 12, border: `1px solid ${ANALYTICS_COLORS.border}`, background: "#f8fafc" }}>
+                <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 }}>
+                  Predicted Peak Day
+                </div>
+                <div style={{ marginTop: 5, fontSize: 20, fontWeight: 900, color: ANALYTICS_COLORS.ink }}>
+                  {forecastPeakDay}
+                </div>
               </div>
-              <div style={{ marginTop: 6, fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.65 }}>
-                Low-confidence, outside-hours, and duplicate same-day scans are filtered so each student counts once per day.
+              <div style={{ padding: "10px 12px", borderRadius: 12, border: `1px solid ${ANALYTICS_COLORS.border}`, background: "#f8fafc" }}>
+                <div style={{ fontSize: 11.5, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 }}>
+                  Forecast Model
+                </div>
+                <div style={{ marginTop: 5, fontSize: 17, fontWeight: 800, color: ANALYTICS_COLORS.ink }}>
+                  {bestForecastModel || forecast?.model || "Not available"}
+                </div>
               </div>
             </div>
-            <div style={{ background: "#f8fafc", borderRadius: 18, padding: 16, border: `1px solid ${ANALYTICS_COLORS.border}` }}>
-              <div style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
-                Reliability
+            {forecast?.interpretation ? (
+              <div style={{ marginTop: 12, fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.7 }}>
+                {forecast.interpretation}
               </div>
-              <div style={{ marginTop: 8, fontSize: 14, color: ANALYTICS_COLORS.ink, fontWeight: 800 }}>
-                {dq?.quality_score || 0}% quality score
-              </div>
-              <div style={{ marginTop: 6, fontSize: 12.5, color: ANALYTICS_COLORS.muted, lineHeight: 1.65 }}>
-                The page emphasizes descriptive reading only, so decisions are grounded in observed behavior instead of projections.
-              </div>
-            </div>
+            ) : null}
           </div>
         </div>
+
+        <div style={{ marginBottom: 10, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 800, color: ANALYTICS_COLORS.muted }}>
+          6. Operational Insights
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+            gap: 12,
+            marginBottom: 18,
+          }}
+        >
+          <InsightChip
+            icon="bi bi-clock-history"
+            color={ANALYTICS_COLORS.accent}
+            title="Staffing Priority Window"
+            body={`${peakHour.label} is the strongest arrival period with around ${peakHour.value} visits.`}
+          />
+          <InsightChip
+            icon="bi bi-calendar-week"
+            color={ANALYTICS_COLORS.secondary}
+            title="Weekly Utilization Focus"
+            body={`${peakDow.label} consistently records the highest average demand.`}
+          />
+          <InsightChip
+            icon="bi bi-cpu"
+            color={ANALYTICS_COLORS.primary}
+            title="Traffic Planning Baseline"
+            body={`Use the projected ${fmt(forecastTotalWeek)} visits next week for service scheduling.`}
+          />
+          <InsightChip
+            icon="bi bi-exclamation-triangle"
+            color={anomalies.length > 0 ? "#dc2626" : ANALYTICS_COLORS.muted}
+            title="Behavioral Anomalies"
+            body={anomalies.length > 0
+              ? `${anomalies.length} anomaly flags detected for calendar validation and operational review.`
+              : "No major anomaly spikes detected in the current observed period."}
+          />
+        </div>
+
+        <div style={{ marginBottom: 10, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 800, color: ANALYTICS_COLORS.muted }}>
+          7. Data Quality & System Reliability
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gap: 12,
+            marginBottom: 18,
+          }}
+        >
+          {[
+            {
+              label: "Data Reliability Score",
+              value: `${reliabilityScore}%`,
+              helper: `${fmt(dq?.total_cleaned || 0)} of ${fmt(dq?.total_raw || 0)} records retained`,
+              color: reliabilityScore >= 90 ? "#198754" : reliabilityScore >= 80 ? "#d97706" : "#dc2626",
+              icon: "bi-shield-check",
+            },
+            {
+              label: "Recognition Confidence",
+              value: `${recognitionPassRate.toFixed(1)}%`,
+              helper: `${fmt(dq?.removed_low_conf || 0)} low-confidence live records removed`,
+              color: recognitionPassRate >= 90 ? "#198754" : recognitionPassRate >= 80 ? "#d97706" : "#dc2626",
+              icon: "bi-camera-video",
+            },
+            {
+              label: "Processing Yield",
+              value: `${fmt(dq?.total_cleaned || 0)}`,
+              helper: `${fmt(totalRemoved)} excluded records (duplicates, outside hours, low confidence)`,
+              color: ANALYTICS_COLORS.primary,
+              icon: "bi-funnel",
+            },
+            {
+              label: "Analytics Service Health",
+              value: socketConnected ? "Live" : "Polling",
+              helper: socketConnected
+                ? "WebSocket updates are active"
+                : "Running on interval-based sync",
+              color: socketConnected ? "#198754" : "#d97706",
+              icon: "bi-hdd-network",
+            },
+          ].map((card) => (
+            <div
+              key={card.label}
+              style={{
+                background: "#fff",
+                borderRadius: 14,
+                border: `1px solid ${ANALYTICS_COLORS.border}`,
+                padding: "13px 14px",
+                boxShadow: "0 8px 22px rgba(15, 23, 42, 0.05)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <i className={`bi ${card.icon}`} style={{ color: card.color }}></i>
+                <span style={{ fontSize: 12, color: ANALYTICS_COLORS.muted, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 }}>
+                  {card.label}
+                </span>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 24, fontWeight: 900, color: card.color }}>
+                {card.value}
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12, color: ANALYTICS_COLORS.muted, lineHeight: 1.55 }}>
+                {card.helper}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <details
+          style={{
+            background: "#fff",
+            borderRadius: 18,
+            border: `1px solid ${ANALYTICS_COLORS.border}`,
+            boxShadow: "0 14px 36px rgba(15, 23, 42, 0.07)",
+            padding: "14px 16px",
+          }}
+        >
+          <summary
+            style={{
+              cursor: "pointer",
+              listStyle: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+            }}
+          >
+            <span style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 800, color: ANALYTICS_COLORS.muted }}>
+              8. Detailed Technical Analytics
+            </span>
+            <span style={{ fontSize: 12, color: ANALYTICS_COLORS.muted }}>
+              Expand for statistical and model-level diagnostics
+            </span>
+          </summary>
+
+          <div style={{ marginTop: 14 }}>
+            {!hasAdvancedAnalytics ? (
+              <div className="alert alert-info" style={{ marginBottom: 14 }}>
+                <i className="bi bi-info-circle me-2"></i>
+                Detailed model outputs are unavailable in the current payload. Sync again or switch to full analytics mode.
+              </div>
+            ) : null}
+
+            <Section
+              stepNum="T1"
+              title="Data Quality Breakdown"
+              color="#0d6efd"
+              subtitle={`${fmt(dq?.total_raw || 0)} raw -> ${fmt(dq?.total_cleaned || 0)} clean`}
+              defaultOpen={false}
+            >
+              <DataQualitySection dq={dq} />
+            </Section>
+
+            <Section
+              stepNum="T2"
+              title="Exploratory Statistics"
+              color="#0ea5e9"
+              subtitle={`Mean: ${stats?.mean_daily_visits || 0} visits/day · Std Dev: ${stats?.std_dev || 0}`}
+              defaultOpen={false}
+            >
+              <EDASection
+                stats={stats}
+                dowLabels={dowLabels}
+                dowAverages={dowAverages}
+              />
+            </Section>
+
+            <Section
+              stepNum="T3"
+              title="30-Day Technical Trend"
+              color="#1d4ed8"
+              subtitle="Daily counts with recent mean reference"
+              defaultOpen={false}
+            >
+              <TrendChart labels={last30Labels} counts={last30Counts} />
+            </Section>
+
+            <Section
+              stepNum="T4"
+              title="Forecasting Models"
+              color="#1d4ed8"
+              subtitle={`${bestForecastModel || "Model comparison"} · 7-day projection`}
+              defaultOpen={false}
+            >
+              <ForecastSection
+                forecast={forecast}
+                allForecasts={allForecasts}
+                comparison={forecastComparison}
+                bestModel={bestForecastModel}
+                comparisonInterp={forecastComparisonInterpretation}
+              />
+            </Section>
+
+            <Section
+              stepNum="T5"
+              title="Linear Regression"
+              color="#dc2626"
+              subtitle="Trend fit and R² diagnostics"
+              defaultOpen={false}
+            >
+              <LinearRegressionSection
+                regression={regression}
+                interpretation={regressionInterpretation}
+                counts={last30Counts}
+                labels={last30Labels}
+              />
+            </Section>
+
+            <Section
+              stepNum="T6"
+              title="K-Means Clustering"
+              color="#7c3aed"
+              subtitle="Behavioral grouping and elbow method"
+              defaultOpen={false}
+            >
+              <ClusteringSection
+                clustering={clustering}
+                interpretation={clusteringInterpretation}
+              />
+            </Section>
+
+            <Section
+              stepNum="T7"
+              title="Statistical Testing"
+              color="#0f766e"
+              subtitle="Chi-square, Pearson correlation, and ANOVA"
+              defaultOpen={false}
+            >
+              <StatisticalTestsSection
+                chiSquare={chiSquare}
+                chiInterp={chiSquareInterpretation}
+                correlation={correlation}
+                corrInterp={correlationInterpretation}
+                anova={anova}
+                anovaInterp={anovaInterpretation}
+              />
+            </Section>
+
+            <Section
+              stepNum="T8"
+              title="Student Segmentation"
+              color="#198754"
+              subtitle="Regular vs occasional vs rare usage"
+              defaultOpen={false}
+            >
+              <SegmentationSection seg={segmentation} />
+            </Section>
+
+            <Section
+              stepNum="T9"
+              title="Anomaly Detection"
+              color="#dc2626"
+              subtitle="Z-score based anomaly screening"
+              defaultOpen={false}
+            >
+              <AnomalySection
+                anomalies={anomalies}
+                mean={stats?.mean_daily_visits || 0}
+                stdDev={stats?.std_dev || 0}
+              />
+            </Section>
+          </div>
+        </details>
       </section>
     );
   }
@@ -4422,18 +5147,35 @@ function AnalyticsReportsInner() {
   return (
     <section className="section">
       <div className="pagetitle">
-        <h1>Live Analytics</h1>
+        <h1>Library Analytics & Reports</h1>
         <nav>
           <ol className="breadcrumb mb-0">
             <li className="breadcrumb-item">
               <a href="/dashboard">Home</a>
             </li>
-            <li className="breadcrumb-item active">Live Analytics</li>
+            <li className="breadcrumb-item active">Analytics Reports</li>
           </ol>
         </nav>
       </div>
 
-      {/* Show spinner for descriptive analytics loading */}
+      <div className="d-flex align-items-center gap-2 flex-wrap mb-3">
+        <button
+          className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
+          onClick={() => runAnalyticsPipeline({ force: true })}
+          disabled={loading || refreshing}
+        >
+          <i className="bi bi-arrow-clockwise"></i>
+          {loading || refreshing ? "Syncing..." : "Sync Now"}
+        </button>
+        {canManageImports ? (
+          <ImportModal
+            onImportSuccess={() => {
+              runAnalyticsPipeline({ force: true });
+            }}
+          />
+        ) : null}
+      </div>
+
       {loading && !basicData && (
         <div
           style={{
@@ -4441,14 +5183,14 @@ function AnalyticsReportsInner() {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            minHeight: "500px",
-            gap: 16,
+            minHeight: "420px",
+            gap: 14,
           }}
         >
           <div
             style={{
-              width: 48,
-              height: 48,
+              width: 46,
+              height: 46,
               borderRadius: "50%",
               border: "4px solid #e9ecef",
               borderTop: "4px solid #0d6efd",
@@ -4456,7 +5198,7 @@ function AnalyticsReportsInner() {
             }}
           ></div>
           <div style={{ fontSize: 14, color: "#6c757d", fontWeight: 500 }}>
-            Loading descriptive analytics...
+            Loading analytics dashboard...
           </div>
           <style>{`
             @keyframes spin {
@@ -4480,379 +5222,16 @@ function AnalyticsReportsInner() {
         </div>
       )}
 
-      {/* Show content once basic data is available */}
-      {hasRenderableData && (
-        <>
-          {/* Sticky header - always visible */}
-          <div
-            ref={headerRef}
-            style={{
-              position: "sticky",
-              top: APP_HEADER_HEIGHT,
-              zIndex: 100,
-              background: "#f6f7fb",
-              padding: "12px 0 10px",
-              transition: "box-shadow 0.2s",
-              marginBottom: 16,
-            }}
-          >
-            <div
-              style={{
-                background: "#fff",
-                borderRadius: 12,
-                padding: "14px 20px",
-                border: "1px solid #e9ecef",
-                boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  gap: 12,
-                  flexWrap: "wrap",
-                }}
-              >
-                <div>
-                  <h5 className="card-title" style={{ padding: 0, margin: 0 }}>
-                    Realtime Library Activity
-                  </h5>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "#6c757d",
-                      marginTop: 4,
-                      display: "flex",
-                      gap: 8,
-                      flexWrap: "wrap",
-                      alignItems: "center",
-                    }}
-                  >
-                    <span
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 6,
-                        padding: "4px 10px",
-                        borderRadius: 999,
-                        background: socketConnected ? "rgba(25,135,84,0.1)" : "rgba(255,193,7,0.12)",
-                        color: socketConnected ? "#198754" : "#a06a00",
-                        fontWeight: 600,
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          background: socketConnected ? "#198754" : "#ffc107",
-                        }}
-                      ></span>
-                      {socketConnected ? "Live connection active" : "Fallback polling mode"}
-                    </span>
-                    <span>Last sync: {lastUpdatedLabel}</span>
-                    <span>Auto-refreshes on analytics events</span>
-                  </div>
-                </div>
-                <div className="d-flex align-items-center gap-2 flex-wrap">
-                  <button
-                    className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 px-2 py-1"
-                    onClick={() => runAnalyticsPipeline({ force: true })}
-                    disabled={loading || refreshing}
-                  >
-                    <i className="bi bi-arrow-clockwise"></i>
-                    {loading || refreshing ? "Syncing..." : "Sync Now"}
-                  </button>
-                  {canManageImports ? (
-                    <ImportModal
-                      onImportSuccess={() => {
-                        runAnalyticsPipeline({ force: true });
-                      }}
-                    />
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {error && (
-            <div className="alert alert-danger">
-              <i className="bi bi-exclamation-triangle me-2"></i>
-              {errorMessage || "Failed to refresh analytics. Showing the latest available descriptive data."}
-            </div>
-          )}
-
-          {noAnalyticsData && (
-            <div className="alert alert-info">
-              <i className="bi bi-info-circle me-2"></i>
-              {currentData?.message || currentData?.error || "No analytics data available."} Import historical logs or collect live recognition logs to generate analytics.
-            </div>
-          )}
-
-          {!noAnalyticsData && (
-            <>
-              {/* Stage 1 */}
-              <Section
-            stepNum="1"
-            title="Data Collection"
-            color="#0d6efd"
-            subtitle={`${fmt(dq?.total_live || 0)} live · ${fmt(dq?.total_imported || 0)} imported · ${fmt(currentData?.total_students || 0)} students`}
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(4,1fr)",
-                gap: 12,
-                marginBottom: 4,
-              }}
-            >
-              {[
-                {
-                  label: "Registered Students",
-                  value: fmt(currentData?.total_students || 0),
-                  color: "#0d6efd",
-                  icon: "bi-people",
-                },
-                {
-                  label: "Live Logs",
-                  value: fmt(dq?.total_live || 0),
-                  color: "#198754",
-                  icon: "bi-camera-video",
-                },
-                {
-                  label: "Imported Records",
-                  value: fmt(dq?.total_imported || 0),
-                  color: "#6f42c1",
-                  icon: "bi-cloud-upload",
-                },
-                {
-                  label: "Combined Total",
-                  value: fmt((dq?.total_live || 0) + (dq?.total_imported || 0)),
-                  color: "#fd7e14",
-                  icon: "bi-layers",
-                },
-              ].map((m, i) => (
-                <div
-                  key={i}
-                  style={{
-                    background: "#f8f9fa",
-                    borderRadius: 10,
-                    padding: "14px 16px",
-                    border: "1px solid #e9ecef",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      background: m.color + "15",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <i
-                      className={`bi ${m.icon}`}
-                      style={{ color: m.color, fontSize: 16 }}
-                    ></i>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10.5, color: "#aaa" }}>
-                      {m.label}
-                    </div>
-                    <div
-                      style={{ fontSize: 18, fontWeight: 800, color: m.color }}
-                    >
-                      {m.value}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <Interpretation icon="bi-database" color="#0d6efd">
-              <strong>Data Collection Summary:</strong> The analytics pipeline
-              combines <strong>{fmt(dq?.total_live || 0)}</strong> live face
-              recognition logs with{" "}
-              <strong>{fmt(dq?.total_imported || 0)}</strong> historically
-              imported records, resulting in{" "}
-              <strong>
-                {fmt((dq?.total_live || 0) + (dq?.total_imported || 0))}
-              </strong>{" "}
-              total entries spanning{" "}
-              <strong>{currentData?.total_students || 0}</strong> registered students.
-              This merged dataset serves as the foundation for all downstream
-              analysis.
-            </Interpretation>
-          </Section>
-
-          {/* Stage 2 */}
-          <Section
-            stepNum="2"
-            title="Data Cleaning"
-            color="#dc3545"
-            subtitle={`${fmt(totalRemoved)} records removed · ${dq?.quality_score || 0}% retained`}
-          >
-            <DataQualitySection dq={dq} />
-          </Section>
-
-          {/* Stage 3 */}
-          <Section
-            stepNum="3"
-            title="Data Transformation"
-            color="#6c757d"
-            subtitle="Deduplication · Time feature extraction · Visit frequency computation"
-          >
-            <div
-              style={{
-                background: "#f8f9fa",
-                borderRadius: 10,
-                padding: "14px 16px",
-                border: "1px solid #e9ecef",
-                marginBottom: 4,
-              }}
-            >
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 12,
-                }}
-              >
-                {[
-                  {
-                    icon: "bi-calendar-check",
-                    color: "#0d6efd",
-                    text: "Each raw log transformed into one unique daily visit per student (first scan per day kept)",
-                  },
-                  {
-                    icon: "bi-clock",
-                    color: "#6f42c1",
-                    text: "Time features extracted: hour of day, day of week, week number, month, year",
-                  },
-                  {
-                    icon: "bi-person-check",
-                    color: "#198754",
-                    text: "Visit frequency computed per student across the full data range",
-                  },
-                  {
-                    icon: "bi-union",
-                    color: "#fd7e14",
-                    text: "Live and imported records merged into a single unified dataset before analysis",
-                  },
-                ].map((t, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: "flex",
-                      gap: 10,
-                      alignItems: "flex-start",
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: 7,
-                        background: t.color + "15",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <i
-                        className={`bi ${t.icon}`}
-                        style={{ color: t.color, fontSize: 13 }}
-                      ></i>
-                    </div>
-                    <span
-                      style={{ fontSize: 12.5, color: "#555", lineHeight: 1.6 }}
-                    >
-                      {t.text}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <Interpretation icon="bi-arrow-repeat" color="#6c757d">
-              <strong>Transformation Interpretation:</strong> Raw recognition
-              events were consolidated so each student counts as exactly{" "}
-              <strong>one visit per day</strong>. Additional time-based features
-              were derived from each timestamp to enable day-of-week, hourly,
-              and monthly pattern analysis.
-            </Interpretation>
-          </Section>
-
-          {/* Stage 4 */}
-          <Section
-            stepNum="4"
-            title="Exploratory Data Analysis"
-            color="#0dcaf0"
-            subtitle={`Mean: ${stats?.mean_daily_visits || 0} visits/day · Std Dev: ${stats?.std_dev || 0}`}
-          >
-            <EDASection
-              stats={stats}
-              dowLabels={dowLabels}
-              dowAverages={dowAverages}
-            />
-          </Section>
-
-          {/* Stage 4b */}
-          <Section
-            stepNum="4b"
-            title="30-Day Visitor Trend"
-            color="#0d6efd"
-            subtitle="Cleaned daily visits over last 30 days with mean reference line"
-            defaultOpen={false}
-          >
-            <TrendChart
-              labels={last30Labels}
-              counts={last30Counts}
-            />
-          </Section>
-
-          {/* Stage 6 */}
-          <div
-            style={{
-              background: "rgba(25,135,84,0.06)",
-              border: "1px solid rgba(25,135,84,0.2)",
-              borderRadius: 12,
-              padding: "14px 20px",
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              fontSize: 13,
-            }}
-          >
-            <i className="bi bi-check-circle-fill text-success fs-5"></i>
-            <span>
-              <strong>Analytics view is live and descriptive only.</strong>{" "}
-              The dashboard is currently summarizing <strong>{fmt(dq?.total_raw || 0)}</strong> raw
-              records into <strong>{fmt(currentData?.total_cleaned_logs || 0)}</strong>{" "}
-              clean unique daily visits, with a current quality score of{" "}
-              <strong
-                style={{
-                  color: dq?.quality_score >= 90 ? "#198754" : "#ffc107",
-                }}
-              >
-                {dq?.quality_score || 0}%
-              </strong>
-              .
-            </span>
-          </div>
-            </>
-          )}
-        </>
+      {noAnalyticsData && (
+        <div className="alert alert-info">
+          <i className="bi bi-info-circle me-2"></i>
+          {currentData?.message || currentData?.error || "No analytics data available."}
+        </div>
       )}
     </section>
   );
 }
+
 
 export default function AnalyticsReports() {
   return (
