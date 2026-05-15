@@ -377,6 +377,31 @@ function normalizeUserTypeDistribution(items = []) {
   }));
 }
 
+function normalizeMonthlyTopStudents(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const entries = toNonNegativeNumber(item?.entries ?? item?.visits);
+      const rawName = String(item?.name || "").trim();
+      const rawSrCode = String(item?.sr_code || "").trim();
+      const loweredSrCode = rawSrCode.toLowerCase();
+      const hasSrCode =
+        rawSrCode &&
+        loweredSrCode !== "n/a" &&
+        loweredSrCode !== "na" &&
+        loweredSrCode !== "unknown" &&
+        loweredSrCode !== "-";
+      const name = rawName || "Unknown Student";
+      return {
+        label: hasSrCode ? `${name} (${rawSrCode})` : name,
+        count: entries,
+        accent: "blue",
+      };
+    })
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .slice(0, 3);
+}
+
 function sanitizeWorksheetName(name) {
   return String(name || "Sheet")
     .replace(/[\\/*?:[\]]/g, " ")
@@ -1964,12 +1989,21 @@ export default function Dashboard() {
   const hourlyToday = normalizeHourWindow(peakHoursRaw, FULL_DAY_START, FULL_DAY_END);
   const recentEntryEvents = data?.recent_entries ?? [];
   const userTypeSummary = normalizeUserTypeDistribution(data?.user_type_distribution ?? []);
+  const monthlyTopStudents = normalizeMonthlyTopStudents(data?.top_students_monthly ?? []);
   const weeklyHeatmap = data?.weekly_heatmap ?? [];
   const peakPatternSummary = data?.peak_pattern_summary ?? {};
   const busiestDay = peakPatternSummary?.busiest_day ?? {};
   const busiestHour = peakPatternSummary?.busiest_hour ?? {};
   const viewMode = getDashboardViewMode(selectedFilter, data?.filter_days);
   const isTodayView = viewMode === "today";
+  const monthLabelSource = data?.filter_end_date
+    ? new Date(`${data.filter_end_date}T00:00:00`)
+    : new Date();
+  const topStudentsMonthLabel = Number.isNaN(monthLabelSource.getTime())
+    ? "current month"
+    : new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(
+        monthLabelSource
+      );
   
   // Get filter label from selected filter, not from API response
   const selectedFilterOption = DASHBOARD_FILTER_OPTIONS.find(
@@ -2366,6 +2400,20 @@ export default function Dashboard() {
               valueKey="count"
               accent="green"
               emptyText="No user type activity has been recorded for this range."
+            />
+
+            <div className="dashboard-section-divider"></div>
+
+            <div className="dashboard-subsection-heading">
+              <h3>Top 3 frequent students</h3>
+              <span>By entry count in {topStudentsMonthLabel}</span>
+            </div>
+            <DashboardProgressList
+              items={monthlyTopStudents}
+              labelKey="label"
+              valueKey="count"
+              accent="blue"
+              emptyText="No student entry activity has been recorded for this month."
             />
           </article>
 

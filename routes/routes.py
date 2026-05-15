@@ -2874,7 +2874,11 @@ def create_routes_blueprint(deps):
         heatmap_window = _dashboard_heatmap_window(heatmap_week_start_param)
         start_date = filter_window["start_date"]
         end_date = filter_window["end_date"]
+        month_start_date = end_date.replace(day=1)
+        month_end_day = calendar.monthrange(end_date.year, end_date.month)[1]
+        month_end_date = end_date.replace(day=month_end_day)
         range_params = (start_date.isoformat(), end_date.isoformat())
+        month_params = (month_start_date.isoformat(), month_end_date.isoformat())
         heatmap_params = (
             heatmap_window["start_date"].isoformat(),
             heatmap_window["end_date"].isoformat(),
@@ -3197,6 +3201,31 @@ def create_routes_blueprint(deps):
             {"name": row[0], "sr_code": row[1], "visits": row[2]}
             for row in c.fetchall()
         ]
+
+        c.execute("""
+                        SELECT
+                            COALESCE(NULLIF(TRIM(u.name), ''), 'Unknown Student') AS name,
+                            COALESCE(NULLIF(TRIM(u.sr_code), ''), NULLIF(TRIM(re.sr_code), ''), 'N/A') AS sr_code,
+                            COUNT(re.id) AS entries
+                        FROM recognition_events re
+                        INNER JOIN users u ON re.user_id = u.user_id
+                        WHERE re.captured_at IS NOT NULL
+                            AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked": true%%'
+                            AND COALESCE(re.payload_json, '') NOT LIKE '%%"revoked":true%%'
+                            AND COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') = 'entry'
+                            AND DATE(re.captured_at) BETWEEN %s AND %s
+                            AND LOWER(COALESCE(NULLIF(TRIM(u.user_type), ''), 'enrolled')) IN ('enrolled', 'student', 'students')
+                        GROUP BY
+                            re.user_id,
+                            COALESCE(NULLIF(TRIM(u.name), ''), 'Unknown Student'),
+                            COALESCE(NULLIF(TRIM(u.sr_code), ''), NULLIF(TRIM(re.sr_code), ''), 'N/A')
+            ORDER BY entries DESC, name ASC
+            LIMIT 3
+        """, month_params)
+        top_students_monthly = [
+            {"name": row[0], "sr_code": row[1], "entries": int(row[2] or 0)}
+            for row in c.fetchall()
+        ]
         
         # ── Weekly Heatmap (Day 0=Mon to 6=Sun, Hours 7AM–7PM) ──
         c.execute("""
@@ -3347,6 +3376,7 @@ def create_routes_blueprint(deps):
             "peak_hours": peak_hours,
             "peak_pattern_summary": peak_pattern_summary,
             "top_visitors": top_visitors,
+            "top_students_monthly": top_students_monthly,
             "recent_entries": recent_entries,
             "weekly_heatmap": weekly_heatmap,
             "heatmap_week_start_date": heatmap_window["start_date"].isoformat(),
