@@ -25,22 +25,11 @@ def _next_forecast_dates(anchor_date, steps):
     return [anchor_date + timedelta(days=i + 1) for i in range(steps)]
 
 
-def _apply_closed_day_rules(labels, values, lower, upper, anchor_date):
+def _preserve_operating_day_forecasts(labels, values, lower, upper, anchor_date):
     """
-    Force weekend forecasts to zero because the library is closed on Saturdays and Sundays.
+    Preserve forecasts for every weekday. Weekends are operating days for this library.
     """
-    adjusted_values = list(values)
-    adjusted_lower = list(lower)
-    adjusted_upper = list(upper)
-
-    for i in range(len(adjusted_values)):
-        forecast_date = anchor_date + timedelta(days=i + 1)
-        if forecast_date.weekday() >= 5:
-            adjusted_values[i] = 0
-            adjusted_lower[i] = 0
-            adjusted_upper[i] = 0
-
-    return labels, adjusted_values, adjusted_lower, adjusted_upper
+    return labels, values, lower, upper
  
  
 # ── Evaluation Metrics ────────────────────────────────────────
@@ -124,7 +113,7 @@ def forecast_arima(ts_series, today, steps=7):
         lower.append(max(0, round(float(fc_ci.iloc[i, 0]))))
         upper.append(max(0, round(float(fc_ci.iloc[i, 1]))))
 
-    labels, values, lower, upper = _apply_closed_day_rules(
+    labels, values, lower, upper = _preserve_operating_day_forecasts(
         labels, values, lower, upper, ts_series.index[-1].date()
     )
  
@@ -218,7 +207,7 @@ def forecast_sarima(ts_series, today, steps=7):
         lower.append(max(0, round(float(fc_ci.iloc[i, 0]))))
         upper.append(max(0, round(float(fc_ci.iloc[i, 1]))))
 
-    labels, values, lower, upper = _apply_closed_day_rules(
+    labels, values, lower, upper = _preserve_operating_day_forecasts(
         labels, values, lower, upper, ts_series.index[-1].date()
     )
  
@@ -254,7 +243,7 @@ def forecast_sarima(ts_series, today, steps=7):
         "metrics":     metrics,
         "interpretation": (
             f"{order_str} extends ARIMA by modeling the weekly seasonal pattern (s=7), "
-            f"capturing the Mon–Fri peak and weekend dip in library visits. "
+            f"capturing day-of-week changes in library visits. "
             f"Selected by lowest AIC of {round(best_aic, 2)}. "
             f"Total forecasted visits: {sum(values)} over 7 days. "
             f"MAE: {metrics['mae']}, RMSE: {metrics['rmse']}, MAPE: {metrics['mape']}%."
@@ -266,7 +255,7 @@ def forecast_sarima(ts_series, today, steps=7):
 def forecast_prophet(ts_series, today, steps=7):
     """
     Meta Prophet with weekly seasonality and Philippine academic holidays.
-    Handles missing weekend data gracefully.
+    Handles missing daily data gracefully.
     """
     from prophet import Prophet
  
@@ -315,7 +304,7 @@ def forecast_prophet(ts_series, today, steps=7):
         lower.append(max(0, round(float(row["yhat_lower"]))))
         upper.append(max(0, round(float(row["yhat_upper"]))))
 
-    labels, values, lower, upper = _apply_closed_day_rules(
+    labels, values, lower, upper = _preserve_operating_day_forecasts(
         labels, values, lower, upper, ts_series.index[-1].date()
     )
  
@@ -410,7 +399,7 @@ def forecast_holt_winters(ts_series, today, steps=7):
         lower.append(max(0, val - margin))
         upper.append(val + margin)
 
-    labels, values, lower, upper = _apply_closed_day_rules(
+    labels, values, lower, upper = _preserve_operating_day_forecasts(
         labels, values, lower, upper, ts_series.index[-1].date()
     )
  

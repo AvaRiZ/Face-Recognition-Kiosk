@@ -375,6 +375,9 @@ def run_ml_analytics(db_path):
     # ══════════════════════════════════════════════════════════
     OPEN_HOUR, CLOSE_HOUR = 7, 19
     removed_conf = removed_hrs = removed_dup = 0
+    excluded_zero_conf = 0
+    live_conf_sum = 0.0
+    live_conf_count = 0
 
     after_conf = []
     for row in all_raw:
@@ -382,7 +385,13 @@ def run_ml_analytics(db_path):
         ts_text = _timestamp_to_text(ts)
         if src == "live":
             cv = _coerce_confidence(conf)
-            if cv is None or cv < 0.50:
+            if cv == 0:
+                excluded_zero_conf += 1
+            elif cv is not None and cv > 0:
+                live_conf_sum += cv
+                live_conf_count += 1
+
+            if cv is None or (0 < cv < 0.50):
                 removed_conf += 1
                 continue
         else:
@@ -421,9 +430,12 @@ def run_ml_analytics(db_path):
     data_quality  = {
         "total_raw":           total_raw,
         "total_live":          total_live,
+        "total_live_confidence_eligible": live_conf_count,
         "total_imported":      total_imp,
         "total_cleaned":       total_cleaned,
         "total_removed":       total_raw - total_cleaned,
+        "excluded_zero_conf":   excluded_zero_conf,
+        "avg_live_confidence":  round((live_conf_sum / live_conf_count) * 100, 1) if live_conf_count else 0,
         "removed_low_conf":    removed_conf,
         "removed_outside_hrs": removed_hrs,
         "removed_duplicates":  removed_dup,
@@ -522,7 +534,8 @@ def run_ml_analytics(db_path):
     last_30_counts = [date_map.get((start_30d + timedelta(days=i)).isoformat(), 0) for i in range(30)]
 
     # Gender / year level
-    gender_dist   = df.groupby("gender")["sr_code"].nunique().reset_index()
+    known_gender_df = df[~df["gender"].astype(str).str.strip().str.lower().isin(["", "unknown", "n/a", "na", "-"])]
+    gender_dist   = known_gender_df.groupby("gender")["sr_code"].nunique().reset_index()
     gender_dist.columns = ["label","count"]
     gender_data   = gender_dist[gender_dist["count"] > 0].to_dict("records")
 
@@ -1010,6 +1023,9 @@ def run_basic_analytics(db_path):
     # ══════════════════════════════════════════════════════════
     OPEN_HOUR, CLOSE_HOUR = 7, 19
     removed_conf = removed_hrs = removed_dup = 0
+    excluded_zero_conf = 0
+    live_conf_sum = 0.0
+    live_conf_count = 0
 
     after_conf = []
     for row in all_raw:
@@ -1017,7 +1033,13 @@ def run_basic_analytics(db_path):
         ts_text = _timestamp_to_text(ts)
         if src == "live":
             cv = _coerce_confidence(conf)
-            if cv is None or cv < 0.50:
+            if cv == 0:
+                excluded_zero_conf += 1
+            elif cv is not None and cv > 0:
+                live_conf_sum += cv
+                live_conf_count += 1
+
+            if cv is None or (0 < cv < 0.50):
                 removed_conf += 1
                 continue
         else:
@@ -1064,9 +1086,12 @@ def run_basic_analytics(db_path):
     data_quality = {
         "total_raw": total_raw,
         "total_live": total_live,
+        "total_live_confidence_eligible": live_conf_count,
         "total_imported": total_imp,
         "total_cleaned": total_cleaned,
         "total_removed": total_raw - total_cleaned,
+        "excluded_zero_conf": excluded_zero_conf,
+        "avg_live_confidence": round((live_conf_sum / live_conf_count) * 100, 1) if live_conf_count else 0,
         "removed_low_conf": removed_conf,
         "removed_outside_hrs": removed_hrs,
         "removed_duplicates": removed_dup,
@@ -1149,8 +1174,9 @@ def run_basic_analytics(db_path):
     peak_hours = [{"hour": int(h), "count": int(c)} for h, c in hour_counts.items()]
 
     # Gender data (mostly from imported)
-    gender_counts = df["gender"].value_counts().to_dict()
-    gender_data = [{"gender": k or "Unknown", "count": int(v)} for k, v in gender_counts.items()]
+    known_gender_df = df[~df["gender"].astype(str).str.strip().str.lower().isin(["", "unknown", "n/a", "na", "-"])]
+    gender_counts = known_gender_df["gender"].value_counts().to_dict()
+    gender_data = [{"gender": k, "count": int(v)} for k, v in gender_counts.items()]
 
     # Year level data
     year_counts = df["year_level"].value_counts().to_dict()

@@ -770,7 +770,7 @@ function DataQualitySection({ dq }) {
       value: dq.removed_low_conf,
       icon: "bi-shield-x",
       color: "#dc3545",
-      sub: "Below 50% confidence (live logs only)",
+      sub: "Below 50% confidence (live logs only; 0% unmatched ignored)",
     },
     {
       label: "Removed — outside hours",
@@ -1124,9 +1124,8 @@ function EDASection({ stats, dowLabels, dowAverages }) {
             consistently the busiest day while{" "}
             <strong style={{ color: "#198754" }}>{quietestDay}</strong> records
             the lowest average attendance. Library management can use this to
-            optimize staff scheduling. Saturday and Sunday should be read as
-            non-operating or closed-library days, so low weekend averages are
-            expected.
+            optimize staff scheduling across both weekday and weekend service
+            periods.
           </Interpretation>
         </div>
       </div>
@@ -1234,8 +1233,8 @@ function TrendChart({ labels, counts }) {
         in daily visits. <strong>{aboveMean}</strong> days recorded
         above-average attendance while <strong>{belowMean}</strong> days fell
         below the 30-day mean of <strong>{recentMean}</strong> visits/day.{" "}
-        Weekend dips should be interpreted carefully — Saturday and Sunday are
-        not regular library-open days.{" "}
+        Weekend changes should be interpreted as part of the normal operating
+        pattern because Saturday and Sunday are library-open days.{" "}
         {trend === "upward"
           ? "This suggests growing student engagement with the library over time."
           : trend === "downward"
@@ -1715,7 +1714,7 @@ function ForecastSection({
         {displayForecast.interpretation} Peak forecasted day:{" "}
         <strong style={{ color: "#dc3545" }}>{peakDay}</strong> ({totalWeek}{" "}
         total visits predicted). Forecasted Saturday/Sunday values reflect
-        expected lower traffic on non-operating days.
+        historical weekend traffic as part of the normal operating pattern.
       </Interpretation>
 
       {comparisonInterp && (
@@ -3010,7 +3009,7 @@ function AnomalySection({ anomalies, mean, stdDev }) {
       <Interpretation icon="bi-exclamation-triangle" color="#dc3545">
         <strong>Anomaly Detection Interpretation:</strong>{" "}
         {anomalies.length === 0 ? (
-          "No statistically significant anomalies were found. Daily visit counts remain within normal bounds (±2 std dev). Lower Saturday/Sunday activity is expected — those are not regular library-open days."
+          "No statistically significant anomalies were found. Daily visit counts remain within normal bounds (±2 std dev), including normal weekday and weekend operating patterns."
         ) : (
           <>
             The Z-score analysis identified <strong>{anomalies.length}</strong>{" "}
@@ -3831,7 +3830,10 @@ function AnalyticsReportsInner() {
       gender: item?.gender || item?.label || "Unknown",
       count: Number(item?.count || 0),
     }))
-    .filter((item) => item.count > 0);
+    .filter((item) => {
+      const normalized = String(item.gender || "").trim().toLowerCase();
+      return item.count > 0 && !["", "unknown", "n/a", "na", "-"].includes(normalized);
+    });
 
   const yearLevelData = normalizeYearLevelData(currentData?.year_level_data || []);
   const trendDirection = getTrendDirection(last30Counts);
@@ -3868,15 +3870,11 @@ function AnalyticsReportsInner() {
   const exitsToday = Number(realtime?.total_exits || 0);
   const avgConfidencePct = Number(realtime?.avg_confidence || 0);
 
-  const recognitionPassRate = dq?.total_live
+  const confidenceEligibleLive = Number(dq?.total_live_confidence_eligible || 0);
+  const recognitionAccuracy = confidenceEligibleLive > 0
     ? Math.max(
         0,
-        Math.min(
-          100,
-          ((Number(dq?.total_live || 0) - Number(dq?.removed_low_conf || 0))
-            / Math.max(Number(dq?.total_live || 0), 1))
-          * 100,
-        ),
+        Math.min(100, Number(dq?.avg_live_confidence || 0)),
       )
     : avgConfidencePct;
 
@@ -4540,8 +4538,8 @@ function AnalyticsReportsInner() {
             },
             {
               label: "Recognition Accuracy",
-              value: `${recognitionPassRate.toFixed(1)}%`,
-              helper: "Confidence pass rate",
+              value: `${recognitionAccuracy.toFixed(1)}%`,
+              helper: "Average live confidence",
               color: ANALYTICS_COLORS.gold,
               icon: "bi-bullseye",
             },
@@ -4937,9 +4935,9 @@ function AnalyticsReportsInner() {
             },
             {
               label: "Recognition Confidence",
-              value: `${recognitionPassRate.toFixed(1)}%`,
-              helper: `${fmt(dq?.removed_low_conf || 0)} low-confidence live records removed`,
-              color: recognitionPassRate >= 90 ? "#198754" : recognitionPassRate >= 80 ? "#d97706" : "#dc2626",
+              value: `${recognitionAccuracy.toFixed(1)}%`,
+              helper: `Average of ${fmt(confidenceEligibleLive)} positive-confidence live records${Number(dq?.excluded_zero_conf || 0) > 0 ? `; ${fmt(dq.excluded_zero_conf)} zero-confidence unmatched records ignored` : ""}`,
+              color: recognitionAccuracy >= 90 ? "#198754" : recognitionAccuracy >= 80 ? "#d97706" : "#dc2626",
               icon: "bi-camera-video",
             },
             {
