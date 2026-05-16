@@ -533,6 +533,35 @@ function downloadAnalyticsCsv(data, reportContext = {}) {
   downloadTextFile(`analytics-reports-${formatExportDate(exportedAt)}.csv`, csv, "text/csv;charset=utf-8");
 }
 
+function buildWorksheetColumns(rows = [], minWidth = 12) {
+  const columnCount = rows.reduce(
+    (max, row) => Math.max(max, Array.isArray(row) ? row.length : 0),
+    0,
+  );
+
+  return Array.from({ length: columnCount }, (_, index) => {
+    const width = rows.reduce((max, row) => {
+      const value = row?.[index];
+      const length = value === null || value === undefined ? 0 : String(value).length;
+      return Math.max(max, length);
+    }, minWidth);
+
+    return { wch: Math.min(Math.max(width + 2, minWidth), 48) };
+  });
+}
+
+async function downloadAnalyticsExcel(data, reportContext = {}) {
+  const exportedAt = new Date();
+  const report = buildAnalyticsReportPayload(data, reportContext, exportedAt);
+  const rows = buildAnalyticsExportRows(report);
+  const XLSX = await import("xlsx");
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  worksheet["!cols"] = buildWorksheetColumns(rows, 13);
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Analytics Report");
+  XLSX.writeFile(workbook, `analytics-reports-${formatExportDate(exportedAt)}.xlsx`);
+}
+
 async function buildSupplementalChartSections() {
   const endDate = new Date();
   const startDate = new Date(endDate);
@@ -1226,6 +1255,9 @@ function ExportModal({ data, reportContext = {}, disabled = false }) {
       if (type === "csv") {
         downloadAnalyticsCsv(data, reportContext);
         await showSuccess("Export Complete", "Executive analytics CSV report generated successfully.");
+      } else if (type === "excel") {
+        await downloadAnalyticsExcel(data, reportContext);
+        await showSuccess("Export Complete", "Executive analytics Excel report generated successfully.");
       } else {
         await openAnalyticsPdf(data, reportContext);
         await showSuccess("Export Complete", "Executive analytics PDF report generated successfully.");
@@ -1305,7 +1337,7 @@ function ExportModal({ data, reportContext = {}, disabled = false }) {
                     Export Analytics Report
                   </div>
                   <div style={{ fontSize: 11, color: "#aaa" }}>
-                    Choose CSV or PDF
+                    Choose CSV, Excel, or PDF
                   </div>
                 </div>
               </div>
@@ -1334,6 +1366,18 @@ function ExportModal({ data, reportContext = {}, disabled = false }) {
                 <span className="d-flex align-items-center gap-2">
                   <i className="bi bi-filetype-csv"></i>
                   CSV Export
+                </span>
+                <i className="bi bi-chevron-right"></i>
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-success d-flex align-items-center justify-content-between"
+                onClick={() => handleExport("excel")}
+                disabled={exporting}
+              >
+                <span className="d-flex align-items-center gap-2">
+                  <i className="bi bi-file-earmark-excel"></i>
+                  Excel Export
                 </span>
                 <i className="bi bi-chevron-right"></i>
               </button>

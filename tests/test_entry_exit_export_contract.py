@@ -15,6 +15,12 @@ class EntryExitExportContractTests(unittest.TestCase):
         self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", source)
         self.assertIn("library_entry_logs_", source)
 
+    def test_backend_export_excludes_unrecognized_rows(self) -> None:
+        source = Path("routes/routes.py").read_text(encoding="utf-8")
+        self.assertIn("COALESCE(re.decision, 'allowed') AS decision", source)
+        self.assertIn('if normalized_user_type == "unrecognized" or normalized_decision == "unknown":', source)
+        self.assertIn("continue", source)
+
     def test_frontend_entry_exit_export_downloads_xlsx(self) -> None:
         source = Path("frontend/src/pages/EntryExitLogs.jsx").read_text(encoding="utf-8")
         self.assertIn(".xlsx", source)

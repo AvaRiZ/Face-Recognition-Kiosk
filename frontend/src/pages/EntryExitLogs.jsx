@@ -242,7 +242,7 @@ export default function EntryExitLogsPage() {
                 onClick={handleExportClick}
                 disabled={exporting}
               >
-                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export Excel'}
+                <i className="bi bi-upload me-1"></i>{exporting ? 'Exporting...' : 'Export Excel'}
               </button>
             </div>
           </div>

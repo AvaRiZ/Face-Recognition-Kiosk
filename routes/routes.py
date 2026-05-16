@@ -4257,6 +4257,7 @@ def create_routes_blueprint(deps):
                 COALESCE(NULLIF(TRIM(re.event_type), ''), 'entry') AS event_type,
                 re.confidence,
                 COALESCE(re.captured_at, re.ingested_at) AS event_time,
+                COALESCE(re.decision, 'allowed') AS decision,
                 COALESCE(re.payload_json, '') AS payload_json
             FROM recognition_events re
             LEFT JOIN users u ON re.user_id = u.user_id
@@ -4297,6 +4298,7 @@ def create_routes_blueprint(deps):
             event_type,
             _confidence,
             event_time,
+            decision,
             payload_json,
         ) in logs:
             payload = _parse_payload_json_object(payload_json)
@@ -4304,6 +4306,11 @@ def create_routes_blueprint(deps):
                 continue
             snapshot_user_type = str(payload.get("identity_user_type") or payload.get("user_type") or "").strip()
             normalized_user_type = _normalize_user_type(snapshot_user_type or user_type)
+            normalized_decision = str(payload.get("decision") or decision or "allowed").strip().lower() or "allowed"
+            if normalized_decision == "unknown":
+                normalized_user_type = "unrecognized"
+            if normalized_user_type == "unrecognized" or normalized_decision == "unknown":
+                continue
 
             snapshot_name = payload.get("identity_name") or payload.get("user_name") or payload.get("name")
             snapshot_sr_code = payload.get("identity_sr_code") or payload.get("user_sr_code") or payload.get("sr_code")

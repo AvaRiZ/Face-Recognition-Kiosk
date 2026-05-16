@@ -262,7 +262,7 @@ export default function MonthlyDailyVisitsPage() {
                 onClick={handleExportClick}
                 disabled={exporting}
               >
-                <i className="bi bi-download me-1"></i>{exporting ? 'Exporting...' : 'Export'}
+                <i className="bi bi-upload me-1"></i>{exporting ? 'Exporting...' : 'Export'}
               </button>
             </div>
           </div>
