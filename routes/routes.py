@@ -5539,7 +5539,17 @@ def create_routes_blueprint(deps):
     @role_required("super_admin", "library_admin", "library_staff")
     def api_analytics_reports():
         try:
-            result = run_ml_analytics(deps["db_path"])
+            report_mode = (request.args.get("mode") or "").strip().lower()
+            include_forecasts = (request.args.get("include_forecasts", "1") or "1").strip().lower()
+            should_include_forecasts = (
+                report_mode not in {"observed", "descriptive"}
+                and include_forecasts not in {"0", "false", "no", "off"}
+            )
+            result = run_ml_analytics(
+                deps["db_path"],
+                include_forecasts=should_include_forecasts,
+                include_diagnostics=report_mode not in {"observed", "descriptive"},
+            )
             status = 200
             return jsonify(result), status
         except Exception as e:

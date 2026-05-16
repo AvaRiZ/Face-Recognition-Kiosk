@@ -30,6 +30,7 @@ _analytics_cache_lock = threading.Lock()
 _analytics_cache = {
     "computed_at": 0.0,
     "result": None,
+    "results": {},
 }
 
 _YEAR_LEVEL_PATTERN = re.compile(r"^(?P<prefix>\d{2})-\d{5}$")
@@ -276,12 +277,12 @@ def _year_level_sort_key(value: str | None) -> tuple[int, str]:
     return (98, normalized)
 
 
-def run_ml_analytics(db_path):
+def run_ml_analytics(db_path, include_forecasts=True, include_diagnostics=True):
     """
     Full ML analytics pipeline (uses canonical recognition_events).
     
     Reads from recognition_events + imported_logs,
-    runs ARIMA, Linear Regression, K-Means, Chi-square,
+    optionally runs forecasting plus Linear Regression, K-Means, Chi-square,
     Pearson Correlation, and ANOVA.
     Returns a dict ready to be passed to jsonify().
     
@@ -294,21 +295,29 @@ def run_ml_analytics(db_path):
         stacklevel=2
     )
     now = time.time()
+    cache_key = (
+        f"{'with' if include_forecasts else 'without'}_forecasts_"
+        f"{'with' if include_diagnostics else 'without'}_diagnostics"
+    )
     
     # Check cache
     with _analytics_cache_lock:
-        if (_analytics_cache["result"] is not None and 
-            (now - _analytics_cache["computed_at"]) < _ANALYTICS_CACHE_TTL_SECONDS):
-            return _analytics_cache["result"]
+        cache_entry = _analytics_cache.get("results", {}).get(cache_key)
+        if (
+            cache_entry is not None
+            and (now - cache_entry["computed_at"]) < _ANALYTICS_CACHE_TTL_SECONDS
+        ):
+            return cache_entry["result"]
     
     # Cache miss, compute fresh
     import numpy as np
     import pandas as pd
-    from scipy import stats as scipy_stats
-    from sklearn.cluster import KMeans
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.linear_model import LinearRegression
-    from sklearn.metrics import r2_score
+    if include_diagnostics:
+        from scipy import stats as scipy_stats
+        from sklearn.cluster import KMeans
+        from sklearn.linear_model import LinearRegression
+        from sklearn.metrics import r2_score
+        from sklearn.preprocessing import StandardScaler
 
     warnings.filterwarnings("ignore")
 
@@ -566,264 +575,289 @@ def run_ml_analytics(db_path):
         "age_seconds": 0,
         "computed_at": None,
     }
-    try:
-        forecast_result, forecast_cache = _get_cached_forecast(daily_df, today)
-    except Exception as e:
-        # Full fallback to weighted moving average so the UI still has 7 days to render.
-        last_28 = [
-            date_map.get((today - timedelta(days=i)).isoformat(), 0)
-            for i in range(27, -1, -1)
-        ]
-        recent_7 = last_28[-7:] if len(last_28) >= 7 else last_28
-        base = float(np.mean(recent_7)) if recent_7 and any(recent_7) else mean_v
-        sd_f = float(np.std(recent_7)) if recent_7 and any(recent_7) else std_v
+    if include_forecasts:
+        try:
+            forecast_result, forecast_cache = _get_cached_forecast(daily_df, today)
+        except Exception as e:
+            # Full fallback to weighted moving average so legacy API callers still receive 7 days.
+            last_28 = [
+                date_map.get((today - timedelta(days=i)).isoformat(), 0)
+                for i in range(27, -1, -1)
+            ]
+            recent_7 = last_28[-7:] if len(last_28) >= 7 else last_28
+            base = float(np.mean(recent_7)) if recent_7 and any(recent_7) else mean_v
+            sd_f = float(np.std(recent_7)) if recent_7 and any(recent_7) else std_v
 
-        fc_labels = []
-        fc_values = []
-        fc_lower = []
-        fc_upper = []
-        for i in range(1, 8):
-            fd = today + timedelta(days=i)
-            fc_labels.append(fd.strftime("%a %m/%d"))
-            fc_values.append(max(0, round(base)))
-            fc_lower.append(max(0, round(base - sd_f)))
-            fc_upper.append(max(0, round(base + sd_f)))
+            fc_labels = []
+            fc_values = []
+            fc_lower = []
+            fc_upper = []
+            for i in range(1, 8):
+                fd = today + timedelta(days=i)
+                fc_labels.append(fd.strftime("%a %m/%d"))
+                fc_values.append(max(0, round(base)))
+                fc_lower.append(max(0, round(base - sd_f)))
+                fc_upper.append(max(0, round(base + sd_f)))
 
+            forecast_result = {
+                "primary_forecast": {
+                    "model": "Moving Average",
+                    "labels": fc_labels,
+                    "values": fc_values,
+                    "lower": fc_lower,
+                    "upper": fc_upper,
+                    "method": "7-day weighted moving average (all models failed)",
+                    "metrics": {"mae": None, "rmse": None, "mape": None},
+                    "interpretation": (
+                        f"Advanced forecasting models were unavailable, so a "
+                        f"moving-average fallback was used. Error: {e}"
+                    ),
+                },
+                "all_forecasts": [],
+                "comparison":    [],
+                "best_model":    "Moving Average",
+                "errors":        {"all": str(e)},
+                "comparison_interpretation": "Models could not be evaluated.",
+            }
+            forecast_cache = {
+                "status": "fallback",
+                "ttl_seconds": _FORECAST_CACHE_TTL_SECONDS,
+                "age_seconds": 0,
+                "computed_at": datetime.now(ZoneInfo("Asia/Manila")).isoformat(),
+            }
+    else:
         forecast_result = {
-            "primary_forecast": {
-                "model": "Moving Average",
-                "labels": fc_labels,
-                "values": fc_values,
-                "lower": fc_lower,
-                "upper": fc_upper,
-                "method": "7-day weighted moving average (all models failed)",
-                "metrics": {"mae": None, "rmse": None, "mape": None},
-                "interpretation": (
-                    f"Advanced forecasting models were unavailable, so a "
-                    f"moving-average fallback was used. Error: {e}"
-                ),
-            },
+            "primary_forecast": {},
             "all_forecasts": [],
-            "comparison":    [],
-            "best_model":    "Moving Average",
-            "errors":        {"all": str(e)},
-            "comparison_interpretation": "Models could not be evaluated.",
-        }
-        forecast_cache = {
-            "status": "fallback",
-            "ttl_seconds": _FORECAST_CACHE_TTL_SECONDS,
-            "age_seconds": 0,
-            "computed_at": datetime.now(ZoneInfo("Asia/Manila")).isoformat(),
+            "comparison": [],
+            "best_model": "",
+            "errors": {},
+            "warnings": {},
+            "successful_models": 0,
+            "attempted_models": 0,
+            "comparison_interpretation": "",
         }
 
-    # ══════════════════════════════════════════════════════════
-    # STAGE 5b — LINEAR REGRESSION
-    # ══════════════════════════════════════════════════════════
     regression = {}
     regression_interpretation = ""
-    try:
-        trend_counts = np.array(last_30_counts, dtype=float)
-        X      = np.arange(len(trend_counts)).reshape(-1, 1)
-        y      = trend_counts
-        lr     = LinearRegression().fit(X, y)
-        y_pred = lr.predict(X)
-        r2     = r2_score(y, y_pred)
-        slope  = float(lr.coef_[0])
-
-        regression = {
-            "slope":      round(slope, 4),
-            "intercept":  round(float(lr.intercept_), 2),
-            "r2":         round(r2, 4),
-            "r2_pct":     round(r2 * 100, 1),
-            "trend":      "increasing" if slope > 0.05 else "decreasing" if slope < -0.05 else "stable",
-            "fitted":     [round(float(v), 1) for v in y_pred],
-            "counts":     [int(v) for v in trend_counts],
-            "labels":     last_30_labels,
-        }
-        direction = regression["trend"]
-        regression_interpretation = (
-            f"Linear regression shows a {direction} trend (slope={round(slope,4)} visits/day). "
-            f"R²={round(r2,4)} means the model explains {round(r2*100,1)}% of daily visit variance. "
-            + ("Strong linear fit." if r2 > 0.5 else
-               "Low R² — non-linear factors (academic events, holidays) likely drive variability.")
-        )
-    except Exception as e:
-        regression_interpretation = f"Linear regression failed: {e}"
-
-    # ══════════════════════════════════════════════════════════
-    # STAGE 5c — K-MEANS CLUSTERING
-    # ══════════════════════════════════════════════════════════
     clustering = {}
     clustering_interpretation = ""
-    try:
-        if len(student_df) >= 3:
-            student_hours = df.groupby("sr_code")["hour"].mean().reset_index()
-            student_hours.columns = ["sr_code","avg_hour"]
-
-            all_days    = (daily_df["date"].max() - daily_df["date"].min()).days
-            total_weeks = max(1, math.ceil(all_days / 7))
-
-            sdf = student_df.merge(student_hours, on="sr_code", how="left")
-            sdf["weekly_avg"] = sdf["total_visits"] / total_weeks
-            sdf["avg_hour"]   = sdf["avg_hour"].fillna(10)
-
-            X_raw    = sdf[["total_visits","weekly_avg","avg_hour"]].values
-            X_scaled = StandardScaler().fit_transform(X_raw)
-
-            k_range  = range(2, min(6, len(sdf)))
-            inertias = []
-            for k in k_range:
-                km = KMeans(n_clusters=k, random_state=42, n_init=10)
-                km.fit(X_scaled)
-                inertias.append(km.inertia_)
-
-            best_k   = 3 if len(sdf) >= 6 else 2
-            km_final = KMeans(n_clusters=best_k, random_state=42, n_init=10)
-            sdf["cluster"] = km_final.fit_predict(X_scaled)
-
-            cluster_means = sdf.groupby("cluster")["total_visits"].mean().sort_values(ascending=False)
-            labels_map    = {}
-            label_names   = ["High frequency","Moderate frequency","Low frequency"]
-            for rank, (cl, _) in enumerate(cluster_means.items()):
-                labels_map[cl] = label_names[rank] if rank < len(label_names) else f"Cluster {rank+1}"
-            sdf["cluster_label"] = sdf["cluster"].map(labels_map)
-
-            cluster_summary = []
-            for cl_label in label_names[:best_k]:
-                group = sdf[sdf["cluster_label"] == cl_label]
-                if len(group) == 0:
-                    continue
-                members = group[["name","sr_code","program","total_visits","weekly_avg"]].head(10).copy()
-                members["weekly_avg"] = members["weekly_avg"].round(2)
-                cluster_summary.append({
-                    "label":        cl_label,
-                    "count":        len(group),
-                    "avg_visits":   round(float(group["total_visits"].mean()), 1),
-                    "avg_weekly":   round(float(group["weekly_avg"].mean()), 2),
-                    "avg_hour":     round(float(group["avg_hour"].mean()), 1),
-                    "top_programs": group["program"].value_counts().head(3).index.tolist(),
-                    "members":      members.to_dict("records"),
-                })
-
-            clustering = {
-                "k":               best_k,
-                "total_weeks":     total_weeks,
-                "inertia":         [round(v, 2) for v in inertias],
-                "k_range":         list(k_range),
-                "cluster_summary": cluster_summary,
-            }
-            clustering_interpretation = (
-                f"K-Means (k={best_k}) grouped {len(sdf)} students by visit behavior. "
-                + " ".join([
-                    f"'{s['label']}': {s['count']} students, avg {s['avg_visits']} visits ({s['avg_weekly']}×/week)."
-                    for s in cluster_summary
-                ])
-            )
-    except Exception as e:
-        clustering_interpretation = f"K-Means clustering failed: {e}"
-
-    # ══════════════════════════════════════════════════════════
-    # STAGE 5d — CHI-SQUARE TEST
-    # ══════════════════════════════════════════════════════════
     chi_square = {}
     chi_square_interpretation = ""
-    try:
-        median_v2 = student_df["total_visits"].median()
-        student_df["visit_group"] = student_df["total_visits"].apply(
-            lambda v: "High" if v >= median_v2 else "Low"
-        )
-        contingency = pd.crosstab(student_df["program"], student_df["visit_group"])
-        if contingency.shape[0] >= 2 and contingency.shape[1] >= 2:
-            chi2, p_val, dof, _ = scipy_stats.chi2_contingency(contingency)
-            significant = p_val < 0.05
-            chi_square  = {
-                "chi2": round(float(chi2), 4), "p_value": round(float(p_val), 4),
-                "dof":  int(dof), "significant": significant, "alpha": 0.05,
-                "table":   contingency.reset_index().to_dict("records"),
-                "columns": ["program"] + list(contingency.columns),
-            }
-            chi_square_interpretation = (
-                f"Chi-square test (χ²={round(chi2,4)}, df={dof}, p={round(p_val,4)}): "
-                + ("Significant association found — visit frequency differs across programs."
-                   if significant else
-                   "No significant association — visit frequency is similar across programs.")
-            )
-    except Exception as e:
-        chi_square_interpretation = f"Chi-square test failed: {e}"
-
-    # ══════════════════════════════════════════════════════════
-    # STAGE 5e — PEARSON CORRELATION
-    # ══════════════════════════════════════════════════════════
     correlation = {}
     correlation_interpretation = ""
-    try:
-        daily_df["dow_num"] = daily_df["date"].dt.dayofweek
-        r_dow,   p_dow   = scipy_stats.pearsonr(daily_df["dow_num"], daily_df["count"])
-        r_trend, p_trend = scipy_stats.pearsonr(np.arange(len(daily_df)), daily_df["count"])
-
-        def _strength(r):
-            ar = abs(r)
-            if ar >= 0.7: return "strong"
-            if ar >= 0.4: return "moderate"
-            if ar >= 0.2: return "weak"
-            return "negligible"
-
-        correlation = {
-            "dow_vs_count":   {"r": round(float(r_dow),4),   "p": round(float(p_dow),4),
-                               "significant": p_dow<0.05,    "strength": _strength(r_dow)},
-            "trend_vs_count": {"r": round(float(r_trend),4), "p": round(float(p_trend),4),
-                               "significant": p_trend<0.05,  "strength": _strength(r_trend)},
-        }
-        correlation_interpretation = (
-            f"Day-of-week vs visits: r={round(r_dow,4)} ({_strength(r_dow)}, "
-            f"{'significant' if p_dow<0.05 else 'not significant'}). "
-            f"Time trend vs visits: r={round(r_trend,4)} ({_strength(r_trend)}, "
-            f"{'significant' if p_trend<0.05 else 'not significant'}). "
-            f"Overall library usage is {'growing' if r_trend>0 else 'declining'} over time."
-        )
-    except Exception as e:
-        correlation_interpretation = f"Pearson correlation failed: {e}"
-
-    # ══════════════════════════════════════════════════════════
-    # STAGE 5f — ONE-WAY ANOVA
-    # ══════════════════════════════════════════════════════════
     anova = {}
     anova_interpretation = ""
-    try:
-        program_groups = [
-            g["total_visits"].values
-            for _, g in student_df.groupby("program")
-            if len(g) >= 2
-        ]
-        if len(program_groups) >= 2:
-            f_stat, p_val = scipy_stats.f_oneway(*program_groups)
-            significant   = p_val < 0.05
-            group_means   = (
-                student_df.groupby("program")["total_visits"]
-                .agg(["mean","std","count"])
-                .round(2).reset_index()
-            )
-            group_means.columns = ["program","mean_visits","std_visits","n"]
-            group_means = group_means.sort_values("mean_visits", ascending=False)
-            top_prog    = group_means.iloc[0]["program"] if len(group_means) else "—"
 
-            anova = {
-                "f_stat":      round(float(f_stat), 4),
-                "p_value":     round(float(p_val), 4),
-                "significant": significant,
-                "alpha":       0.05,
-                "n_groups":    len(program_groups),
-                "group_means": group_means.to_dict("records"),
+    if include_diagnostics:
+        # ══════════════════════════════════════════════════════════
+        # STAGE 5b — LINEAR REGRESSION
+        # ══════════════════════════════════════════════════════════
+        regression = {}
+        regression_interpretation = ""
+        try:
+            trend_counts = np.array(last_30_counts, dtype=float)
+            X      = np.arange(len(trend_counts)).reshape(-1, 1)
+            y      = trend_counts
+            lr     = LinearRegression().fit(X, y)
+            y_pred = lr.predict(X)
+            r2     = r2_score(y, y_pred)
+            slope  = float(lr.coef_[0])
+
+            regression = {
+                "slope":      round(slope, 4),
+                "intercept":  round(float(lr.intercept_), 2),
+                "r2":         round(r2, 4),
+                "r2_pct":     round(r2 * 100, 1),
+                "trend":      "increasing" if slope > 0.05 else "decreasing" if slope < -0.05 else "stable",
+                "fitted":     [round(float(v), 1) for v in y_pred],
+                "counts":     [int(v) for v in trend_counts],
+                "labels":     last_30_labels,
             }
-            anova_interpretation = (
-                f"One-way ANOVA (F={round(f_stat,4)}, p={round(p_val,4)}): "
-                + (f"Significant differences found across {len(program_groups)} programs. "
-                   f"'{top_prog}' has the highest mean visits."
-                   if significant else
-                   f"No significant difference in visit frequency across {len(program_groups)} programs.")
+            direction = regression["trend"]
+            regression_interpretation = (
+                f"Linear regression shows a {direction} trend (slope={round(slope,4)} visits/day). "
+                f"R²={round(r2,4)} means the model explains {round(r2*100,1)}% of daily visit variance. "
+                + ("Strong linear fit." if r2 > 0.5 else
+                   "Low R² — non-linear factors (academic events, holidays) likely drive variability.")
             )
-    except Exception as e:
-        anova_interpretation = f"ANOVA failed: {e}"
+        except Exception as e:
+            regression_interpretation = f"Linear regression failed: {e}"
+
+        # ══════════════════════════════════════════════════════════
+        # STAGE 5c — K-MEANS CLUSTERING
+        # ══════════════════════════════════════════════════════════
+        clustering = {}
+        clustering_interpretation = ""
+        try:
+            if len(student_df) >= 3:
+                student_hours = df.groupby("sr_code")["hour"].mean().reset_index()
+                student_hours.columns = ["sr_code","avg_hour"]
+
+                all_days    = (daily_df["date"].max() - daily_df["date"].min()).days
+                total_weeks = max(1, math.ceil(all_days / 7))
+
+                sdf = student_df.merge(student_hours, on="sr_code", how="left")
+                sdf["weekly_avg"] = sdf["total_visits"] / total_weeks
+                sdf["avg_hour"]   = sdf["avg_hour"].fillna(10)
+
+                X_raw    = sdf[["total_visits","weekly_avg","avg_hour"]].values
+                X_scaled = StandardScaler().fit_transform(X_raw)
+
+                k_range  = range(2, min(6, len(sdf)))
+                inertias = []
+                for k in k_range:
+                    km = KMeans(n_clusters=k, random_state=42, n_init=10)
+                    km.fit(X_scaled)
+                    inertias.append(km.inertia_)
+
+                best_k   = 3 if len(sdf) >= 6 else 2
+                km_final = KMeans(n_clusters=best_k, random_state=42, n_init=10)
+                sdf["cluster"] = km_final.fit_predict(X_scaled)
+
+                cluster_means = sdf.groupby("cluster")["total_visits"].mean().sort_values(ascending=False)
+                labels_map    = {}
+                label_names   = ["High frequency","Moderate frequency","Low frequency"]
+                for rank, (cl, _) in enumerate(cluster_means.items()):
+                    labels_map[cl] = label_names[rank] if rank < len(label_names) else f"Cluster {rank+1}"
+                sdf["cluster_label"] = sdf["cluster"].map(labels_map)
+
+                cluster_summary = []
+                for cl_label in label_names[:best_k]:
+                    group = sdf[sdf["cluster_label"] == cl_label]
+                    if len(group) == 0:
+                        continue
+                    members = group[["name","sr_code","program","total_visits","weekly_avg"]].head(10).copy()
+                    members["weekly_avg"] = members["weekly_avg"].round(2)
+                    cluster_summary.append({
+                        "label":        cl_label,
+                        "count":        len(group),
+                        "avg_visits":   round(float(group["total_visits"].mean()), 1),
+                        "avg_weekly":   round(float(group["weekly_avg"].mean()), 2),
+                        "avg_hour":     round(float(group["avg_hour"].mean()), 1),
+                        "top_programs": group["program"].value_counts().head(3).index.tolist(),
+                        "members":      members.to_dict("records"),
+                    })
+
+                clustering = {
+                    "k":               best_k,
+                    "total_weeks":     total_weeks,
+                    "inertia":         [round(v, 2) for v in inertias],
+                    "k_range":         list(k_range),
+                    "cluster_summary": cluster_summary,
+                }
+                clustering_interpretation = (
+                    f"K-Means (k={best_k}) grouped {len(sdf)} students by visit behavior. "
+                    + " ".join([
+                        f"'{s['label']}': {s['count']} students, avg {s['avg_visits']} visits ({s['avg_weekly']}×/week)."
+                        for s in cluster_summary
+                    ])
+                )
+        except Exception as e:
+            clustering_interpretation = f"K-Means clustering failed: {e}"
+
+        # ══════════════════════════════════════════════════════════
+        # STAGE 5d — CHI-SQUARE TEST
+        # ══════════════════════════════════════════════════════════
+        chi_square = {}
+        chi_square_interpretation = ""
+        try:
+            median_v2 = student_df["total_visits"].median()
+            student_df["visit_group"] = student_df["total_visits"].apply(
+                lambda v: "High" if v >= median_v2 else "Low"
+            )
+            contingency = pd.crosstab(student_df["program"], student_df["visit_group"])
+            if contingency.shape[0] >= 2 and contingency.shape[1] >= 2:
+                chi2, p_val, dof, _ = scipy_stats.chi2_contingency(contingency)
+                significant = p_val < 0.05
+                chi_square  = {
+                    "chi2": round(float(chi2), 4), "p_value": round(float(p_val), 4),
+                    "dof":  int(dof), "significant": significant, "alpha": 0.05,
+                    "table":   contingency.reset_index().to_dict("records"),
+                    "columns": ["program"] + list(contingency.columns),
+                }
+                chi_square_interpretation = (
+                    f"Chi-square test (χ²={round(chi2,4)}, df={dof}, p={round(p_val,4)}): "
+                    + ("Significant association found — visit frequency differs across programs."
+                       if significant else
+                       "No significant association — visit frequency is similar across programs.")
+                )
+        except Exception as e:
+            chi_square_interpretation = f"Chi-square test failed: {e}"
+
+        # ══════════════════════════════════════════════════════════
+        # STAGE 5e — PEARSON CORRELATION
+        # ══════════════════════════════════════════════════════════
+        correlation = {}
+        correlation_interpretation = ""
+        try:
+            daily_df["dow_num"] = daily_df["date"].dt.dayofweek
+            r_dow,   p_dow   = scipy_stats.pearsonr(daily_df["dow_num"], daily_df["count"])
+            r_trend, p_trend = scipy_stats.pearsonr(np.arange(len(daily_df)), daily_df["count"])
+
+            def _strength(r):
+                ar = abs(r)
+                if ar >= 0.7: return "strong"
+                if ar >= 0.4: return "moderate"
+                if ar >= 0.2: return "weak"
+                return "negligible"
+
+            correlation = {
+                "dow_vs_count":   {"r": round(float(r_dow),4),   "p": round(float(p_dow),4),
+                                   "significant": p_dow<0.05,    "strength": _strength(r_dow)},
+                "trend_vs_count": {"r": round(float(r_trend),4), "p": round(float(p_trend),4),
+                                   "significant": p_trend<0.05,  "strength": _strength(r_trend)},
+            }
+            correlation_interpretation = (
+                f"Day-of-week vs visits: r={round(r_dow,4)} ({_strength(r_dow)}, "
+                f"{'significant' if p_dow<0.05 else 'not significant'}). "
+                f"Time trend vs visits: r={round(r_trend,4)} ({_strength(r_trend)}, "
+                f"{'significant' if p_trend<0.05 else 'not significant'}). "
+                f"Overall library usage is {'growing' if r_trend>0 else 'declining'} over time."
+            )
+        except Exception as e:
+            correlation_interpretation = f"Pearson correlation failed: {e}"
+
+        # ══════════════════════════════════════════════════════════
+        # STAGE 5f — ONE-WAY ANOVA
+        # ══════════════════════════════════════════════════════════
+        anova = {}
+        anova_interpretation = ""
+        try:
+            program_groups = [
+                g["total_visits"].values
+                for _, g in student_df.groupby("program")
+                if len(g) >= 2
+            ]
+            if len(program_groups) >= 2:
+                f_stat, p_val = scipy_stats.f_oneway(*program_groups)
+                significant   = p_val < 0.05
+                group_means   = (
+                    student_df.groupby("program")["total_visits"]
+                    .agg(["mean","std","count"])
+                    .round(2).reset_index()
+                )
+                group_means.columns = ["program","mean_visits","std_visits","n"]
+                group_means = group_means.sort_values("mean_visits", ascending=False)
+                top_prog    = group_means.iloc[0]["program"] if len(group_means) else "—"
+
+                anova = {
+                    "f_stat":      round(float(f_stat), 4),
+                    "p_value":     round(float(p_val), 4),
+                    "significant": significant,
+                    "alpha":       0.05,
+                    "n_groups":    len(program_groups),
+                    "group_means": group_means.to_dict("records"),
+                }
+                anova_interpretation = (
+                    f"One-way ANOVA (F={round(f_stat,4)}, p={round(p_val,4)}): "
+                    + (f"Significant differences found across {len(program_groups)} programs. "
+                       f"'{top_prog}' has the highest mean visits."
+                       if significant else
+                       f"No significant difference in visit frequency across {len(program_groups)} programs.")
+                )
+        except Exception as e:
+            anova_interpretation = f"ANOVA failed: {e}"
 
     # ══════════════════════════════════════════════════════════
     # STAGE 5g — RULE-BASED SEGMENTATION
@@ -938,6 +972,10 @@ def run_ml_analytics(db_path):
     
     # Cache the result
     with _analytics_cache_lock:
+        _analytics_cache.setdefault("results", {})[cache_key] = {
+            "result": result,
+            "computed_at": now,
+        }
         _analytics_cache["result"] = result
         _analytics_cache["computed_at"] = now
     
