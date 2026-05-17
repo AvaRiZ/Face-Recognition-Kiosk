@@ -1,4 +1,0 @@
-path: C:/Users/admin/Desktop/Thesis/Face-Recognition-Kiosk/model-training/generated-dataset
-train: images/train
-val: images/val
-names: ['face']
