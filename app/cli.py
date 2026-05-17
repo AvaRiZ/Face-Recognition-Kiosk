@@ -265,6 +265,78 @@ class CLIApplication:
             return value
         return f"{value[:max(0, max_chars - 3)].rstrip()}..."
 
+    @staticmethod
+    def _short_metric_label(value: object, fallback: str) -> str:
+        label = str(value or fallback).strip() or fallback
+        return label if len(label) <= 8 else label[:8]
+
+    @staticmethod
+    def _format_metric_percent(value: object, decimals: int = 0) -> str:
+        parsed = _coerce_float(value)
+        if parsed is None:
+            return "--"
+        return f"{parsed * 100:.{decimals}f}%"
+
+    def _store_recognition_diagnostics(self, track_state, result: dict | None) -> None:
+        diagnostics = (result or {}).get("model_confidences")
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+
+        track_state.last_recognition_primary_model = str(
+            diagnostics.get("primary_model") or self.config.primary_model
+        )
+        track_state.last_recognition_secondary_model = str(
+            diagnostics.get("secondary_model") or self.config.secondary_model
+        )
+        track_state.last_recognition_primary_confidence = _coerce_float(
+            diagnostics.get("primary_confidence")
+        )
+        track_state.last_recognition_secondary_confidence = _coerce_float(
+            diagnostics.get("secondary_confidence")
+        )
+        track_state.last_recognition_primary_threshold = _coerce_float(
+            diagnostics.get("primary_threshold")
+        )
+        track_state.last_recognition_secondary_threshold = _coerce_float(
+            diagnostics.get("secondary_threshold")
+        )
+        track_state.last_recognition_base_threshold = _coerce_float(
+            diagnostics.get("base_threshold")
+        )
+
+    def _build_track_metric_lines(self, track_id: int, track_state, stability_text: str, issue_text: str) -> list[str]:
+        quality_line = f"T{track_id} | {stability_text} | Q:{track_state.last_quality_score:.1f}{issue_text}"
+        if not bool(getattr(self.config, "cli_model_confidence_display_enabled", True)):
+            return [quality_line]
+
+        primary_confidence = _coerce_float(track_state.last_recognition_primary_confidence)
+        secondary_confidence = _coerce_float(track_state.last_recognition_secondary_confidence)
+        average_confidence = _coerce_float(track_state.last_recognition_confidence)
+        if average_confidence is None and primary_confidence is not None and secondary_confidence is not None:
+            average_confidence = (primary_confidence + secondary_confidence) / 2
+
+        base_threshold = _coerce_float(track_state.last_recognition_base_threshold)
+        if average_confidence is not None:
+            quality_line += f" | C:{self._format_metric_percent(average_confidence)}"
+        if base_threshold is not None:
+            quality_line += f" | Base:{self._format_metric_percent(base_threshold)}"
+
+        metric_lines = [quality_line]
+        if primary_confidence is not None or secondary_confidence is not None:
+            primary_label = self._short_metric_label(
+                track_state.last_recognition_primary_model,
+                self.config.primary_model,
+            )
+            secondary_label = self._short_metric_label(
+                track_state.last_recognition_secondary_model,
+                self.config.secondary_model,
+            )
+            metric_lines.append(
+                f"{primary_label}:{self._format_metric_percent(primary_confidence)} "
+                f"{secondary_label}:{self._format_metric_percent(secondary_confidence)}"
+            )
+        return metric_lines
+
     def _play_recognition_beep(self) -> None:
         worker_role = "exit" if self.worker_role == "exit" else "entry"
 
@@ -974,8 +1046,9 @@ class CLIApplication:
                     status = result.get("status")
                     track_state.last_seen = current_time
                     track_state.last_recognition_time = current_time
-                    track_state.last_recognition_confidence = result.get("match_confidence")
-                    track_state.last_recognition_threshold = result.get("match_threshold")
+                    track_state.last_recognition_confidence = _coerce_float(result.get("match_confidence"))
+                    track_state.last_recognition_threshold = _coerce_float(result.get("match_threshold"))
+                    self._store_recognition_diagnostics(track_state, result)
                     local_capture_count = None
                     registration_sample = None
                     if registration_capture_allowed and status == "registration_captured":
@@ -1107,21 +1180,23 @@ class CLIApplication:
                         2,
                     )
 
-                track_text = f"T{track_id}"
                 stability_text = "Stable" if track_state.last_stable else "Moving"
                 issue_text = ""
                 if self.config.quality_debug_enabled and self.config.quality_debug_show_primary_issue:
                     primary_issue = track_state.last_quality_debug.get("primary_issue_label")
                     if primary_issue and track_state.last_quality_status == "Poor":
                         issue_text = f" {primary_issue}"
-                cv2.putText(
+                metric_lines = self._build_track_metric_lines(track_id, track_state, stability_text, issue_text)
+                metric_y = max(20, y1 - 24 if len(metric_lines) > 1 else y1 - 10)
+                self._draw_text_block(
                     frame,
-                    f"{track_text} | {stability_text} | Q:{track_state.last_quality_score:.1f}{issue_text}",
-                    (x1, max(20, y1 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    metric_lines,
+                    x1,
+                    metric_y,
                     color,
-                    1,
+                    scale=0.5,
+                    thickness=1,
+                    line_gap=16,
                 )
 
                 label_y = min(y2 + 20, frame_height - 90)

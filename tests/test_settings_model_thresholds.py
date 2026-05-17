@@ -123,6 +123,7 @@ class SettingsModelThresholdTests(unittest.TestCase):
                 "primary_threshold": "0.81",
                 "secondary_threshold": "0.79",
                 "online_learning_confidence_threshold": "0.91",
+                "cli_model_confidence_display_enabled": "false",
             }
         )
 
@@ -134,6 +135,7 @@ class SettingsModelThresholdTests(unittest.TestCase):
         self.assertEqual(payload["primary_threshold"], 0.81)
         self.assertEqual(payload["secondary_threshold"], 0.79)
         self.assertEqual(payload["online_learning_confidence_threshold"], 0.91)
+        self.assertFalse(payload["cli_model_confidence_display_enabled"])
 
     def test_super_admin_post_persists_and_applies_model_thresholds(self):
         client, config, store, thresholds = self._build_client()
@@ -145,6 +147,7 @@ class SettingsModelThresholdTests(unittest.TestCase):
                 "primary_threshold": "0.82",
                 "secondary_threshold": "0.78",
                 "online_learning_confidence_threshold": "0.93",
+                "cli_model_confidence_display_enabled": False,
             },
         )
 
@@ -153,10 +156,12 @@ class SettingsModelThresholdTests(unittest.TestCase):
         self.assertEqual(store["settings"]["primary_threshold"], "0.82")
         self.assertEqual(store["settings"]["secondary_threshold"], "0.78")
         self.assertEqual(store["settings"]["online_learning_confidence_threshold"], "0.93")
+        self.assertEqual(store["settings"]["cli_model_confidence_display_enabled"], "False")
         self.assertEqual(thresholds["base"], 0.76)
         self.assertEqual(config.primary_threshold, 0.82)
         self.assertEqual(config.secondary_threshold, 0.78)
         self.assertEqual(config.online_learning_confidence_threshold, 0.93)
+        self.assertFalse(config.cli_model_confidence_display_enabled)
 
     def test_library_admin_cannot_modify_model_or_base_thresholds(self):
         client, _config, _store, _thresholds = self._build_client(role="library_admin")
@@ -167,6 +172,7 @@ class SettingsModelThresholdTests(unittest.TestCase):
                 "threshold": "0.76",
                 "primary_threshold": "0.82",
                 "online_learning_confidence_threshold": "0.93",
+                "cli_model_confidence_display_enabled": False,
             },
         )
 

@@ -202,6 +202,7 @@ export default function SettingsPage() {
   const [overrideReason, setOverrideReason] = React.useState('');
   const [overrideSubmitting, setOverrideSubmitting] = React.useState(false);
   const [recognitionEventRetentionDays, setRecognitionEventRetentionDays] = React.useState('365');
+  const [modelConfidenceDisplayEnabled, setModelConfidenceDisplayEnabled] = React.useState(true);
   const [entryCctvStreamSource, setEntryCctvStreamSource] = React.useState('');
   const [exitCctvStreamSource, setExitCctvStreamSource] = React.useState('');
   const [faceQualityProfiles, setFaceQualityProfiles] = React.useState(() => normalizeQualityProfiles());
@@ -225,6 +226,7 @@ export default function SettingsPage() {
     setOccupancyWarningThreshold(String(payload?.occupancy_warning_threshold ?? '0.9'));
     setOccupancySnapshotIntervalSeconds(String(payload?.occupancy_snapshot_interval_seconds ?? '300'));
     setRecognitionEventRetentionDays(String(payload?.recognition_event_retention_days ?? '365'));
+    setModelConfidenceDisplayEnabled(Boolean(payload?.cli_model_confidence_display_enabled ?? true));
     setEntryCctvStreamSource(String(payload?.entry_cctv_stream_source ?? ''));
     setExitCctvStreamSource(String(payload?.exit_cctv_stream_source ?? ''));
     setFaceQualityProfiles(normalizeQualityProfiles(payload?.face_quality_profiles));
@@ -280,6 +282,7 @@ export default function SettingsPage() {
     }
     if (permissions.can_manage_advanced_ops) {
       payload.recognition_event_retention_days = recognitionEventRetentionDays;
+      payload.cli_model_confidence_display_enabled = modelConfidenceDisplayEnabled;
       payload.entry_cctv_stream_source = entryCctvStreamSource;
       payload.exit_cctv_stream_source = exitCctvStreamSource;
     }
@@ -794,6 +797,31 @@ export default function SettingsPage() {
           {activeTab === TAB_ADVANCED && canManageAdvancedOps && (
             <div>
               <form onSubmit={handleSubmit}>
+              <h6 className="text-uppercase text-muted fw-semibold mb-3" style={{ letterSpacing: '.07em', fontSize: '.7rem' }}>
+                CLI Display
+              </h6>
+              <div className="row g-4 mb-4">
+                <div className="col-12 col-lg-8">
+                  <div className="form-check form-switch">
+                    <input
+                      id="cli_model_confidence_display_enabled"
+                      className="form-check-input"
+                      type="checkbox"
+                      role="switch"
+                      checked={modelConfidenceDisplayEnabled}
+                      disabled={!canManageAdvancedOps}
+                      onChange={ev => setModelConfidenceDisplayEnabled(ev.target.checked)}
+                    />
+                    <label className="form-check-label fw-medium" htmlFor="cli_model_confidence_display_enabled">
+                      Show model confidence in CLI
+                    </label>
+                  </div>
+                  <div className="form-text">
+                    Shows aggregate confidence, base threshold, and ArcFace/Facenet confidence on the recognition window.
+                  </div>
+                </div>
+              </div>
+
               <h6 className="text-uppercase text-muted fw-semibold mb-3" style={{ letterSpacing: '.07em', fontSize: '.7rem' }}>
                 Data Retention
               </h6>

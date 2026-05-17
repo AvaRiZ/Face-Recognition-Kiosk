@@ -105,6 +105,47 @@ class CliRecognitionAlertTests(unittest.TestCase):
         self.assertEqual(label_color, (0, 255, 0))
         beep.assert_called_once_with()
 
+    def test_track_metric_lines_include_model_confidences_and_base_threshold(self):
+        config = AppConfig()
+        cli = _cli_for_role("entry")
+        cli.config = config
+        track_state = TrackingState(last_quality_score=0.91, last_recognition_confidence=0.80)
+
+        cli._store_recognition_diagnostics(
+            track_state,
+            {
+                "model_confidences": {
+                    "primary_model": config.primary_model,
+                    "secondary_model": config.secondary_model,
+                    "primary_confidence": 0.82,
+                    "secondary_confidence": 0.78,
+                    "base_threshold": 0.75,
+                }
+            },
+        )
+
+        lines = cli._build_track_metric_lines(7, track_state, "Stable", "")
+
+        self.assertEqual(lines[0], "T7 | Stable | Q:0.9 | C:80% | Base:75%")
+        self.assertEqual(lines[1], "ArcFace:82% Facenet:78%")
+
+    def test_track_metric_lines_hide_model_confidences_when_disabled(self):
+        config = AppConfig()
+        config.cli_model_confidence_display_enabled = False
+        cli = _cli_for_role("entry")
+        cli.config = config
+        track_state = TrackingState(
+            last_quality_score=0.91,
+            last_recognition_confidence=0.80,
+            last_recognition_primary_confidence=0.82,
+            last_recognition_secondary_confidence=0.78,
+            last_recognition_base_threshold=0.75,
+        )
+
+        lines = cli._build_track_metric_lines(7, track_state, "Stable", "")
+
+        self.assertEqual(lines, ["T7 | Stable | Q:0.9"])
+
     def test_unmatched_track_logs_unrecognized_immediately(self):
         cli = _cli_for_role("entry")
         repo = _FakeRepository()

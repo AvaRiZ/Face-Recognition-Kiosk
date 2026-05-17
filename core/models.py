@@ -270,6 +270,13 @@ class TrackingState:
     last_label_color: tuple[int, int, int] = (180, 180, 180)
     last_recognition_confidence: Optional[float] = None
     last_recognition_threshold: Optional[float] = None
+    last_recognition_primary_model: str = ""
+    last_recognition_secondary_model: str = ""
+    last_recognition_primary_confidence: Optional[float] = None
+    last_recognition_secondary_confidence: Optional[float] = None
+    last_recognition_primary_threshold: Optional[float] = None
+    last_recognition_secondary_threshold: Optional[float] = None
+    last_recognition_base_threshold: Optional[float] = None
     failed_good_quality_attempts: int = 0
     unrecognized_event_id: Optional[str] = None
     unrecognized_logged: bool = False

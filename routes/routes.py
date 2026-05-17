@@ -1109,6 +1109,8 @@ def create_routes_blueprint(deps):
             return f"{float(value):.3f}"
         if field_name in {"quality_threshold", "occupancy_warning_threshold"}:
             return f"{float(value):.2f}"
+        if field_name == "cli_model_confidence_display_enabled":
+            return "on" if bool(value) else "off"
         return str(value)
 
     def _parse_bounded_int_payload(payload, key, minimum, maximum):
@@ -1138,6 +1140,19 @@ def create_routes_blueprint(deps):
         if parsed < minimum or parsed > maximum:
             return None, f"`{key}` must be between {minimum} and {maximum}."
         return parsed, None
+
+    def _parse_bool_payload(payload, key):
+        if key not in payload:
+            return None, None
+        raw_value = payload.get(key)
+        if isinstance(raw_value, bool):
+            return raw_value, None
+        text = str(raw_value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True, None
+        if text in {"0", "false", "no", "off"}:
+            return False, None
+        return None, f"`{key}` must be true or false."
 
     def _quality_setting_key(context, field_name):
         return f"{context}_quality_{field_name}"
@@ -1234,6 +1249,16 @@ def create_routes_blueprint(deps):
                 return int(raw_value)
             except (TypeError, ValueError):
                 return int(fallback)
+
+        def _coerce_bool_value(raw_value, fallback):
+            if isinstance(raw_value, bool):
+                return raw_value
+            text = str(raw_value).strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off"}:
+                return False
+            return bool(fallback)
 
         threshold_bounds = SETTINGS_BOUNDS["threshold"]
         threshold_setting = _get_setting(deps["db_path"], "threshold", str(deps["get_thresholds"]()[0]))
@@ -1382,6 +1407,17 @@ def create_routes_blueprint(deps):
         )
         config.recognition_event_retention_days = recognition_event_retention_days
 
+        model_confidence_display_setting = _get_setting(
+            deps["db_path"],
+            "cli_model_confidence_display_enabled",
+            str(getattr(config, "cli_model_confidence_display_enabled", True)),
+        )
+        cli_model_confidence_display_enabled = _coerce_bool_value(
+            model_confidence_display_setting,
+            getattr(config, "cli_model_confidence_display_enabled", True),
+        )
+        config.cli_model_confidence_display_enabled = cli_model_confidence_display_enabled
+
         entry_source_setting = _get_setting(
             deps["db_path"],
             "entry_cctv_stream_source",
@@ -1413,6 +1449,7 @@ def create_routes_blueprint(deps):
             "occupancy_warning_threshold": float(occupancy_warning_threshold),
             "occupancy_snapshot_interval_seconds": int(occupancy_snapshot_interval_seconds),
             "recognition_event_retention_days": int(recognition_event_retention_days),
+            "cli_model_confidence_display_enabled": bool(cli_model_confidence_display_enabled),
             "entry_cctv_stream_source": entry_cctv_stream_source,
             "exit_cctv_stream_source": exit_cctv_stream_source,
             "face_quality_profiles": face_quality_profiles,
@@ -1494,6 +1531,7 @@ def create_routes_blueprint(deps):
             "occupancy_warning_threshold": settings_state["occupancy_warning_threshold"],
             "occupancy_snapshot_interval_seconds": settings_state["occupancy_snapshot_interval_seconds"],
             "recognition_event_retention_days": settings_state["recognition_event_retention_days"],
+            "cli_model_confidence_display_enabled": settings_state["cli_model_confidence_display_enabled"],
             "entry_cctv_stream_source": settings_state["entry_cctv_stream_source"],
             "exit_cctv_stream_source": settings_state["exit_cctv_stream_source"],
             "face_quality_profiles": settings_state["face_quality_profiles"],
@@ -4483,6 +4521,7 @@ def create_routes_blueprint(deps):
                         "recognition_confidence_threshold",
                         "online_learning_confidence_threshold",
                         "recognition_event_retention_days",
+                        "cli_model_confidence_display_enabled",
                         "entry_cctv_stream_source",
                         "exit_cctv_stream_source",
                     )
@@ -4702,6 +4741,23 @@ def create_routes_blueprint(deps):
                             event_retention_value,
                         )
 
+                model_confidence_display_value, model_confidence_display_error = _parse_bool_payload(
+                    payload,
+                    "cli_model_confidence_display_enabled",
+                )
+                if model_confidence_display_error:
+                    return jsonify({"success": False, "message": model_confidence_display_error}), 400
+                if model_confidence_display_value is not None:
+                    next_settings["cli_model_confidence_display_enabled"] = model_confidence_display_value
+                    if (
+                        model_confidence_display_value
+                        != current_settings["cli_model_confidence_display_enabled"]
+                    ):
+                        changed_fields["cli_model_confidence_display_enabled"] = (
+                            current_settings["cli_model_confidence_display_enabled"],
+                            model_confidence_display_value,
+                        )
+
                 entry_source_value, entry_source_error = _parse_text_payload(
                     payload,
                     "entry_cctv_stream_source",
@@ -4763,6 +4819,9 @@ def create_routes_blueprint(deps):
                 deps["config"].recognition_event_retention_days = int(
                     next_settings["recognition_event_retention_days"]
                 )
+                deps["config"].cli_model_confidence_display_enabled = bool(
+                    next_settings["cli_model_confidence_display_enabled"]
+                )
                 deps["config"].entry_cctv_stream_source = str(next_settings["entry_cctv_stream_source"])
                 deps["config"].exit_cctv_stream_source = str(next_settings["exit_cctv_stream_source"])
                 bump_settings_version(deps["db_path"])
@@ -4779,6 +4838,7 @@ def create_routes_blueprint(deps):
                     "occupancy_warning_threshold",
                     "occupancy_snapshot_interval_seconds",
                     "recognition_event_retention_days",
+                    "cli_model_confidence_display_enabled",
                     "entry_cctv_stream_source",
                     "exit_cctv_stream_source",
                 ]

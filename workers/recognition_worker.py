@@ -77,6 +77,17 @@ def _normalize_stream_source(value: object) -> str | int | None:
     return text
 
 
+def _coerce_bool(value: object, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(fallback)
+
+
 def _safe_fetch_profiles(repository: WorkerApiRepository) -> list:
     try:
         return repository.get_all_users()
@@ -110,6 +121,13 @@ def _apply_runtime_config(runtime: WorkerRuntime, payload: dict) -> None:
         )
     )
     runtime.config.online_learning_confidence_threshold = max(0.1, min(0.99, online_learning_confidence_threshold))
+    runtime.config.cli_model_confidence_display_enabled = _coerce_bool(
+        payload.get(
+            "cli_model_confidence_display_enabled",
+            runtime.config.cli_model_confidence_display_enabled,
+        ),
+        runtime.config.cli_model_confidence_display_enabled,
+    )
     runtime.config.apply_quality_profiles(payload.get("face_quality_profiles"))
     entry_source = _normalize_stream_source(payload.get("entry_cctv_stream_source"))
     if entry_source is not None:
@@ -280,6 +298,13 @@ def build_runtime() -> WorkerRuntime:
                     )
                 ),
             ),
+        )
+        config.cli_model_confidence_display_enabled = _coerce_bool(
+            runtime_payload.get(
+                "cli_model_confidence_display_enabled",
+                config.cli_model_confidence_display_enabled,
+            ),
+            config.cli_model_confidence_display_enabled,
         )
         config.apply_quality_profiles(runtime_payload.get("face_quality_profiles"))
         env_stream_override = (os.environ.get("WORKER_CCTV_STREAM_SOURCE") or "").strip()

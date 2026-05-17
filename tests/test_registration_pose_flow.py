@@ -335,6 +335,51 @@ class RegistrationPoseFlowTests(unittest.TestCase):
         self.assertEqual(state.recognized_user["name"], "Ada Lovelace")
         self.assertFalse(repository.log_called)
 
+    def test_no_match_result_exposes_best_model_confidences_for_cli(self):
+        config = AppConfig()
+        config.primary_threshold = 0.9
+        config.secondary_threshold = 0.9
+        state = AppStateManager(config)
+        state.load_users(
+            [
+                User(
+                    id=42,
+                    name="Ada Lovelace",
+                    sr_code="SR-42",
+                    gender="Female",
+                    program="Computer Science",
+                    embeddings={
+                        config.primary_model: [np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
+                        config.secondary_model: [np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
+                    },
+                )
+            ]
+        )
+        service = FaceRecognitionService(
+            config=config,
+            state=state,
+            repository=_NoopRepository(),
+            embedding_service=_FixedVectorEmbeddingService(config, confidence=0.8),
+        )
+
+        result = service.register_or_recognize_face(
+            np.zeros((260, 260, 3), dtype=np.uint8),
+            quality_service=_PoseMismatchQualityService(),
+            allow_registration=False,
+            precomputed_quality=(1.0, "Good", {"failed_checks": [], "component_scores": {}}),
+            quality_context="entry",
+        )
+
+        diagnostics = result["model_confidences"]
+        self.assertEqual(result["status"], "no_match")
+        self.assertEqual(diagnostics["primary_model"], config.primary_model)
+        self.assertEqual(diagnostics["secondary_model"], config.secondary_model)
+        self.assertAlmostEqual(diagnostics["primary_confidence"], 0.8)
+        self.assertAlmostEqual(diagnostics["secondary_confidence"], 0.8)
+        self.assertAlmostEqual(diagnostics["average_confidence"], 0.8)
+        self.assertAlmostEqual(diagnostics["base_threshold"], state.base_threshold)
+        self.assertFalse(diagnostics["two_factor_pass"])
+
     def test_online_learning_gate_skips_embedding_update_below_threshold(self):
         config = AppConfig()
         config.primary_threshold = 0.5

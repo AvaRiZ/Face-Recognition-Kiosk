@@ -27,6 +27,7 @@ class FaceRecognitionService:
         self._vector_indexes: dict[str, dict[str, Any]] = {}
         self._index_signature: tuple[tuple[int, int, int], ...] | None = None
         self._recognition_event_locks: dict[tuple[int, str], float] = {}
+        self._last_match_diagnostics: dict[str, Any] = {}
 
     def _event_type_for_current_repository(self) -> str:
         camera_id = int(getattr(self.repository, "camera_id", 1) or 1)
@@ -156,7 +157,89 @@ class FaceRecognitionService:
 
         return {int(user_ids[int(idx)]) for idx in indices if 0 <= int(idx) < len(user_ids)}
 
+    def _recognition_thresholds(self) -> tuple[float, float, float]:
+        base_threshold = float(self.state.base_threshold)
+        primary_threshold = max(float(self.config.primary_threshold), base_threshold)
+        secondary_threshold = max(float(self.config.secondary_threshold), base_threshold)
+        return primary_threshold, secondary_threshold, base_threshold
+
+    def _empty_match_diagnostics(self) -> dict[str, Any]:
+        primary_threshold, secondary_threshold, base_threshold = self._recognition_thresholds()
+        return {
+            "primary_model": self.config.primary_model,
+            "secondary_model": self.config.secondary_model,
+            "primary_confidence": None,
+            "secondary_confidence": None,
+            "average_confidence": None,
+            "primary_distance": None,
+            "secondary_distance": None,
+            "average_distance": None,
+            "primary_threshold": primary_threshold,
+            "secondary_threshold": secondary_threshold,
+            "base_threshold": base_threshold,
+            "recognition_threshold": float(self.config.recognition_confidence_threshold),
+            "primary_pass": False,
+            "secondary_pass": False,
+            "two_factor_pass": False,
+            "candidate_name": None,
+        }
+
+    def _build_match_diagnostics(
+        self,
+        user_name: str,
+        primary_confidence: float,
+        secondary_confidence: float,
+        primary_distance: float,
+        secondary_distance: float,
+    ) -> dict[str, Any]:
+        primary_threshold, secondary_threshold, base_threshold = self._recognition_thresholds()
+        average_confidence = (float(primary_confidence) + float(secondary_confidence)) / 2
+        average_distance = (float(primary_distance) + float(secondary_distance)) / 2
+        primary_pass = float(primary_confidence) >= primary_threshold
+        secondary_pass = float(secondary_confidence) >= secondary_threshold
+        return {
+            "primary_model": self.config.primary_model,
+            "secondary_model": self.config.secondary_model,
+            "primary_confidence": float(primary_confidence),
+            "secondary_confidence": float(secondary_confidence),
+            "average_confidence": average_confidence,
+            "primary_distance": float(primary_distance),
+            "secondary_distance": float(secondary_distance),
+            "average_distance": average_distance,
+            "primary_threshold": primary_threshold,
+            "secondary_threshold": secondary_threshold,
+            "base_threshold": base_threshold,
+            "recognition_threshold": float(self.config.recognition_confidence_threshold),
+            "primary_pass": primary_pass,
+            "secondary_pass": secondary_pass,
+            "two_factor_pass": primary_pass and secondary_pass,
+            "candidate_name": str(user_name or "").strip() or None,
+        }
+
+    @staticmethod
+    def _format_confidence_diagnostics(diagnostics: dict[str, Any]) -> str:
+        def _pct(value: Any) -> str:
+            try:
+                return f"{float(value):.2%}"
+            except Exception:
+                return "n/a"
+
+        primary_model = str(diagnostics.get("primary_model") or "primary")
+        secondary_model = str(diagnostics.get("secondary_model") or "secondary")
+        return (
+            f"{primary_model}={_pct(diagnostics.get('primary_confidence'))}/"
+            f"{_pct(diagnostics.get('primary_threshold'))}, "
+            f"{secondary_model}={_pct(diagnostics.get('secondary_confidence'))}/"
+            f"{_pct(diagnostics.get('secondary_threshold'))}, "
+            f"avg={_pct(diagnostics.get('average_confidence'))}, "
+            f"base={_pct(diagnostics.get('base_threshold'))}"
+        )
+
+    def _model_confidence_display_enabled(self) -> bool:
+        return bool(getattr(self.config, "cli_model_confidence_display_enabled", True))
+
     def find_best_match(self, query_embeddings) -> RecognitionResult | None:
+        self._last_match_diagnostics = self._empty_match_diagnostics()
         if self.config.primary_model not in query_embeddings or self.config.secondary_model not in query_embeddings:
             print("  [WARN] Need embeddings from both models for two-factor verification")
             return None
@@ -178,6 +261,7 @@ class FaceRecognitionService:
         candidate_user_ids = primary_candidates | secondary_candidates
 
         best_match: RecognitionResult | None = None
+        best_candidate_diagnostics: dict[str, Any] | None = None
 
         users = self.state.users
         for user_idx, user in enumerate(users):
@@ -216,17 +300,30 @@ class FaceRecognitionService:
             primary_confidence = 1 - primary_best_dist
             secondary_confidence = 1 - secondary_best_dist
 
-            primary_threshold = max(self.config.primary_threshold, self.state.base_threshold)
-            secondary_threshold = max(self.config.secondary_threshold, self.state.base_threshold)
+            candidate_diagnostics = self._build_match_diagnostics(
+                user.name,
+                primary_confidence,
+                secondary_confidence,
+                primary_best_dist,
+                secondary_best_dist,
+            )
+            if (
+                best_candidate_diagnostics is None
+                or float(candidate_diagnostics["average_confidence"])
+                > float(best_candidate_diagnostics["average_confidence"])
+            ):
+                best_candidate_diagnostics = candidate_diagnostics
 
-            primary_pass = primary_confidence >= primary_threshold
-            secondary_pass = secondary_confidence >= secondary_threshold
+            primary_threshold = float(candidate_diagnostics["primary_threshold"])
+            secondary_threshold = float(candidate_diagnostics["secondary_threshold"])
+            primary_pass = bool(candidate_diagnostics["primary_pass"])
+            secondary_pass = bool(candidate_diagnostics["secondary_pass"])
 
             if not (primary_pass and secondary_pass):
                 continue
 
-            avg_confidence = (primary_confidence + secondary_confidence) / 2
-            avg_distance = (primary_best_dist + secondary_best_dist) / 2
+            avg_confidence = float(candidate_diagnostics["average_confidence"])
+            avg_distance = float(candidate_diagnostics["average_distance"])
 
             if best_match is None or avg_confidence > best_match.confidence:
                 best_match = RecognitionResult(
@@ -241,20 +338,33 @@ class FaceRecognitionService:
                     user=user,
                     user_index=user_idx,
                 )
+                self._last_match_diagnostics = candidate_diagnostics
 
         if best_match:
-            print(
-                f"  [OK] 2-Factor Verified: {best_match.user.name} "
-                f"(ArcFace={best_match.primary_confidence:.2%}, Facenet={best_match.secondary_confidence:.2%})"
-            )
+            if self._model_confidence_display_enabled():
+                print(
+                    f"  [OK] 2-Factor Verified: {best_match.user.name} "
+                    f"({self._format_confidence_diagnostics(self._last_match_diagnostics)})"
+                )
+            else:
+                print(f"  [OK] 2-Factor Verified: {best_match.user.name}")
+        elif best_candidate_diagnostics is not None:
+            self._last_match_diagnostics = best_candidate_diagnostics
+            if self._model_confidence_display_enabled():
+                candidate_name = best_candidate_diagnostics.get("candidate_name") or "unknown user"
+                print(
+                    f"  Best model candidate below gates: {candidate_name} "
+                    f"({self._format_confidence_diagnostics(best_candidate_diagnostics)})"
+                )
 
         return best_match
 
     def recognize(self, face_crop):
         embeddings = self.embedding_service.extract_embedding_ensemble(face_crop)
         if not embeddings:
-            return None, {}
-        return self.find_best_match(embeddings), embeddings
+            return None, {}, self._empty_match_diagnostics()
+        match = self.find_best_match(embeddings)
+        return match, embeddings, dict(self._last_match_diagnostics)
 
     def is_confident_recognition(self, match: RecognitionResult) -> bool:
         return float(match.confidence) >= float(self.config.recognition_confidence_threshold)
@@ -271,10 +381,12 @@ class FaceRecognitionService:
         registration_quality=None,
     ):
         reg_state = self.state.registration_state
+        model_confidences = self._empty_match_diagnostics()
         if reg_state.in_progress and allow_registration:
             return {
                 "status": "registration_pending",
                 "reason_code": "registration_pending",
+                "model_confidences": model_confidences,
             }
 
         if precomputed_quality is None:
@@ -318,6 +430,7 @@ class FaceRecognitionService:
                         "quality_debug": reg_quality_debug,
                         "match_confidence": None,
                         "match_threshold": None,
+                        "model_confidences": model_confidences,
                     }
             else:
                 message = f"  Skipping low quality face: {quality_score:.2f} ({quality_status})"
@@ -336,6 +449,7 @@ class FaceRecognitionService:
                     "quality_debug": quality_debug,
                     "match_confidence": None,
                     "match_threshold": None,
+                    "model_confidences": model_confidences,
                 }
 
         registration_capture_active = bool(allow_registration and reg_state.phase == "capturing")
@@ -368,6 +482,7 @@ class FaceRecognitionService:
                     "quality_debug": reg_quality_debug,
                     "match_confidence": None,
                     "match_threshold": None,
+                    "model_confidences": model_confidences,
                 }
 
             current_pose = self.state.get_current_registration_pose() or "front"
@@ -385,6 +500,7 @@ class FaceRecognitionService:
                     "quality_debug": reg_quality_debug,
                     "match_confidence": None,
                     "match_threshold": None,
+                    "model_confidences": model_confidences,
                     "expected_pose": current_pose,
                     "detected_pose": detected_pose,
                 }
@@ -402,7 +518,7 @@ class FaceRecognitionService:
             message += f" | {quality_service.quality_debug_summary(quality_debug)}"
         print(message)
 
-        best_match, embeddings = self.recognize(face_crop)
+        best_match, embeddings, model_confidences = self.recognize(face_crop)
         if not embeddings:
             print("  Failed to extract embeddings")
             return {
@@ -413,6 +529,7 @@ class FaceRecognitionService:
                 "quality_debug": quality_debug,
                 "match_confidence": None,
                 "match_threshold": None,
+                "model_confidences": model_confidences,
             }
 
         if best_match:
@@ -429,6 +546,7 @@ class FaceRecognitionService:
                     "quality_debug": quality_debug,
                     "match_confidence": best_match.confidence,
                     "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
+                    "model_confidences": model_confidences,
                 }
 
             event_type = self._event_type_for_current_repository()
@@ -448,6 +566,7 @@ class FaceRecognitionService:
                     "quality_debug": quality_debug,
                     "match_confidence": best_match.confidence,
                     "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
+                    "model_confidences": model_confidences,
                     "payload": recognized_payload,
                 }
 
@@ -504,6 +623,7 @@ class FaceRecognitionService:
                 "quality_debug": quality_debug,
                 "match_confidence": best_match.confidence,
                 "match_threshold": max(best_match.threshold, self.config.recognition_confidence_threshold),
+                "model_confidences": model_confidences,
                 "payload": recognized_payload,
             }
 
@@ -526,6 +646,7 @@ class FaceRecognitionService:
                 "quality_debug": reg_quality_debug,
                 "match_confidence": None,
                 "match_threshold": None,
+                "model_confidences": model_confidences,
                 "expected_pose": current_pose,
                 "detected_pose": detected_pose,
                 "registration_sample": sample,
@@ -539,4 +660,5 @@ class FaceRecognitionService:
             "quality_debug": quality_debug,
             "match_confidence": None,
             "match_threshold": None,
+            "model_confidences": model_confidences,
         }

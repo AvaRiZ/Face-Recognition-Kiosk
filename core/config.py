@@ -115,9 +115,9 @@ class AppConfig:
     # ------------------------------------------------------------------
     primary_model: str = "ArcFace"
     secondary_model: str = "Facenet"
-    primary_threshold: float = 0.77
+    primary_threshold: float = 0.72
     secondary_threshold: float = 0.75
-    base_threshold: float = 0.75
+    base_threshold: float = 0.72
     vector_index_top_k: int = 20
 
     # ------------------------------------------------------------------
@@ -167,7 +167,7 @@ class AppConfig:
     recognition_event_lock_seconds: int = 10
     stale_inside_reentry_seconds: int = 30 * 60
     recognition_confidence_threshold: float = 0.72
-    online_learning_confidence_threshold: float = 0.90
+    online_learning_confidence_threshold: float = 0.85
 
     registration_recognition_confirm_frames: int = 2
     registration_recognition_confidence_margin: float = 0.08
@@ -195,6 +195,9 @@ class AppConfig:
 
     # Toggle the top in-window CLI overlay bar (controls, FPS, debug summary).
     cli_top_bar_enabled: bool = False
+
+    # Toggle per-model confidence metrics in CLI logs and on-screen labels.
+    cli_model_confidence_display_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Occupancy and capacity management

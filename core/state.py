@@ -560,6 +560,13 @@ class AppStateManager:
         track_state.last_recognition_time = 0.0
         track_state.last_recognition_confidence = None
         track_state.last_recognition_threshold = None
+        track_state.last_recognition_primary_model = ""
+        track_state.last_recognition_secondary_model = ""
+        track_state.last_recognition_primary_confidence = None
+        track_state.last_recognition_secondary_confidence = None
+        track_state.last_recognition_primary_threshold = None
+        track_state.last_recognition_secondary_threshold = None
+        track_state.last_recognition_base_threshold = None
         track_state.failed_good_quality_attempts = 0
         track_state.unrecognized_event_id = None
         track_state.unrecognized_logged = False

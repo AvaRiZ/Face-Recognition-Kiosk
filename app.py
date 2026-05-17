@@ -67,6 +67,16 @@ def _apply_app_settings(runtime: AppRuntime) -> None:
             parsed = int(fallback)
         return max(int(minimum), min(int(maximum), int(parsed)))
 
+    def _coerce_bool(raw_value, fallback):
+        if isinstance(raw_value, bool):
+            return raw_value
+        text = str(raw_value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return bool(fallback)
+
     config = runtime.config
     state = runtime.state
 
@@ -180,6 +190,14 @@ def _apply_app_settings(runtime: AppRuntime) -> None:
         getattr(config, "recognition_event_retention_days", 365),
         1,
         3650,
+    )
+    config.cli_model_confidence_display_enabled = _coerce_bool(
+        get_app_setting(
+            config.db_path,
+            "cli_model_confidence_display_enabled",
+            str(getattr(config, "cli_model_confidence_display_enabled", True)),
+        ),
+        getattr(config, "cli_model_confidence_display_enabled", True),
     )
 
     entry_source = str(

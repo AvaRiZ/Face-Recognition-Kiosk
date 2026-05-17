@@ -473,6 +473,9 @@ def create_internal_blueprint(deps):
                 "vector_index_top_k": int(config.vector_index_top_k),
                 "recognition_confidence_threshold": float(config.recognition_confidence_threshold),
                 "online_learning_confidence_threshold": float(config.online_learning_confidence_threshold),
+                "cli_model_confidence_display_enabled": bool(
+                    getattr(config, "cli_model_confidence_display_enabled", True)
+                ),
                 "entry_cctv_stream_source": str(config.entry_cctv_stream_source),
                 "exit_cctv_stream_source": str(config.exit_cctv_stream_source),
                 "registration_control": registration_control,
