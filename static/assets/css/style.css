@@ -1939,56 +1939,6 @@ body.dark .back-to-top:hover {
     border: 0;
 }
 
-.dashboard .recent-sales .datatable-top {
-    padding: 0 0 10px 0;
-}
-
-.dashboard .recent-sales .datatable-bottom {
-    padding: 10px 0 0 0;
-}
-
-/* Simple Datatables Controls */
-.datatable-top {
-    padding: 0 0 8px 0;
-    font-size: var(--font-size-md);
-}
-
-.datatable-bottom {
-    padding: 8px 0 0 0;
-    font-size: var(--font-size-md);
-}
-
-.datatable-selector {
-    font-size: var(--font-size-input);
-    min-height: 30px;
-    padding: 0.2rem 0.45rem;
-}
-
-.datatable-input {
-    font-size: var(--font-size-input);
-    min-height: 30px;
-    padding: 0.28rem 0.55rem;
-}
-
-.datatable-info,
-.datatable-pagination a {
-    font-size: var(--font-size-md);
-}
-
-/* Force compact controls for simple-datatables */
-.datatable-wrapper .datatable-top .datatable-input,
-.datatable-wrapper .datatable-top .datatable-selector {
-    font-size: 12px !important;
-    height: 30px !important;
-    min-height: 30px !important;
-    line-height: 1.2 !important;
-    padding: 0.2rem 0.5rem !important;
-}
-
-.datatable-wrapper .datatable-top .datatable-selector {
-    padding-right: 1.4rem !important;
-}
-
 /* Top Selling */
 .dashboard .top-selling {
     font-size: var(--font-size-normal);

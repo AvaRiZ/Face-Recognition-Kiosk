@@ -13,7 +13,6 @@ Changes:
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -24,8 +23,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-
     # 1. Standardize user_embeddings.created_at to TIMESTAMPTZ
     op.execute(
         """

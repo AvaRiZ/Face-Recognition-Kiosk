@@ -13,7 +13,7 @@ from core.program_catalog import (
     normalize_program_name,
     resolve_program_name,
 )
-from db import connect as db_connect, table_columns
+from db import connect as db_connect
 from routes.forecasting import run_all_forecasts
 
 

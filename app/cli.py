@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pickle
-import subprocess
 import sys
 import threading
 import time
@@ -11,10 +9,8 @@ import uuid
 import cv2
 
 from core.config import AppConfig
-from core.models import User
 from core.state import AppStateManager
 from database.repository import UserRepository
-from services.embedding_service import count_embeddings, merge_embeddings_by_model, normalize_embeddings_by_model
 from services.quality_service import FaceQualityService
 from services.recognition_service import FaceRecognitionService
 from services.tracking_service import TrackingService

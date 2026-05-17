@@ -9,7 +9,6 @@
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.5.0
 torchvision==0.20.0
-torchaudio==2.5.0
 flask
 ultralytics
 deepface
@@ -23,9 +22,7 @@ opencv-python<4.13
 tensorflow==2.10.*
 keras
 mtcnn
-lz4
 keras-facenet
-deepface
 tf-keras
 psycopg[binary]
 alembic

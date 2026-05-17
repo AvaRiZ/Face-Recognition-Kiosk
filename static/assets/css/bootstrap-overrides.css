@@ -214,11 +214,6 @@ textarea::placeholder {
     line-height: 1.2;
 }
 
-.datatable-input,
-.datatable-selector {
-    border-radius: var(--bs-border-radius) !important;
-}
-
 /* Keep all controls inside input groups visually aligned */
 .input-group > .form-control,
 .input-group > .form-select,

@@ -108,7 +108,7 @@ class AppConfig:
     # ------------------------------------------------------------------
     # Paths and dataset locations
     # ------------------------------------------------------------------
-    model_path: str = "model-training\Yolo-model\yolov8n-face.pt"
+    model_path: str = "models/yolov8n-face.pt"
     db_path: str = ""
     # ------------------------------------------------------------------
     # Recognition models and identity thresholds

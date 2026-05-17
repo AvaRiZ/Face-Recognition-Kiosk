@@ -17,6 +17,8 @@ __pycache__/
 .venv/
 venv/
 ENV/
+node_modules/
+frontend/node_modules/
 
 # Editor/OS
 .vscode/
@@ -31,11 +33,17 @@ backups/*
 # Local config
 .env
 .env.*
+!.env.local.example
 
 # Database
+database/*.db
 detector_dataset/*
 faces_improved/*
 real_val_dataset/*
+
+# Generated training outputs
+model-training/generated-dataset/
+model-training/runs/
 
 #Static Images
 Static-image-benchmark/detector_dataset/*

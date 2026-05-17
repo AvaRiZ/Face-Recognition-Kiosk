@@ -3068,7 +3068,7 @@ function buildChartJsConfig({ options, series }) {
   return config;
 }
 
-function ApexChartPanel({ title, subtitle, height = 320, options, series }) {
+function ChartPanel({ title, subtitle, height = 320, options, series }) {
   const chartRef = React.useRef(null);
   const canvasRef = React.useRef(null);
 
@@ -4300,7 +4300,7 @@ function AnalyticsReportsInner() {
             marginBottom: 16,
           }}
         >
-          <ApexChartPanel
+          <ChartPanel
             title="Daily Attendance Trend (Last 30 Days)"
             subtitle={`${fmt(last30Total)} visits recorded in this window`}
             height={340}
@@ -4363,14 +4363,14 @@ function AnalyticsReportsInner() {
             marginBottom: 18,
           }}
         >
-          <ApexChartPanel
+          <ChartPanel
             title="Attendance by Weekday"
             subtitle={`${peakDow.label} leads the weekly usage profile`}
             height={300}
             options={dowOptions}
             series={dowSeries}
           />
-          <ApexChartPanel
+          <ChartPanel
             title="Usage by Hour"
             subtitle={`${peakHour.label} is the primary arrival period`}
             height={300}
@@ -4390,7 +4390,7 @@ function AnalyticsReportsInner() {
             marginBottom: 16,
           }}
         >
-          <ApexChartPanel
+          <ChartPanel
             title="Most Active Programs"
             subtitle={`${topProgram.label} currently shows the highest participation`}
             height={320}
@@ -4399,7 +4399,7 @@ function AnalyticsReportsInner() {
           />
 
           {genderSeries.length > 0 ? (
-            <ApexChartPanel
+            <ChartPanel
               title="Gender Composition"
               subtitle="Profile composition from available visitor records"
               height={320}
@@ -4428,7 +4428,7 @@ function AnalyticsReportsInner() {
 
         {yearSeries[0]?.data?.length > 0 ? (
           <div style={{ marginBottom: 16 }}>
-            <ApexChartPanel
+            <ChartPanel
               title="Year Level Participation"
               subtitle="Engagement distribution by academic year"
               height={330}

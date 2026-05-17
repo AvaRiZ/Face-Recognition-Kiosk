@@ -1,7 +1,7 @@
 import warnings
 import math
 import logging
-from datetime import date, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
