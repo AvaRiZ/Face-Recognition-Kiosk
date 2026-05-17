@@ -11,7 +11,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\LibraryFaceAccessSystem
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=.
+OutputDir=..\dist
 OutputBaseFilename=LibraryFaceAccessSystemInstaller
 Compression=lzma
 SolidCompression=yes
@@ -40,11 +40,9 @@ Source: "{#SourcePath}\..\..\scripts\*"; DestDir: "{app}\scripts"; Flags: recurs
 
 ; web assets
 Source: "{#SourcePath}\..\..\static\*"; DestDir: "{app}\static"; Flags: recursesubdirs createallsubdirs ignoreversion
-Source: "{#SourcePath}\..\..\templates\*"; DestDir: "{app}\templates"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 ; model assets used at runtime
 Source: "{#SourcePath}\..\..\models\*"; DestDir: "{app}\models"; Flags: recursesubdirs createallsubdirs ignoreversion
-Source: "{#SourcePath}\..\..\model-training\Yolo-model\*"; DestDir: "{app}\model-training\Yolo-model"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 ; installer helpers
 Source: "{#SourcePath}\*"; DestDir: "{app}\installer\windows"; Flags: recursesubdirs createallsubdirs ignoreversion

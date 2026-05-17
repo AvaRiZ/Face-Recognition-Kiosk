@@ -135,6 +135,10 @@ def _apply_runtime_config(runtime: WorkerRuntime, payload: dict) -> None:
     exit_source = _normalize_stream_source(payload.get("exit_cctv_stream_source"))
     if exit_source is not None:
         runtime.config.exit_cctv_stream_source = str(exit_source)
+    worker_stream_source = entry_source if runtime.worker_role == "entry" else exit_source
+    if worker_stream_source is not None:
+        runtime.stream_source = worker_stream_source
+        runtime.cli.update_stream_source(worker_stream_source)
 
     _apply_registration_control(runtime, payload)
 

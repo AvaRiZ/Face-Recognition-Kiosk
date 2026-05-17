@@ -57,6 +57,8 @@ class CLIApplication:
             "last_frame_ts": None,
             "updated_at": time.time(),
         }
+        self._stream_source_lock = threading.Lock()
+        self._requested_stream_source = None
         self._greeting_popup_name = ""
         self._greeting_popup_active_until = 0.0
         self._greeting_popup_duration_seconds = 4.0
@@ -114,15 +116,30 @@ class CLIApplication:
     def detection_paused(self) -> bool:
         return self._detection_pause_event.is_set()
 
+    @staticmethod
+    def _normalize_stream_source(stream_source):
+        if isinstance(stream_source, str):
+            stream_source = stream_source.strip()
+            if stream_source.isdigit():
+                return int(stream_source)
+        return stream_source
+
+    def update_stream_source(self, stream_source) -> None:
+        normalized = self._normalize_stream_source(stream_source)
+        with self._stream_source_lock:
+            self._requested_stream_source = normalized
+
+    def consume_stream_source_update(self):
+        with self._stream_source_lock:
+            value = self._requested_stream_source
+            self._requested_stream_source = None
+        return value
+
     def connect_to_cctv_stream(self, stream_source, frame_width=1280, frame_height=720, target_fps=30):
         print(f"Attempting to connect to: {stream_source}")
         self._set_stream_status("connecting", "Connecting to CCTV stream...")
 
-        if isinstance(stream_source, str):
-            stream_source = stream_source.strip()
-
-        if isinstance(stream_source, str) and stream_source.isdigit():
-            stream_source = int(stream_source)
+        stream_source = self._normalize_stream_source(stream_source)
 
         if isinstance(stream_source, int):
             cam_index = stream_source
@@ -800,6 +817,7 @@ class CLIApplication:
     def process_cctv_stream(self, stream_source=None, frame_width=1280, frame_height=720, window_title: str | None = None):
         if stream_source is None:
             stream_source = 0
+        stream_source = self._normalize_stream_source(stream_source)
         display_title = window_title or "CCTV Face Recognition"
 
         camera = self.connect_to_cctv_stream(stream_source, frame_width, frame_height, target_fps=30)
@@ -828,6 +846,16 @@ class CLIApplication:
         last_face_qualities = []
 
         while True:
+            next_stream_source = self.consume_stream_source_update()
+            if next_stream_source is not None and next_stream_source != stream_source:
+                stream_source = next_stream_source
+                print(f"[INFO] Camera source updated. Reconnecting to: {stream_source}")
+                if camera is not None:
+                    camera.release()
+                    camera = None
+                    cv2.destroyAllWindows()
+                self._set_stream_status("reconnecting", "Camera source updated. Reconnecting...")
+
             if self.detection_paused():
                 if camera is not None:
                     camera.release()
